@@ -947,17 +947,18 @@ function showLogin() {
   const u = el('input', { name: 'username', placeholder: 'admin', autocomplete: 'username' });
   const p = el('input', { name: 'password', type: 'password', autocomplete: 'current-password' });
   const err = el('div', { className: 'loginerr' });
+  const hintLine = el('div', { className: 'login-hint' });
+  // /api/me returns this only inside the desktop app, where nothing is on the network.
+  fetch('/api/me').then(r => r.json()).then(d => {
+    if (d?.hint) hintLine.textContent = `default login — ${d.hint}`;
+  }).catch(() => {});
+
   const card = el('div', { className: 'login-card' },
     el('label', {}, 'Operator'), u,
     el('label', {}, 'Passphrase'), p,
     err,
     el('button', { className: 'btn gold', type: 'submit' }, 'Authenticate'),
     hintLine);
-  const hintLine = el('div', { className: 'login-hint' });
-  // /api/me returns this only inside the desktop app, where nothing is on the network.
-  fetch('/api/me').then(r => r.json()).then(d => {
-    if (d?.hint) hintLine.textContent = `default login — ${d.hint}`;
-  }).catch(() => {});
 
   const form = el('form', { className: 'login-box' },
     el('div', { className: 'login-mark' }, magiMark(72),

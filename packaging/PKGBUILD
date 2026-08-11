@@ -24,6 +24,9 @@ build() {
 
 check() {
   cd "$_srcdir"
+  # Paint the real UI in a headless browser: a render-time ReferenceError passes
+  # every syntax check and still produces a blank window.
+  node scripts/smoke.mjs
   local tmp; tmp="$(mktemp -d)"
   cp dist/magi.cjs "$tmp/"
   # the bundle must boot with no node_modules and no public/ on disk

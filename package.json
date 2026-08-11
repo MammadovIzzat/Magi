@@ -15,7 +15,8 @@
     "pkg:deb": "electron-builder --linux deb",
     "pkg:appimage": "electron-builder --linux AppImage",
     "pkg:mac": "electron-builder --mac zip --x64 --arm64",
-    "pkg:all": "npm run build && electron-builder --linux deb AppImage --mac zip"
+    "pkg:all": "npm run build && electron-builder --linux deb AppImage --mac zip",
+    "test": "node scripts/smoke.mjs"
   },
   "dependencies": {
     "express": "^4.19.2"

@@ -180,14 +180,15 @@ node cli.js reseed all          # reinstall shipped defaults (after pulling new 
 
 ## Asset types & content
 
-Around 770 checklist items ship across 11 types, split between the base checklist, the
+Around 780 checklist items ship across 11 types, split between the base checklist, the
 follow-up checklists triggers spawn, and the catalog entries selects unfold. Coverage is
 cross-checked against the OWASP Web Application Security Testing Checklist, the OWASP
-MASVS for mobile, and the OWASP API Security Top 10 (2023).
+MASVS for mobile, the OWASP API Security Top 10 (2023), and the PortSwigger Web Security
+Academy topic list (including a dedicated LLM/AI attack checklist).
 
 | Type | Covers |
 |------|--------|
-| **web** | recon/fingerprint, discovery, auth, injection, upload, access control, session, protocol/cache/infra and cryptography — with deep-dives for login, registration, password reset, MFA, OAuth/SSO, upload, injection, GraphQL, race conditions, cache poisoning, 403 bypass, payment/checkout and non-production exposure |
+| **web** | recon/fingerprint, discovery, auth, injection, upload, access control, session, protocol/cache/infra and cryptography — with deep-dives for login, registration, password reset, MFA, OAuth/SSO, upload, injection, GraphQL, LLM/AI assistants, race conditions, cache poisoning, 403 bypass, payment/checkout and non-production exposure |
 | **ip** | full/UDP scans, OS guess, per-service triggers (SSH, FTP, SMB, HTTP, RDP, DB, SNMP, LDAP, SMTP, NFS, Redis/Elastic, WinRM), exploitation and post-exploitation with dedicated Linux and Windows privesc deep-dives (sudo/SUID/capabilities/GTFOBins; token privileges, service misconfig, credential dumping, DnsAdmins, PtH) |
 | **subnet** | host discovery, sweeps, poisoning/relay, segmentation and egress testing, triage |
 | **domain** | DNS/OSINT, ASN, subdomain enum + takeover, email posture, public exposure & leaks |

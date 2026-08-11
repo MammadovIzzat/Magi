@@ -20,6 +20,7 @@ if (!browser) {
   process.exit(0);
 }
 
+let chrome;
 const db = `/tmp/magi-smoke-${process.pid}.db`;
 const server = spawn(process.execPath, ['server.js'], {
   env: { ...process.env, MAGI_PORT: String(PORT), MAGI_DB: db, MAGI_PASS: 'smoketestpass' },
@@ -27,9 +28,10 @@ const server = spawn(process.execPath, ['server.js'], {
 });
 
 const cleanup = () => {
-  server.kill();
+  try { chrome?.kill(); } catch {}
+  try { server.kill(); } catch {}
   for (const s of ['', '-wal', '-shm']) rmSync(db + s, { force: true });
-  rmSync(PROFILE, { recursive: true, force: true });
+  try { rmSync(PROFILE, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {}
 };
 const die = (msg) => { console.error(`\n  SMOKE FAILED: ${msg}\n`); cleanup(); process.exit(1); };
 
@@ -38,7 +40,7 @@ for (let i = 0; i < 60; i++) {
 }
 
 rmSync(PROFILE, { recursive: true, force: true });
-const chrome = spawn(browser, ['--headless=new', '--remote-debugging-port=9402', '--no-first-run',
+chrome = spawn(browser, ['--headless=new', '--remote-debugging-port=9402', '--no-first-run',
   `--user-data-dir=${PROFILE}`, 'about:blank'], { stdio: 'ignore' });
 
 let targets;
@@ -96,7 +98,7 @@ checks.push(['template library paints', await ev(`
   location.hash = "#/editor"; await new Promise(r => setTimeout(r, 1400));
   return document.querySelectorAll(".tpl-type").length > 0`)]);
 
-ws.close(); chrome.kill();
+ws.close();
 
 let bad = 0;
 for (const [name, ok] of checks) { console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${name}`); if (!ok) bad++; }

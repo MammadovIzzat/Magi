@@ -221,9 +221,11 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
   display: flex; align-items: flex-end; justify-content: space-between; gap: 20px;
   padding-bottom: 16px; border-bottom: 1px solid var(--line);
 }
-/* label — hairline — action */
+/* label — hairline — action.
+   The hairline is .rule, not .line: .btn.line is the gold-outline button variant and
+   a descendant selector on .line stretched that button into a 1px bar. */
 .srule { display: flex; align-items: center; gap: 12px; margin: 30px 0 12px; }
-.srule .line { flex: 1; height: 1px; background: var(--line); }
+.srule .rule { flex: 1; height: 1px; background: var(--line); }
 
 .empty {
   border: 1px dashed var(--line-5); padding: 46px 20px; text-align: center;
@@ -490,6 +492,10 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 }
 .login-card input { font-family: var(--mono); font-size: 13px; }
 .loginerr { min-height: 20px; margin-top: 10px; font-family: var(--mono); font-size: 11px; color: var(--red); }
+.login-hint {
+  margin-top: 14px; text-align: center; font-family: var(--mono); font-size: 10.5px;
+  letter-spacing: .12em; text-transform: uppercase; color: var(--muted-3);
+}
 .login-card .btn.gold { width: 100%; justify-content: center; margin-top: 6px; padding: 11px; font-size: 13px; letter-spacing: .16em; }
 
 /* ── forms ─────────────────────────────────────────────── */

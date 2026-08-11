@@ -2,7 +2,7 @@ import express from 'express';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { db, hashPassword, verifyPassword, resetType, SESSION_TTL_DAYS, env } from './db.js';
+import { db, hashPassword, verifyPassword, resetType, SESSION_TTL_DAYS, env, usingDefaultPassword } from './db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -131,7 +131,11 @@ app.post('/api/auth/logout', (req, res) => {
 });
 app.get('/api/me', (req, res) => {
   const u = currentUser(req);
-  if (!u) return res.status(401).json({ error: 'unauthorized' });
+  if (!u) {
+    // Only ever surfaced in the desktop app, which opens no port — never over HTTP.
+    const hint = process.env.MAGI_EMBED === '1' && usingDefaultPassword() ? 'admin / admin' : undefined;
+    return res.status(401).json({ error: 'unauthorized', hint });
+  }
   res.json({ username: u.username });
 });
 app.post('/api/change-password', (req, res) => {
@@ -584,6 +588,12 @@ app.use('/api', (err, req, res, _next) => {
 export default app;
 
 if (process.env.MAGI_EMBED !== '1') {
+  // admin/admin is fine for a local lock screen; it is not fine on a network.
+  if (HOST !== '127.0.0.1' && HOST !== 'localhost' && usingDefaultPassword()) {
+    console.error(`\n  Refusing to listen on ${HOST} while the password is still the default.`);
+    console.error(`  Change it in the app first, or start with MAGI_PASS=<something long>.\n`);
+    process.exit(1);
+  }
   app.listen(PORT, HOST, () => {
     console.log(`\n  MAGI  ·  the pentester's familiar`);
     console.log(`  http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);

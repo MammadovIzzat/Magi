@@ -9,12 +9,21 @@ import { app, BrowserWindow, Menu, dialog, protocol, shell } from 'electron';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname, normalize } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createDispatcher } from './dispatch.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
 const PUBLIC = join(ROOT, 'public');
+
+// A packaged build must not keep the database inside its own install tree — that tree
+// is replaced on upgrade and may be read-only. Running from a checkout keeps db.js's
+// own choice (./data) so the app and `npm start` share one database while developing.
+if (app.isPackaged && !process.env.MAGI_DATA_DIR && !process.env.MAGI_DB) {
+  process.env.MAGI_DATA_DIR = join(
+    process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'magi');
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -39,9 +48,14 @@ if (!isPrimary) app.exit(0);
 let win;
 
 async function createWindow() {
-  // Installed builds ship one bundled CommonJS file; a source checkout uses server.js.
-  const bundled = join(ROOT, 'magi-server.cjs');
-  const entry = existsSync(bundled) ? bundled : join(ROOT, 'server.js');
+  // Installed builds ship one bundled CommonJS file, in a place that depends on how
+  // they were packaged; a source checkout just uses server.js.
+  const entry = [
+    join(ROOT, 'magi-server.cjs'),          // Arch package (packaging/PKGBUILD)
+    join(ROOT, 'dist', 'magi-server.cjs'),  // electron-builder (.deb, .AppImage, macOS)
+    join(ROOT, 'server.js'),                // source checkout
+  ].find(existsSync);
+  if (!entry) throw new Error('Magi: could not find the server bundle next to ' + ROOT);
   const mod = await import(pathToFileURL(entry).href);
   const dispatch = createDispatcher(mod.default?.default ?? mod.default);
 

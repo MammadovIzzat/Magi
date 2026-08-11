@@ -1,0 +1,44 @@
+# Cross-platform packaging. Arch users should prefer packaging/PKGBUILD: it uses the
+# system Electron and produces a ~750 KB package, where these bundle their own copy
+# of Electron and land around 100 MB — the normal cost of a portable Electron app.
+appId: com.mammadovizzat.magi
+productName: Magi
+copyright: Magi — for authorized security testing only
+
+directories:
+  output: dist/installers
+  buildResources: build/icons
+
+# Only what the app actually needs at runtime. The server is one bundled file, so no
+# node_modules are shipped.
+# Plain files rather than an asar archive: main.js resolves the server bundle from
+# disk, and an unpacked tree keeps that working without asar-specific path handling.
+asar: false
+files:
+  - electron/**/*
+  - public/**/*
+  - dist/magi-server.cjs
+  - dist/magi-cli.cjs
+  - package.json
+  # the server is a single bundled file, so nothing from node_modules ships
+  - "!node_modules/**/*"
+
+linux:
+  target: [deb, AppImage]
+  category: Development
+  synopsis: The pentester's familiar
+  description: Engagement checklists, target tracker and evidence log.
+  desktop:
+    entry:
+      Name: Magi
+      Categories: Development;Security;
+      Keywords: pentest;security;checklist;engagement;
+deb:
+  depends: [libgtk-3-0, libnotify4, libnss3, libxss1, libxtst6, xdg-utils, libatspi2.0-0, libsecret-1-0]
+
+mac:
+  target: [zip]
+  category: public.app-category.developer-tools
+  darkModeSupport: true
+  # Unsigned: cross-built from Linux. Gatekeeper quarantines it on first run.
+  identity: null

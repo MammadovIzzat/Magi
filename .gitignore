@@ -19,3 +19,6 @@ build/*.bundle.cjs
 packaging/pkg/
 packaging/src/
 packaging/*.pkg.tar.zst
+
+# electron-builder output and its downloaded runtimes
+dist/installers/

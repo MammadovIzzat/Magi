@@ -38,15 +38,16 @@ No native build step: uses Node's built-in `node:sqlite` (Node 22.5+). Data live
 
 ### Login
 
-On first run an account is created and **its password is printed once** in the startup log —
-there is no default password. Save it, or set your own up front:
+The first run creates **`admin` / `admin`**. The desktop app opens no port at all, so this
+is a lock screen rather than a network control — but change it from the account bar (🔑)
+anyway, which also signs out every other session. Set your own up front with:
 
 ```bash
 MAGI_USER=me MAGI_PASS=a-long-passphrase npm start
 ```
 
-Change it later from the account bar (🔑); doing so signs out every other session.
-Auth is a session-cookie gate over the whole app (all signed-in users share the same projects).
+`magi serve` **refuses to bind a non-loopback address while the password is still the
+default**, so an exposed instance can never ship with `admin/admin`.
 
 ### Where it listens
 
@@ -92,14 +93,57 @@ npm run app          # from a checkout
 magi                 # installed
 ```
 
-## Install on Arch Linux
+## Install
+
+### Arch Linux (recommended here)
+
+Uses the system Electron, so the package stays around **750 KB**.
 
 ```bash
-cd packaging && makepkg -f
-sudo pacman -U magi-0.1.0-1-any.pkg.tar.zst
+npm run pkg                                   # or: cd packaging && makepkg -f
+sudo pacman -U packaging/magi-0.1.0-1-any.pkg.tar.zst
 ```
 
-That gives you a `magi` command and a desktop entry with its own icon:
+### Debian / Ubuntu
+
+Debian has no Electron package, so the `.deb` bundles its own copy — **~100 MB**.
+
+```bash
+npm run build && npm run pkg:deb
+sudo apt install ./dist/installers/magi_0.1.0_amd64.deb
+```
+
+### Any Linux — portable AppImage
+
+```bash
+npm run build && npm run pkg:appimage
+chmod +x dist/installers/Magi-0.1.0.AppImage
+./dist/installers/Magi-0.1.0.AppImage
+```
+
+### macOS
+
+Cross-built from Linux, both architectures:
+
+```bash
+npm run build && npm run pkg:mac
+# dist/installers/Magi-0.1.0-mac.zip         Intel
+# dist/installers/Magi-0.1.0-arm64-mac.zip   Apple Silicon
+```
+
+These are **unsigned and unnotarised**, and were built on Linux — I have no Mac to
+test them on. Gatekeeper will refuse them on first launch; unzip, move `Magi.app`
+to /Applications, then either right-click → Open, or:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Magi.app
+```
+
+`npm run pkg:all` builds the deb, the AppImage and both macOS zips in one go. All
+targets except the Arch package need `electron` and `electron-builder` from npm
+(`npm install` pulls them in as dev dependencies).
+
+### Everything the packages give you
 
 ```bash
 magi                                  # the app window
@@ -109,18 +153,15 @@ magi export 1 > report.md
 magi serve                            # local web server instead, http://127.0.0.1:4173
 ```
 
-Data lives in `~/.local/share/magi/magi.db` (honours `XDG_DATA_HOME`). The package is
-~750 KB: the UI, fonts and every checklist are compiled into one bundled file, and the
-window runs on the system Electron rather than a private copy. Nothing is fetched at
-runtime. The PKGBUILD pins `electron43` because that is what this was tested against —
-the launcher accepts any electron39+ that is installed.
+Data lives in `~/.local/share/magi/magi.db` (honours `XDG_DATA_HOME`). A source
+checkout keeps its database in `./data` instead, so the two never collide.
 
 ### Single-file executable
 
 `node build/build.mjs --exe` attempts a standalone binary via Node's Single Executable
 Application support. On the current toolchain postject produces a segfaulting binary —
 a hello-world SEA fails the same way — so the build verifies the result and deletes it
-rather than shipping something broken. The Arch package above is the supported route.
+rather than shipping something broken.
 
 ## CLI
 

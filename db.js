@@ -23,8 +23,11 @@ export function verifyPassword(pw, stored) {
 
 // Env vars moved to MAGI_* with the rename; the old CHECKLISTER_* names still work
 // so existing setups and scripts do not break.
-export const env = (name, fallback) =>
-  process.env['MAGI_' + name] ?? process.env['CHECKLISTER_' + name] ?? fallback;
+// An empty value counts as unset: `MAGI_PASS= magi` should not create a blank password.
+export const env = (name, fallback) => {
+  const v = process.env['MAGI_' + name] || process.env['CHECKLISTER_' + name];
+  return v || fallback;
+};
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -199,16 +202,23 @@ addCol('opt_key', 'TEXT');
 db.exec(`CREATE INDEX IF NOT EXISTS idx_items_parent ON items(parent_id);`);
 
 // --- seed the first user ---
-// No admin/admin default: this DB holds client credentials and raw requests, and a
-// predictable password on a testing box is exactly the wrong trade. If MAGI_PASS
-// is unset we generate one and print it once.
+// admin/admin by default. A generated password is lost the moment you launch from a
+// desktop icon and never see a console, which locks you out of your own data. The
+// desktop app opens no port at all, so this login is a lock screen rather than a
+// network control — and server.js refuses to bind a non-loopback address while the
+// password is still the default.
+export const DEFAULT_PASS = 'admin';
 if (db.prepare(`SELECT COUNT(*) c FROM users`).get().c === 0) {
   const user = env('USER', 'admin');
-  const generated = !env('PASS');
-  const pass = env('PASS') || randomBytes(12).toString('base64url');
+  const pass = env('PASS', DEFAULT_PASS);
   db.prepare(`INSERT INTO users (username, pass_hash) VALUES (?,?)`).run(user, hashPassword(pass));
   console.log(`\n  [auth] created login  ->  ${user} / ${pass}`);
-  if (generated) console.log(`  [auth] this password is shown once — save it, or change it from the account bar.`);
+}
+
+/** True while any account still uses the shipped default password. */
+export function usingDefaultPassword() {
+  return db.prepare(`SELECT pass_hash FROM users`).all()
+    .some(u => verifyPassword(DEFAULT_PASS, u.pass_hash));
 }
 
 // Sessions are pruned on boot and on every lookup; without this they lived forever,

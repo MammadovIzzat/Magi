@@ -3,7 +3,12 @@ Type=Application
 Name=Magi
 GenericName=Pentest checklist
 Comment=Engagement checklists, target tracker and evidence log
-Exec=sh -c 'magi & sleep 2; xdg-open http://127.0.0.1:4173'
-Terminal=true
+Exec=magi
+Icon=magi
+Terminal=false
 Categories=Development;Security;
-Keywords=pentest;security;checklist;engagement;
+Keywords=pentest;security;checklist;engagement;audit;
+# Electron sets WM_CLASS from the app name; this makes the taskbar group the
+# window under Magi's own icon.
+StartupWMClass=magi
+StartupNotify=true

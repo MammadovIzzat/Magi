@@ -6,41 +6,60 @@ pkgdesc="The pentester's familiar — engagement checklists, target tracker and 
 arch=('any')
 url="https://github.com/MammadovIzzat/Magi"
 license=('MIT')
-# node:sqlite is built in from 22.5; everything else is compiled into the bundle.
-depends=('nodejs>=22.5.0')
+# electron runs the desktop window; node runs the CLI and the optional 'magi serve'.
+# node:sqlite is built into Node from 22.5, so there is no native module to compile.
+# Pinned to the electron series this was tested against — the launcher will use any
+# electron39+ it finds, so change this line if you prefer a different one.
+depends=('nodejs>=22.5.0' 'electron43')
 makedepends=('npm')
 options=('!debug' '!strip')
 
-# Build straight from the checkout this PKGBUILD lives in.
 _srcdir="$(realpath "${startdir}/..")"
 
 build() {
   cd "$_srcdir"
-  # esbuild only; the app itself ships no runtime node_modules.
-  npm install --no-audit --no-fund --silent
+  npm install --no-audit --no-fund --silent      # esbuild only; no runtime deps ship
   node build/build.mjs
 }
 
 check() {
   cd "$_srcdir"
-  # The bundle must boot on its own, with no node_modules and no public/ on disk.
-  local tmp
-  tmp="$(mktemp -d)"
+  local tmp; tmp="$(mktemp -d)"
   cp dist/magi.cjs "$tmp/"
+  # the bundle must boot with no node_modules and no public/ on disk
   ( cd "$tmp"
     MAGI_PORT=45998 MAGI_DB="$tmp/check.db" timeout 6 node magi.cjs >out.log 2>&1 || true
     grep -q "MAGI" out.log || { echo "bundle failed to start:"; cat out.log; exit 1; } )
+  # and the embeddable one must export the Express app without listening
+  MAGI_EMBED=1 MAGI_DB="$tmp/check2.db" node -e '
+    const m = require("'"$_srcdir"'/dist/magi-server.cjs");
+    const app = m.default ?? m;
+    if (typeof app !== "function") { console.error("embed bundle does not export the app"); process.exit(1); }
+  '
   rm -rf "$tmp"
 }
 
 package() {
   cd "$_srcdir"
-  install -Dm644 dist/magi.cjs      "$pkgdir/usr/lib/magi/magi.cjs"
-  install -Dm644 dist/magi-cli.cjs  "$pkgdir/usr/lib/magi/magi-cli.cjs"
+
+  # desktop app: electron main + the embeddable server + the UI on disk
+  install -Dm644 electron/main.js       "$pkgdir/usr/lib/magi/electron/main.js"
+  install -Dm644 electron/dispatch.js   "$pkgdir/usr/lib/magi/electron/dispatch.js"
+  install -Dm644 dist/magi-server.cjs   "$pkgdir/usr/lib/magi/magi-server.cjs"
+  install -Dm644 packaging/app-package.json "$pkgdir/usr/lib/magi/package.json"
+  for f in $(cd public && find . -type f); do
+    install -Dm644 "public/$f" "$pkgdir/usr/lib/magi/public/${f#./}"
+  done
+
+  # server + CLI bundles
+  install -Dm644 dist/magi.cjs     "$pkgdir/usr/lib/magi/magi.cjs"
+  install -Dm644 dist/magi-cli.cjs "$pkgdir/usr/lib/magi/magi-cli.cjs"
 
   sed "s/@VERSION@/$pkgver/" packaging/magi.sh > "$srcdir/magi.launcher"
   install -Dm755 "$srcdir/magi.launcher" "$pkgdir/usr/bin/magi"
 
-  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 packaging/magi.desktop "$pkgdir/usr/share/applications/magi.desktop"
+  install -Dm644 packaging/magi.svg     "$pkgdir/usr/share/icons/hicolor/scalable/apps/magi.svg"
+  install -Dm644 packaging/magi.png     "$pkgdir/usr/share/icons/hicolor/256x256/apps/magi.png"
+  install -Dm644 README.md              "$pkgdir/usr/share/doc/$pkgname/README.md"
 }

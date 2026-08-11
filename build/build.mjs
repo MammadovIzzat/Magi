@@ -74,10 +74,12 @@ function bundleOne(entry, outfile) {
   ], { stdio: ['ignore', 'ignore', 'inherit'] });
   console.log(`        ${relative(ROOT, outfile)}  ${(statSync(outfile).size / 1024).toFixed(0)} KB`);
 }
-const serverOut = join(OUT, 'magi.cjs');
-const cliOut = join(OUT, 'magi-cli.cjs');
+const serverOut = join(OUT, 'magi.cjs');        // standalone: starts the HTTP server
+const cliOut = join(OUT, 'magi-cli.cjs');       // standalone: the CLI
+const embedOut = join(OUT, 'magi-server.cjs');  // exports the Express app for the desktop app
 bundleOne(join(BUILD, 'entry.server.js'), serverOut);
 bundleOne(join(ROOT, 'cli.js'), cliOut);
+bundleOne(join(ROOT, 'server.js'), embedOut);
 
 // ---- 3. optional standalone executable ------------------------------------
 if (!wantExe) {

@@ -579,14 +579,20 @@ app.use('/api', (err, req, res, _next) => {
   res.status(500).json({ error: 'internal error' });
 });
 
-app.listen(PORT, HOST, () => {
-  console.log(`\n  MAGI  ·  the pentester's familiar`);
-  console.log(`  http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
-  if (HOST !== '127.0.0.1') {
-    console.log(`\n  !! Listening on ${HOST} — this app is reachable from the network.`);
-    console.log(`     It holds client credentials, raw requests and findings. Only do this on a`);
-    console.log(`     trusted network, with a strong password set.\n`);
-  } else {
-    console.log(`  Bound to localhost only. Set MAGI_HOST=0.0.0.0 to share it.\n`);
-  }
-});
+// Exported so the desktop app can dispatch requests straight into Express without
+// ever opening a socket. MAGI_EMBED=1 tells this module not to listen.
+export default app;
+
+if (process.env.MAGI_EMBED !== '1') {
+  app.listen(PORT, HOST, () => {
+    console.log(`\n  MAGI  ·  the pentester's familiar`);
+    console.log(`  http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
+    if (HOST !== '127.0.0.1') {
+      console.log(`\n  !! Listening on ${HOST} — this app is reachable from the network.`);
+      console.log(`     It holds client credentials, raw requests and findings. Only do this on a`);
+      console.log(`     trusted network, with a strong password set.\n`);
+    } else {
+      console.log(`  Bound to localhost only. Set MAGI_HOST=0.0.0.0 to share it.\n`);
+    }
+  });
+}

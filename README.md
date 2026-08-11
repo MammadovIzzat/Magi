@@ -80,27 +80,40 @@ shipped content for a type, discarding your template edits for it.
 Editing a template never touches assets you already created — it applies to newly-added assets.
 Both the web app and the CLI build new assets from these same editable templates.
 
-## Install on Arch Linux
+## Desktop app
 
-Builds a real pacman package — one bundled JS file with the UI, fonts and all checklist
-content compiled in. The only dependency is system Node (for `node:sqlite`).
+Magi runs as a real application window — **no port is opened and no browser is involved**.
+The UI is served over a private `magi://` scheme handled inside the process, and requests
+are dispatched straight into Express without a socket, so nothing is reachable from the
+network even on localhost.
+
+```bash
+npm run app          # from a checkout
+magi                 # installed
+```
+
+## Install on Arch Linux
 
 ```bash
 cd packaging && makepkg -f
 sudo pacman -U magi-0.1.0-1-any.pkg.tar.zst
 ```
 
-Then `magi` starts the web app and `magi <command>` runs the CLI:
+That gives you a `magi` command and a desktop entry with its own icon:
 
 ```bash
-magi                                  # http://127.0.0.1:4173
-magi projects
+magi                                  # the app window
+magi projects                         # CLI
 magi add-asset 1 web https://app.acme.com
 magi export 1 > report.md
+magi serve                            # local web server instead, http://127.0.0.1:4173
 ```
 
-Installed data lives in `~/.local/share/magi/magi.db` (honours `XDG_DATA_HOME`).
-`makepkg` produces a ~530 KB package; nothing is fetched at runtime.
+Data lives in `~/.local/share/magi/magi.db` (honours `XDG_DATA_HOME`). The package is
+~750 KB: the UI, fonts and every checklist are compiled into one bundled file, and the
+window runs on the system Electron rather than a private copy. Nothing is fetched at
+runtime. The PKGBUILD pins `electron43` because that is what this was tested against —
+the launcher accepts any electron39+ that is installed.
 
 ### Single-file executable
 
@@ -159,6 +172,9 @@ cli.js               command-line interface
 public/              vanilla-JS single-page UI
 data/magi.db         your data — client-confidential, gitignored
 public/fonts/        self-hosted webfonts (Magi never calls out to a CDN)
+electron/            desktop app: window, magi:// scheme, socket-free Express dispatch
+build/build.mjs      bundles everything into dist/
+packaging/           PKGBUILD, launcher, icon, desktop entry
 ```
 
 Templates live in the DB (`tpl_types`, `tpl_items`, `tpl_groups`, `tpl_group_items`) once

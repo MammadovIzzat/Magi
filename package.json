@@ -10,7 +10,8 @@
     "start": "node server.js",
     "cli": "node cli.js",
     "app": "sh -c 'for e in electron electron43 electron42 electron41 electron40 electron39; do command -v $e >/dev/null && exec $e .; done; echo \"no electron runtime found\" >&2; exit 1'",
-    "build": "node build/build.mjs"
+    "build": "node build/build.mjs",
+    "pkg": "sh -c 'cd packaging && makepkg -f'"
   },
   "dependencies": {
     "express": "^4.19.2"

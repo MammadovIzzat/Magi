@@ -1,0 +1,8 @@
+node_modules/
+
+# Engagement data: client credentials, raw requests and findings. Never commit this.
+data/
+*.log
+
+# Generated design snapshots and design-tool exports, not source.
+design-export/

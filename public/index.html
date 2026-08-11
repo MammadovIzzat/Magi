@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Magi</title>
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13.5' stroke='%23E8B65A' stroke-width='1.6' fill='none'/><rect x='7.5' y='7.5' width='17' height='17' stroke='%23E8B65A' stroke-width='1.6' fill='none'/><rect x='7.5' y='7.5' width='17' height='17' stroke='%23E8B65A' stroke-width='1.6' fill='none' transform='rotate(45 16 16)'/></svg>" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar" id="topbar" hidden>
+      <button class="brand" id="homeBtn" title="Engagements">
+        <svg viewBox="0 0 32 32" width="26" height="26" fill="none">
+          <circle cx="16" cy="16" r="13.5" stroke="#E8B65A" stroke-width="1.3" opacity=".85"/>
+          <rect x="7.5" y="7.5" width="17" height="17" stroke="#E8B65A" stroke-width="1.3"/>
+          <rect x="7.5" y="7.5" width="17" height="17" stroke="#E8B65A" stroke-width="1.3" transform="rotate(45 16 16)"/>
+          <circle cx="16" cy="16" r="2.4" fill="#E8B65A" opacity=".55"/>
+          <circle cx="16" cy="2.5" r="2.5" fill="#3D6FF0"/>
+          <circle cx="16" cy="29.5" r="2.5" fill="#E2453C"/>
+        </svg>
+        <span class="brand-name">MAGI</span>
+      </button>
+      <div class="vrule"></div>
+      <nav class="crumbs" id="crumbs"></nav>
+      <div class="spacer"></div>
+      <div id="topActions" style="display:flex;gap:7px"></div>
+      <div id="account"></div>
+    </header>
+    <div class="shell">
+      <aside class="rail" id="rail" hidden></aside>
+      <main class="main" id="view"></main>
+    </div>
+  </div>
+  <div id="modalRoot"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

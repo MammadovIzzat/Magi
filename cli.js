@@ -1,0 +1,183 @@
+#!/usr/bin/env node
+// Magi CLI — shares the same SQLite DB as the web app.
+import { db, resetType } from './db.js';
+
+const q = (s) => db.prepare(s);
+const args = process.argv.slice(2);
+const cmd = args[0];
+
+function help() {
+  console.log(`MAGI — the pentester's familiar  ·  CLI
+
+  magi projects                          list projects
+  magi new-project "<name>" [client]     create a project
+  magi types                             list asset types
+  magi assets <projectId>                list assets in a project
+  magi add-asset <projectId> <type> <label>   add an asset (+ its checklist)
+  magi show <assetId>                     show an asset checklist
+  magi set <itemId> <status>             status: todo|done|na|flag|yes|no
+  magi export <projectId>                print markdown report
+  magi rm-project <projectId> [--yes]    delete a project + all its targets
+  magi rm-asset <assetId> [--yes]        delete one target + its checklist
+                                                (both print what they would remove without --yes)
+  magi reseed [type|all]                 restore shipped default checklists
+                                                (discards template edits; assets untouched)
+
+  Web app:  npm start   ->  http://localhost:4173\n`);
+}
+
+function table(rows, cols) {
+  if (!rows.length) return console.log('  (none)');
+  const w = cols.map(c => Math.max(c.length, ...rows.map(r => String(r[c] ?? '').length)));
+  const line = (vals) => '  ' + vals.map((v, i) => String(v).padEnd(w[i])).join('  ');
+  console.log(line(cols)); console.log('  ' + w.map(x => '-'.repeat(x)).join('  '));
+  for (const r of rows) console.log(line(cols.map(c => r[c] ?? '')));
+}
+
+switch (cmd) {
+  case 'projects':
+    table(q(`SELECT p.id, p.name, p.client,
+      (SELECT COUNT(*) FROM assets a WHERE a.project_id=p.id) AS assets FROM projects p ORDER BY p.id`).all(),
+      ['id', 'name', 'client', 'assets']);
+    break;
+
+  case 'new-project': {
+    if (!args[1]) { console.error('name required'); process.exit(1); }
+    const info = q(`INSERT INTO projects (name, client) VALUES (?,?)`).run(args[1], args[2] || null);
+    console.log(`Created project #${info.lastInsertRowid}: ${args[1]}`);
+    break;
+  }
+
+  case 'types':
+    table(q(`SELECT t.type, t.label, t.hint AS example,
+             (SELECT COUNT(*) FROM tpl_items i WHERE i.type=t.type) AS items
+             FROM tpl_types t ORDER BY t.sort, t.type`).all(), ['type', 'label', 'example', 'items']);
+    break;
+
+  case 'assets':
+    if (!args[1]) { console.error('projectId required'); process.exit(1); }
+    table(q(`SELECT id, type, label FROM assets WHERE project_id=? ORDER BY id`).all(args[1]), ['id', 'type', 'label']);
+    break;
+
+  case 'add-asset': {
+    const [, pid, type, ...rest] = args;
+    const label = rest.join(' ');
+    if (!pid || !type || !label) { console.error('usage: add-asset <projectId> <type> <label>'); process.exit(1); }
+    // Build from the editable DB templates, exactly like the web app: the seed file is
+    // only the factory default, and using it here silently ignored the user's edits and
+    // any asset type they added in the template editor.
+    const known = q(`SELECT type FROM tpl_types ORDER BY sort, type`).all().map(r => r.type);
+    if (!known.includes(type)) { console.error(`unknown type "${type}". Try: ${known.join(', ')}`); process.exit(1); }
+    if (!q(`SELECT id FROM projects WHERE id=?`).get(pid)) { console.error('project not found'); process.exit(1); }
+    const info = q(`INSERT INTO assets (project_id, type, label) VALUES (?,?,?)`).run(pid, type, label);
+    const aid = info.lastInsertRowid;
+    const stmt = q(`INSERT INTO items (asset_id, group_key, group_title, title, detail, payloads, kind, spawns, catalog, options, sort)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+    const rows = q(`SELECT * FROM tpl_items WHERE type=? ORDER BY sort, id`).all(type);
+    for (const r of rows) stmt.run(aid, r.group_key, r.group_title, r.title, r.detail, r.payloads,
+      r.kind, r.spawns, r.catalog, r.options, r.sort);
+    console.log(`Added ${type} asset #${aid} "${label}" with ${rows.length} checklist items.`);
+    break;
+  }
+
+  case 'show': {
+    const a = q(`SELECT * FROM assets WHERE id=?`).get(args[1]);
+    if (!a) { console.error('asset not found'); process.exit(1); }
+    console.log(`\n  ${a.type.toUpperCase()} — ${a.label}\n`);
+    const items = q(`SELECT * FROM items WHERE asset_id=? ORDER BY sort`).all(a.id);
+    const mark = { done: '[x]', na: '[-]', flag: '[!]', yes: '[Y]', no: '[N]', todo: '[ ]' };
+    let g = null;
+    for (const i of items) {
+      if (i.group_title !== g) { console.log(`\n  ${i.group_title}`); g = i.group_title; }
+      console.log(`   ${mark[i.status] || '[ ]'} #${i.id} ${i.title}${i.answer ? '  => ' + i.answer : ''}`);
+    }
+    console.log();
+    break;
+  }
+
+  case 'set': {
+    const [, itemId, status] = args;
+    const ok = ['todo', 'done', 'na', 'flag', 'yes', 'no'];
+    if (!ok.includes(status)) { console.error('status must be: ' + ok.join('|')); process.exit(1); }
+    const r = q(`UPDATE items SET status=? WHERE id=?`).run(status, itemId);
+    console.log(r.changes ? `Item #${itemId} -> ${status}` : 'item not found');
+    break;
+  }
+
+  case 'export': {
+    const p = q(`SELECT * FROM projects WHERE id=?`).get(args[1]);
+    if (!p) { console.error('project not found'); process.exit(1); }
+    const icon = { done: '✅', na: '➖', flag: '🚩', yes: '✔️', no: '✖️', todo: '⬜' };
+    let out = `# ${p.name}\n`;
+    for (const a of q(`SELECT * FROM assets WHERE project_id=? ORDER BY id`).all(p.id)) {
+      out += `\n## ${a.type.toUpperCase()} — ${a.label}\n`;
+      const items = q(`SELECT * FROM items WHERE asset_id=? ORDER BY sort, id`).all(a.id);
+      const kids = {};
+      for (const i of items) if (i.parent_id != null) (kids[i.parent_id] ||= []).push(i);
+      const line = (i, d) => `${'  '.repeat(d)}- ${icon[i.status] || '⬜'} ${i.title}`
+        + (i.answer ? ' — _' + i.answer + '_' : '') + '\n'
+        + (kids[i.id] || []).map(k => line(k, d + 1)).join('');
+      let g = null;
+      for (const i of items.filter(x => x.parent_id == null)) {
+        if (i.group_key !== g) { out += `\n### ${i.group_title}\n`; g = i.group_key; }
+        out += line(i, 0);
+      }
+    }
+    console.log(out);
+    break;
+  }
+
+  // Destructive and unrecoverable, so it is a two-step: describe, then --yes to commit.
+  case 'rm-project': {
+    const p = q(`SELECT * FROM projects WHERE id=?`).get(args[1]);
+    if (!p) { console.error('project not found'); process.exit(1); }
+    const assets = q(`SELECT id,type,label FROM assets WHERE project_id=? ORDER BY id`).all(p.id);
+    const items = q(`SELECT COUNT(*) c FROM items WHERE asset_id IN (SELECT id FROM assets WHERE project_id=?)`).get(p.id).c;
+    const finds = q(`SELECT COUNT(*) c FROM findings WHERE asset_id IN (SELECT id FROM assets WHERE project_id=?)`).get(p.id).c;
+    console.log(`\nProject #${p.id} "${p.name}"${p.client ? ' (' + p.client + ')' : ''}`);
+    console.log(`  ${assets.length} target(s), ${items} checklist item(s), ${finds} finding(s)`);
+    for (const a of assets) console.log(`    - #${a.id} ${a.type} ${a.label}`);
+    if (!args.includes('--yes')) {
+      console.log(`\nNothing deleted. Re-run with --yes to delete permanently:`);
+      console.log(`  node cli.js rm-project ${p.id} --yes\n`);
+      break;
+    }
+    q(`DELETE FROM projects WHERE id=?`).run(p.id);
+    console.log(`\nDeleted project #${p.id} and everything under it.\n`);
+    break;
+  }
+
+  case 'rm-asset': {
+    const a = q(`SELECT * FROM assets WHERE id=?`).get(args[1]);
+    if (!a) { console.error('asset not found'); process.exit(1); }
+    const items = q(`SELECT COUNT(*) c FROM items WHERE asset_id=?`).get(a.id).c;
+    const finds = q(`SELECT COUNT(*) c FROM findings WHERE asset_id=?`).get(a.id).c;
+    console.log(`\nTarget #${a.id} ${a.type} "${a.label}" (project #${a.project_id})`);
+    console.log(`  ${items} checklist item(s), ${finds} finding(s)`);
+    if (!args.includes('--yes')) {
+      console.log(`\nNothing deleted. Re-run with --yes to delete permanently:`);
+      console.log(`  node cli.js rm-asset ${a.id} --yes\n`);
+      break;
+    }
+    q(`DELETE FROM assets WHERE id=?`).run(a.id);
+    console.log(`\nDeleted target #${a.id}.\n`);
+    break;
+  }
+
+  case 'reseed': {
+    const target = args[1];
+    if (!target) { console.error('usage: reseed <type|all>   (see: magi types)'); process.exit(1); }
+    const types = target === 'all'
+      ? q(`SELECT type FROM tpl_types ORDER BY sort, type`).all().map(r => r.type)
+      : [target];
+    for (const t of types) {
+      const n = resetType(t);
+      console.log(n === false ? `  ${t}: no shipped defaults, left alone` : `  ${t}: restored ${n} items`);
+    }
+    console.log('\nExisting assets keep their current checklists; this only affects newly-added assets.');
+    break;
+  }
+
+  default:
+    help();
+}

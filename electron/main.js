@@ -5,7 +5,7 @@
 // network, and no browser is involved.
 process.env.MAGI_EMBED = '1';               // stop server.js from listening
 
-import { app, BrowserWindow, Menu, protocol, shell, net } from 'electron';
+import { app, BrowserWindow, Menu, dialog, protocol, shell } from 'electron';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname, normalize } from 'node:path';
@@ -29,9 +29,12 @@ protocol.registerSchemesAsPrivileged([{
   privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
 }]);
 
-// Single instance: focus the existing window instead of opening a second one on
-// the same database.
-if (!app.requestSingleInstanceLock()) app.quit();
+// Single instance: focus the existing window instead of opening a second one on the
+// same database. app.quit() does not stop this module, so bail out explicitly —
+// otherwise a second launch still registers a ready handler and races the shutdown,
+// which surfaces as ERR_FAILED loading the page.
+const isPrimary = app.requestSingleInstanceLock();
+if (!isPrimary) app.exit(0);
 
 let win;
 
@@ -87,6 +90,13 @@ async function createWindow() {
 }
 
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
-app.whenReady().then(createWindow);
+
+// Without this a startup failure is only an unhandled-rejection warning on a console
+// nobody is looking at, and the app just never shows a window.
+if (isPrimary) app.whenReady().then(createWindow).catch((err) => {
+  console.error(err);
+  dialog.showErrorBox('Magi could not start', String(err?.stack || err));
+  app.exit(1);
+});
 app.on('window-all-closed', () => app.quit());
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

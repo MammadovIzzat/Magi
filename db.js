@@ -2,11 +2,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { mkdirSync, existsSync } from 'node:fs';
+import { mkdirSync, existsSync, accessSync, constants } from 'node:fs';
 import { homedir } from 'node:os';
-import { createRequire } from 'node:module';
-
-const require = createRequire(import.meta.url);
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { ASSET_TYPES, TEMPLATES, instantiateItems } from './seed/templates.js';
 
@@ -31,15 +28,34 @@ export const env = (name, fallback) =>
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Running as the single-file binary there is no writable directory next to the
-// executable (it may live in /usr/bin), so fall back to the XDG data location.
-export const PACKAGED = (() => {
-  try { return require('node:sea').isSea(); } catch { return false; }
-})();
-const DATA_DIR = env('DATA_DIR') || (PACKAGED
-  ? join(process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'magi')
-  : join(__dirname, 'data'));
-mkdirSync(DATA_DIR, { recursive: true });
+// Where the database lives.
+//
+// A source checkout keeps it in ./data so a clone is self-contained. An installed
+// copy cannot: /usr/lib/magi is read-only, so it uses the XDG data directory. Decide
+// by actually trying to write rather than by guessing the runtime — the earlier
+// node:sea check was false under Electron and the installed app died on EACCES.
+const XDG_DIR = join(process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'magi');
+const SYSTEM_PREFIXES = ['/usr/', '/opt/', '/nix/store/'];
+
+function resolveDataDir() {
+  const explicit = env('DATA_DIR');
+  if (explicit) { mkdirSync(explicit, { recursive: true }); return explicit; }
+
+  // Never write beside the code when it is installed system-wide, even as root.
+  if (!SYSTEM_PREFIXES.some(p => __dirname.startsWith(p))) {
+    const local = join(__dirname, 'data');
+    try {
+      mkdirSync(local, { recursive: true });
+      accessSync(local, constants.W_OK);
+      return local;
+    } catch { /* not writable — fall through */ }
+  }
+  mkdirSync(XDG_DIR, { recursive: true });
+  return XDG_DIR;
+}
+
+const DATA_DIR = resolveDataDir();
+export const PACKAGED = DATA_DIR === XDG_DIR;
 
 // New installs get magi.db. An existing checklister.db is adopted as-is rather than
 // renamed, so upgrading never orphans someone's engagement data.

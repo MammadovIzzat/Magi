@@ -180,18 +180,20 @@ node cli.js reseed all          # reinstall shipped defaults (after pulling new 
 
 ## Asset types & content
 
-Roughly 580 checklist items ship across 8 types, split between the base checklist, the
-follow-up checklists triggers spawn, and the catalog entries selects unfold.
+Roughly 650 checklist items ship across 8 types, split between the base checklist, the
+follow-up checklists triggers spawn, and the catalog entries selects unfold. Coverage is
+cross-checked against the OWASP Web Application Security Testing Checklist, the OWASP
+MASVS for mobile, and the OWASP API Security Top 10 (2023).
 
 | Type | Covers |
 |------|--------|
-| **web** | recon/fingerprint, discovery, auth, injection, upload, access control, session, and protocol/cache/infra — with deep-dives for login, registration, password reset, MFA, OAuth/SSO, upload, injection, GraphQL, race conditions, cache poisoning and 403 bypass |
+| **web** | recon/fingerprint, discovery, auth, injection, upload, access control, session, protocol/cache/infra and cryptography — with deep-dives for login, registration, password reset, MFA, OAuth/SSO, upload, injection, GraphQL, race conditions, cache poisoning, 403 bypass, payment/checkout and non-production exposure |
 | **ip** | full/UDP scans, OS guess, per-service triggers (SSH, FTP, SMB, HTTP, RDP, DB, SNMP, LDAP, SMTP, NFS, Redis/Elastic, WinRM), exploitation and post-exploitation with a local-privesc deep-dive |
 | **subnet** | host discovery, sweeps, poisoning/relay, segmentation and egress testing, triage |
 | **domain** | DNS/OSINT, ASN, subdomain enum + takeover, email posture, public exposure & leaks |
 | **ad** | enumeration + BloodHound, AS-REP/Kerberoast/spray, escalation and lateral movement, domain compromise — with deep-dives for AD CS (ESC1-16), delegation, NTLM coercion/relay and ACL abuse |
-| **api** | surface mapping, OWASP API Top 10 (BOLA, BFLA, BOPLA, resource consumption, inventory), with JWT and GraphQL deep-dives |
-| **mobile** | static, dynamic and backend/business-logic phases (storage, deep links, WebView, pinning, IPC) |
+| **api** | surface mapping and the full OWASP API Security Top 10 (2023), including sensitive business-flow abuse (API6), with JWT and GraphQL deep-dives |
+| **mobile** | static, dynamic, backend and privacy phases mapped to OWASP MASVS — storage, crypto/key management, network config, IPC, WebViews, deep links, resilience (attestation, debugger/emulator detection) and privacy controls |
 | **container** | image & supply chain, runtime/escape, Kubernetes, cloud identity & blast radius |
 
 **Tech catalogs**: selecting a fingerprinted stack unfolds attacks specific to it — 30 entries

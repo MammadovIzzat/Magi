@@ -3,7 +3,7 @@
 *The pentester's familiar.*
 
 Engagement-based checklist, target tracker and evidence log. **Web app + CLI**, sharing one local SQLite DB.
-Add assets (Web, IP, Subnet, Domain, AD, API, Mobile, Container); each gets a tailored
+Add assets (Web, IP, Subnet, Domain, AD, API, Mobile, Container, Wireless, IoT, OT/ICS); each gets a tailored
 attack checklist. Answer trigger questions ("Is there a login?") and the app spawns the
 matching follow-up checklist (login/register/upload/injection attacks…). Record findings
 (raw HTTP requests, creds, vulns) and export a Markdown report.
@@ -180,7 +180,7 @@ node cli.js reseed all          # reinstall shipped defaults (after pulling new 
 
 ## Asset types & content
 
-Roughly 650 checklist items ship across 8 types, split between the base checklist, the
+Around 770 checklist items ship across 11 types, split between the base checklist, the
 follow-up checklists triggers spawn, and the catalog entries selects unfold. Coverage is
 cross-checked against the OWASP Web Application Security Testing Checklist, the OWASP
 MASVS for mobile, and the OWASP API Security Top 10 (2023).
@@ -188,13 +188,16 @@ MASVS for mobile, and the OWASP API Security Top 10 (2023).
 | Type | Covers |
 |------|--------|
 | **web** | recon/fingerprint, discovery, auth, injection, upload, access control, session, protocol/cache/infra and cryptography — with deep-dives for login, registration, password reset, MFA, OAuth/SSO, upload, injection, GraphQL, race conditions, cache poisoning, 403 bypass, payment/checkout and non-production exposure |
-| **ip** | full/UDP scans, OS guess, per-service triggers (SSH, FTP, SMB, HTTP, RDP, DB, SNMP, LDAP, SMTP, NFS, Redis/Elastic, WinRM), exploitation and post-exploitation with a local-privesc deep-dive |
+| **ip** | full/UDP scans, OS guess, per-service triggers (SSH, FTP, SMB, HTTP, RDP, DB, SNMP, LDAP, SMTP, NFS, Redis/Elastic, WinRM), exploitation and post-exploitation with dedicated Linux and Windows privesc deep-dives (sudo/SUID/capabilities/GTFOBins; token privileges, service misconfig, credential dumping, DnsAdmins, PtH) |
 | **subnet** | host discovery, sweeps, poisoning/relay, segmentation and egress testing, triage |
 | **domain** | DNS/OSINT, ASN, subdomain enum + takeover, email posture, public exposure & leaks |
 | **ad** | enumeration + BloodHound, AS-REP/Kerberoast/spray, escalation and lateral movement, domain compromise — with deep-dives for AD CS (ESC1-16), delegation, NTLM coercion/relay and ACL abuse |
 | **api** | surface mapping and the full OWASP API Security Top 10 (2023), including sensitive business-flow abuse (API6), with JWT and GraphQL deep-dives |
 | **mobile** | static, dynamic, backend and privacy phases mapped to OWASP MASVS — storage, crypto/key management, network config, IPC, WebViews, deep links, resilience (attestation, debugger/emulator detection) and privacy controls |
 | **container** | image & supply chain, runtime/escape, Kubernetes, cloud identity & blast radius |
+| **wireless** | survey, WPA/WPA2 handshake & PMKID cracking, WPA-Enterprise (802.1X) EAP attacks, WEP/WPS, evil-twin/rogue AP, post-association reach, defences |
+| **iot** | exposure & default creds, network/protocol (MQTT/CoAP/UPnP), RF & SDR (replay, BLE, Zigbee), firmware extraction & RE, hardware interfaces (UART/JTAG/flash) |
+| **ot** | safety-first workflow, passive recon, careful active enumeration of ICS protocols (Modbus/S7/DNP3/BACnet/EtherNet-IP), device & protocol analysis, Purdue-model architecture review |
 
 **Tech catalogs**: selecting a fingerprinted stack unfolds attacks specific to it — 30 entries
 covering Nginx/Apache/IIS/Tomcat, Laravel, Next.js, Angular, WordPress, Django, Flask, Rails,

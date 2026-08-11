@@ -64,6 +64,9 @@
 }
 
 * { box-sizing: border-box; }
+/* .topbar/.rail set display:flex, which beats the UA stylesheet's [hidden] rule —
+   without this the header and an empty rail stay visible on the login screen. */
+[hidden] { display: none !important; }
 html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 body {
   font-family: var(--sans); font-size: 13.5px; color: var(--text);

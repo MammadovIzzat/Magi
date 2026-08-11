@@ -10,6 +10,23 @@ matching follow-up checklist (login/register/upload/injection attacks…). Recor
 
 > For authorized security testing only.
 
+## Screenshots
+
+The working screen: targets on the left, checklist in the middle, evidence log on the right.
+Selecting a fingerprinted stack unfolds its own attack checklist inline; triggers spawn
+follow-up checklists underneath themselves.
+
+![Target checklist](docs/screenshots/target-checklist.png)
+
+| | |
+|---|---|
+| ![Engagements](docs/screenshots/engagements.png) | ![Engagement](docs/screenshots/engagement.png) |
+| Engagements — coverage and findings at a glance | One engagement — stats and its targets |
+| ![Template library](docs/screenshots/template-library.png) | ![Add target](docs/screenshots/add-target.png) |
+| Template library — edit what new targets are seeded from | Adding a target |
+| ![Login](docs/screenshots/login.png) | ![Delete engagement](docs/screenshots/delete-engagement.png) |
+| Sign-in | Destructive actions spell out what they take |
+
 ## Run it
 
 ```bash

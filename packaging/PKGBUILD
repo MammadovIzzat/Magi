@@ -1,0 +1,46 @@
+# Maintainer: MammadovIzzat <izzatmmmdv@gmail.com>
+pkgname=magi
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="The pentester's familiar — engagement checklists, target tracker and evidence log"
+arch=('any')
+url="https://github.com/MammadovIzzat/Magi"
+license=('MIT')
+# node:sqlite is built in from 22.5; everything else is compiled into the bundle.
+depends=('nodejs>=22.5.0')
+makedepends=('npm')
+options=('!debug' '!strip')
+
+# Build straight from the checkout this PKGBUILD lives in.
+_srcdir="$(realpath "${startdir}/..")"
+
+build() {
+  cd "$_srcdir"
+  # esbuild only; the app itself ships no runtime node_modules.
+  npm install --no-audit --no-fund --silent
+  node build/build.mjs
+}
+
+check() {
+  cd "$_srcdir"
+  # The bundle must boot on its own, with no node_modules and no public/ on disk.
+  local tmp
+  tmp="$(mktemp -d)"
+  cp dist/magi.cjs "$tmp/"
+  ( cd "$tmp"
+    MAGI_PORT=45998 MAGI_DB="$tmp/check.db" timeout 6 node magi.cjs >out.log 2>&1 || true
+    grep -q "MAGI" out.log || { echo "bundle failed to start:"; cat out.log; exit 1; } )
+  rm -rf "$tmp"
+}
+
+package() {
+  cd "$_srcdir"
+  install -Dm644 dist/magi.cjs      "$pkgdir/usr/lib/magi/magi.cjs"
+  install -Dm644 dist/magi-cli.cjs  "$pkgdir/usr/lib/magi/magi-cli.cjs"
+
+  sed "s/@VERSION@/$pkgver/" packaging/magi.sh > "$srcdir/magi.launcher"
+  install -Dm755 "$srcdir/magi.launcher" "$pkgdir/usr/bin/magi"
+
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 packaging/magi.desktop "$pkgdir/usr/share/applications/magi.desktop"
+}

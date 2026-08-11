@@ -80,6 +80,35 @@ shipped content for a type, discarding your template edits for it.
 Editing a template never touches assets you already created — it applies to newly-added assets.
 Both the web app and the CLI build new assets from these same editable templates.
 
+## Install on Arch Linux
+
+Builds a real pacman package — one bundled JS file with the UI, fonts and all checklist
+content compiled in. The only dependency is system Node (for `node:sqlite`).
+
+```bash
+cd packaging && makepkg -f
+sudo pacman -U magi-0.1.0-1-any.pkg.tar.zst
+```
+
+Then `magi` starts the web app and `magi <command>` runs the CLI:
+
+```bash
+magi                                  # http://127.0.0.1:4173
+magi projects
+magi add-asset 1 web https://app.acme.com
+magi export 1 > report.md
+```
+
+Installed data lives in `~/.local/share/magi/magi.db` (honours `XDG_DATA_HOME`).
+`makepkg` produces a ~530 KB package; nothing is fetched at runtime.
+
+### Single-file executable
+
+`node build/build.mjs --exe` attempts a standalone binary via Node's Single Executable
+Application support. On the current toolchain postject produces a segfaulting binary —
+a hello-world SEA fails the same way — so the build verifies the result and deletes it
+rather than shipping something broken. The Arch package above is the supported route.
+
 ## CLI
 
 ```bash

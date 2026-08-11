@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Magi
+GenericName=Pentest checklist
+Comment=Engagement checklists, target tracker and evidence log
+Exec=sh -c 'magi & sleep 2; xdg-open http://127.0.0.1:4173'
+Terminal=true
+Categories=Development;Security;
+Keywords=pentest;security;checklist;engagement;

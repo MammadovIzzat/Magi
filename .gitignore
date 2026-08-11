@@ -6,3 +6,16 @@ data/
 
 # Generated design snapshots and design-tool exports, not source.
 design-export/
+
+# Build output
+dist/
+build/assets.gen.js
+build/entry.server.js
+build/sea-config.json
+build/*.blob
+build/*.bundle.cjs
+
+# makepkg working files
+packaging/pkg/
+packaging/src/
+packaging/*.pkg.tar.zst

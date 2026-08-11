@@ -3,6 +3,10 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { mkdirSync, existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { ASSET_TYPES, TEMPLATES, instantiateItems } from './seed/templates.js';
 
@@ -20,14 +24,22 @@ export function verifyPassword(pw, stored) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, 'data');
-mkdirSync(DATA_DIR, { recursive: true });
-
 // Env vars moved to MAGI_* with the rename; the old CHECKLISTER_* names still work
 // so existing setups and scripts do not break.
 export const env = (name, fallback) =>
   process.env['MAGI_' + name] ?? process.env['CHECKLISTER_' + name] ?? fallback;
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Running as the single-file binary there is no writable directory next to the
+// executable (it may live in /usr/bin), so fall back to the XDG data location.
+export const PACKAGED = (() => {
+  try { return require('node:sea').isSea(); } catch { return false; }
+})();
+const DATA_DIR = env('DATA_DIR') || (PACKAGED
+  ? join(process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'magi')
+  : join(__dirname, 'data'));
+mkdirSync(DATA_DIR, { recursive: true });
 
 // New installs get magi.db. An existing checklister.db is adopted as-is rather than
 // renamed, so upgrading never orphans someone's engagement data.

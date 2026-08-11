@@ -22,6 +22,20 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json({ limit: '2mb' }));
+
+// A packaged build has no public/ on disk: build/build.mjs compiles those files into
+// the bundle and its entry point sets globalThis.__MAGI_ASSETS before this module runs.
+// Read it per request rather than at import time so module evaluation order cannot
+// matter, and always leave express.static mounted behind it for source checkouts.
+app.use((req, res, next) => {
+  const embedded = globalThis.__MAGI_ASSETS;
+  if (!embedded || req.method !== 'GET') return next();
+  const file = embedded[req.path === '/' ? '/index.html' : req.path];
+  if (!file) return next();
+  res.type(file.type);
+  res.setHeader('Cache-Control', req.path.startsWith('/fonts/') ? 'public, max-age=604800' : 'no-cache');
+  res.end(file.body);
+});
 app.use(express.static(join(__dirname, 'public')));
 
 // ---- helpers ----

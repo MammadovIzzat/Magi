@@ -93,6 +93,17 @@ magi import-templates web-template.json            # skip existing types
 magi import-templates web-template.json --replace  # overwrite  (or --rename to keep both)
 ```
 
+**Whole engagements** move too — the project's targets, checklist state, answers and
+findings. On a project's **Export** you choose a Markdown report or a portable project
+file; the engagements page has **Import**. A project file contains client-confidential
+data (credentials, raw requests), and importing always creates a *new* engagement,
+never overwriting one.
+
+```bash
+magi export-project 1 > acme-q3.json
+magi import-project acme-q3.json "Acme Q3 (copy)"    # name is optional
+```
+
 ## Desktop app
 
 Magi runs as a real application window — **no port is opened and no browser is involved**.

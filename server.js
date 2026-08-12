@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { db, hashPassword, verifyPassword, resetType, SESSION_TTL_DAYS, env, usingDefaultPassword } from './db.js';
 import { exportBundle, importBundle, validateBundle } from './templates-io.js';
+import { exportProject as exportProjectBundle, importProject, validateProjectBundle } from './projects-io.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -398,6 +399,34 @@ app.post('/api/projects', (req, res) => {
   const info = q(`INSERT INTO projects (name, client, scope, notes) VALUES (?,?,?,?)`)
     .run(name, client || null, scope || null, notes || null);
   res.status(201).json(q(`SELECT * FROM projects WHERE id=?`).get(info.lastInsertRowid));
+});
+
+// ---- move a whole engagement between installs (contains client-confidential data) ----
+app.get('/api/projects/:id/bundle', (req, res) => {
+  const bundle = exportProjectBundle(req.params.id, new Date().toISOString());
+  if (!bundle) return res.status(404).json({ error: 'not found' });
+  const safe = (bundle.project.name || 'project').replace(/[^a-z0-9._-]+/gi, '-').slice(0, 60);
+  res.setHeader('Content-Disposition', `attachment; filename="magi-project-${safe}.json"`);
+  res.type('application/json').send(JSON.stringify(bundle, null, 2));
+});
+app.post('/api/projects/import/preview', (req, res) => {
+  try {
+    const b = validateProjectBundle(req.body);
+    res.json({
+      version: b.version, exported: b.exported || null,
+      name: b.project.name, client: b.project.client || null,
+      assets: (b.assets || []).length,
+      items: (b.assets || []).reduce((n, a) => n + (a.items || []).length, 0),
+      findings: (b.assets || []).reduce((n, a) => n + (a.findings || []).length, 0),
+    });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post('/api/projects/import', (req, res) => {
+  const { bundle, name } = req.body || {};
+  try {
+    const r = importProject(bundle, name && String(name).trim() ? String(name).trim() : null);
+    res.status(201).json({ ok: true, ...r });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 app.get('/api/projects/:id', (req, res) => {

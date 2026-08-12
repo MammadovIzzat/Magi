@@ -163,7 +163,9 @@ async function renderHome() {
   const view = $('#view');
   const head = el('div', { className: 'page-head' },
     el('div', {}, el('div', { className: 'kicker' }, 'Workspace'), el('h1', {}, 'Engagements')),
-    el('button', { className: 'btn gold', onclick: newProject }, icon('plus', 12), 'New engagement'));
+    el('div', { style: 'display:flex;gap:7px' },
+      el('button', { className: 'btn', onclick: importProjectFile, title: 'Import an engagement from a file' }, icon('up', 12), 'Import'),
+      el('button', { className: 'btn gold', onclick: newProject }, icon('plus', 12), 'New engagement')));
 
   if (!projects.length) {
     return view.replaceChildren(el('div', { className: 'page' }, head,
@@ -270,7 +272,7 @@ async function renderProject(id) {
   setRail(railFor(p, null));
   setCrumbs([{ label: 'engagements', go: () => location.hash = '' }, { label: p.name }]);
   topActions(
-    el('button', { className: 'btn', onclick: () => exportProject(id) }, icon('down', 12), 'Export'),
+    el('button', { className: 'btn', onclick: () => exportProjectMenu(id, p.name) }, icon('down', 12), 'Export'),
     el('button', { className: 'btn danger', onclick: () => delProject(p, p.assets.length, () => location.hash = '') }, 'Delete'));
 
   const total = p.assets.reduce((a, x) => a + x.total, 0);
@@ -674,13 +676,73 @@ function addFinding(assetId) {
   });
 }
 
-async function exportProject(id) {
-  const md = await api(`/projects/${id}/export`);
-  const blob = new Blob([md], { type: 'text/markdown' });
+function download(body, filename, mime) {
+  const blob = new Blob([body], { type: mime });
   const url = URL.createObjectURL(blob);
-  const link = el('a', { href: url, download: `magi-engagement-${id}.md` });
+  const link = el('a', { href: url, download: filename });
   document.body.append(link); link.click(); link.remove(); URL.revokeObjectURL(url);
-  toast('Markdown exported');
+}
+
+// Two kinds of export: a human-readable report, and a re-importable project file.
+function exportProjectMenu(id, name) {
+  const safe = (name || 'project').replace(/[^a-z0-9._-]+/gi, '-').slice(0, 60);
+  modal({
+    kicker: 'Export', title: 'Export engagement',
+    note: 'A report is for reading and sharing findings. A project file round-trips back into Magi — it carries the whole engagement, including credentials and raw requests, so treat it as client-confidential.',
+    cta: 'Close', build: (b) => {
+      const row = (title, sub, fn) => {
+        const el2 = el('button', { type: 'button', className: 'type', style: 'width:100%;margin-top:10px', onclick: async () => { await fn(); $('#modalRoot').replaceChildren(); } },
+          el('span', { className: 'lbl' }, title), el('span', { className: 'hint' }, sub));
+        return el2;
+      };
+      b.append(
+        row('Markdown report', 'A readable summary of targets, checklist state and findings.',
+          async () => { download(await api(`/projects/${id}/export`), `magi-report-${safe}.md`, 'text/markdown'); toast('Report exported'); }),
+        row('Project file (.json)', 'The complete engagement, re-importable into another Magi. Confidential.',
+          async () => {
+            const text = await api(`/projects/${id}/bundle`);
+            download(typeof text === 'string' ? text : JSON.stringify(text, null, 2), `magi-project-${safe}.json`, 'application/json');
+            toast('Project file exported');
+          }));
+    },
+    onSubmit: async () => { },   // the two rows do the work; the CTA just closes
+  });
+}
+
+// Pick a project .json, preview it, then import as a brand-new engagement.
+function importProjectFile() {
+  const picker = el('input', { type: 'file', accept: '.json,application/json', style: 'display:none' });
+  picker.onchange = async () => {
+    const file = picker.files[0]; picker.remove();
+    if (!file) return;
+    let bundle;
+    try { bundle = JSON.parse(await file.text()); }
+    catch { return alert('That file is not valid JSON.'); }
+    let pv;
+    try { pv = await api('/projects/import/preview', { method: 'POST', body: bundle }); }
+    catch (e) { return alert('Not a Magi project file: ' + e.message); }
+
+    modal({
+      kicker: 'Import', title: 'Import engagement',
+      note: `${file.name}${pv.exported ? ' · exported ' + new Date(pv.exported).toLocaleDateString() : ''}`,
+      cta: 'Import', build: (b) => {
+        b.append(el('div', { className: 'tpl-panel', style: 'margin:14px 0' },
+          el('div', { className: 'tpl-row' },
+            el('span', { className: 'num' }, '◆'),
+            el('div', { className: 'body' },
+              el('div', { className: 't' }, pv.name + (pv.client ? '  ·  ' + pv.client : '')),
+              el('div', { className: 'd' }, `${pv.assets} target(s) · ${pv.items} checklist item(s) · ${pv.findings} finding(s)`)))));
+        field(b, 'Import as (leave blank to keep the name)', 'name', { value: '', ph: pv.name });
+        b.append(el('p', { className: 'modal-note' }, 'This always creates a new engagement — it never touches an existing one.'));
+      },
+      onSubmit: async (fd) => {
+        const r = await api('/projects/import', { method: 'POST', body: { bundle, name: (fd.get('name') || '').trim() || undefined } });
+        toast(`Imported ${r.assets} target(s)`);
+        location.hash = `/project/${r.projectId}`;
+      },
+    });
+  };
+  document.body.append(picker); picker.click();
 }
 
 // ---------- template library ----------

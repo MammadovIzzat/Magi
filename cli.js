@@ -3,6 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { db, resetType } from './db.js';
 import { exportBundle, importBundle } from './templates-io.js';
+import { exportProject as exportProjectBundle, importProject } from './projects-io.js';
 
 const q = (s) => db.prepare(s);
 const args = process.argv.slice(2);
@@ -19,6 +20,8 @@ function help() {
   magi show <assetId>                     show an asset checklist
   magi set <itemId> <status>             status: todo|done|na|flag|yes|no
   magi export <projectId>                print markdown report
+  magi export-project <projectId>        print a portable project file (JSON, re-importable)
+  magi import-project <file.json> [name] import a project file as a new engagement
   magi rm-project <projectId> [--yes]    delete a project + all its targets
   magi rm-asset <assetId> [--yes]        delete one target + its checklist
                                                 (both print what they would remove without --yes)
@@ -183,6 +186,27 @@ switch (cmd) {
       console.log(n === false ? `  ${t}: no shipped defaults, left alone` : `  ${t}: restored ${n} items`);
     }
     console.log('\nExisting assets keep their current checklists; this only affects newly-added assets.');
+    break;
+  }
+
+  case 'export-project': {
+    if (!args[1]) { console.error('usage: export-project <projectId>'); process.exit(1); }
+    const bundle = exportProjectBundle(args[1], new Date().toISOString());
+    if (!bundle) { console.error('project not found'); process.exit(1); }
+    console.log(JSON.stringify(bundle, null, 2));
+    break;
+  }
+
+  case 'import-project': {
+    const file = args[1];
+    if (!file) { console.error('usage: import-project <file.json> [new name]'); process.exit(1); }
+    let bundle;
+    try { bundle = JSON.parse(readFileSync(file, 'utf8')); }
+    catch (e) { console.error(`cannot read ${file}: ${e.message}`); process.exit(1); }
+    try {
+      const r = importProject(bundle, args[2] || null);
+      console.log(`Imported project #${r.projectId}: ${r.assets} target(s), ${r.items} item(s), ${r.findings} finding(s).`);
+    } catch (e) { console.error(`import failed: ${e.message}`); process.exit(1); }
     break;
   }
 

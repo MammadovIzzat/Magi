@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { db, hashPassword, verifyPassword, resetType, SESSION_TTL_DAYS, env, usingDefaultPassword } from './db.js';
+import { exportBundle, importBundle, validateBundle } from './templates-io.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -201,6 +202,17 @@ app.get('/api/asset-types', (req, res) => {
 });
 
 // ---- template editor (default checklists + asset types) ----
+// ---- share templates (portable import/export, no engagement data) ----
+// Registered before /api/templates/:type so "export" is not read as a type name.
+app.get('/api/templates/export', (req, res) => {
+  const types = req.query.types ? String(req.query.types).split(',').filter(Boolean) : null;
+  const bundle = exportBundle(types, new Date().toISOString());
+  if (!bundle.types.length) return res.status(404).json({ error: 'no matching templates' });
+  const name = types && types.length === 1 ? `magi-template-${types[0]}` : 'magi-templates';
+  res.setHeader('Content-Disposition', `attachment; filename="${name}.json"`);
+  res.type('application/json').send(JSON.stringify(bundle, null, 2));
+});
+
 app.get('/api/templates', (req, res) => {
   const types = q(`SELECT t.*, (SELECT COUNT(*) FROM tpl_items i WHERE i.type=t.type) AS item_count
                    FROM tpl_types t ORDER BY sort, type`).all();
@@ -274,6 +286,35 @@ app.patch('/api/tpl-group-items/:id', (req, res) => {
 app.delete('/api/tpl-group-items/:id', (req, res) => {
   q(`DELETE FROM tpl_group_items WHERE id=?`).run(req.params.id);
   res.json({ ok: true });
+});
+
+app.get('/api/templates/:type/export', (req, res) => {
+  const bundle = exportBundle([req.params.type], new Date().toISOString());
+  if (!bundle.types.length) return res.status(404).json({ error: 'type not found' });
+  res.setHeader('Content-Disposition', `attachment; filename="magi-template-${req.params.type}.json"`);
+  res.type('application/json').send(JSON.stringify(bundle, null, 2));
+});
+// Preview what an uploaded bundle would do without touching the DB.
+app.post('/api/templates/import/preview', (req, res) => {
+  try {
+    const b = validateBundle(req.body);
+    res.json({
+      version: b.version, exported: b.exported || null,
+      types: b.types.map(t => ({
+        type: t.type, label: t.label, icon: t.icon,
+        items: (t.items || []).length,
+        groups: (t.groups || []).length,
+        exists: !!q(`SELECT type FROM tpl_types WHERE type=?`).get(t.type),
+      })),
+    });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post('/api/templates/import', (req, res) => {
+  const { bundle, onConflict } = req.body || {};
+  try {
+    const results = importBundle(bundle, ['skip', 'replace', 'rename'].includes(onConflict) ? onConflict : 'skip');
+    res.json({ ok: true, results });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // restore this type's shipped defaults (template edits are discarded; assets untouched)

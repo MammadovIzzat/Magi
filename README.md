@@ -81,6 +81,18 @@ shipped content for a type, discarding your template edits for it.
 Editing a template never touches assets you already created — it applies to newly-added assets.
 Both the web app and the CLI build new assets from these same editable templates.
 
+**Sharing.** The **Import** and **Export all** buttons (and a per-type **⬇ Export**) move
+checklist templates between installs as portable JSON — an asset type with its items,
+follow-up checklists and catalogs, and *nothing* engagement-specific (no projects, targets,
+findings or credentials). On import, existing types can be skipped, overwritten, or kept
+alongside the incoming ones. Same thing from the CLI:
+
+```bash
+magi export-templates web > web-template.json      # one type (omit for all)
+magi import-templates web-template.json            # skip existing types
+magi import-templates web-template.json --replace  # overwrite  (or --rename to keep both)
+```
+
 ## Desktop app
 
 Magi runs as a real application window — **no port is opened and no browser is involved**.

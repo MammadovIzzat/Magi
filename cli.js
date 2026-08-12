@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Magi CLI — shares the same SQLite DB as the web app.
+import { readFileSync } from 'node:fs';
 import { db, resetType } from './db.js';
+import { exportBundle, importBundle } from './templates-io.js';
 
 const q = (s) => db.prepare(s);
 const args = process.argv.slice(2);
@@ -22,6 +24,12 @@ function help() {
                                                 (both print what they would remove without --yes)
   magi reseed [type|all]                 restore shipped default checklists
                                                 (discards template edits; assets untouched)
+
+  Share checklist templates between installs (no engagement data):
+  magi export-templates [type ...]       print a template bundle as JSON (all types if none given)
+  magi import-templates <file.json> [--replace | --rename]
+                                         import a bundle; existing types are skipped
+                                         by default, --replace overwrites, --rename keeps both
 
   Web app:  npm start   ->  http://localhost:4173\n`);
 }
@@ -175,6 +183,31 @@ switch (cmd) {
       console.log(n === false ? `  ${t}: no shipped defaults, left alone` : `  ${t}: restored ${n} items`);
     }
     console.log('\nExisting assets keep their current checklists; this only affects newly-added assets.');
+    break;
+  }
+
+  case 'export-templates': {
+    const types = args.slice(1);
+    const known = q(`SELECT type FROM tpl_types`).all().map(r => r.type);
+    for (const t of types) if (!known.includes(t)) { console.error(`unknown type "${t}"`); process.exit(1); }
+    const bundle = exportBundle(types.length ? types : null, new Date().toISOString());
+    if (!bundle.types.length) { console.error('no templates to export'); process.exit(1); }
+    console.log(JSON.stringify(bundle, null, 2));
+    break;
+  }
+
+  case 'import-templates': {
+    const file = args[1];
+    if (!file) { console.error('usage: import-templates <file.json> [--replace | --rename]'); process.exit(1); }
+    const onConflict = args.includes('--replace') ? 'replace' : args.includes('--rename') ? 'rename' : 'skip';
+    let bundle;
+    try { bundle = JSON.parse(readFileSync(file, 'utf8')); }
+    catch (e) { console.error(`cannot read ${file}: ${e.message}`); process.exit(1); }
+    try {
+      const results = importBundle(bundle, onConflict);
+      for (const r of results) console.log(`  ${r.type}: ${r.action}${r.as ? ' ' + r.as : ''}`);
+      console.log('\nNewly-added assets of these types use the imported checklist; existing assets are unchanged.');
+    } catch (e) { console.error(`import failed: ${e.message}`); process.exit(1); }
     break;
   }
 

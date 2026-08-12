@@ -21,6 +21,7 @@ const ICON = {
   lines: ['M2 4h12M2 8h8M2 12h5', 1.4],
   exit: ['M6 2H3v12h3M10 5l3 3-3 3M13 8H6', 1.4],
   down: ['M8 3v8M4.5 7.5L8 11l3.5-3.5', 1.5],
+  up: ['M8 13V5M4.5 8.5L8 5l3.5 3.5', 1.5],
   key: ['M10.5 2.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7zM8 8l-5.5 5.5V15h2l4-4', 1.3],
 };
 function icon(name, size = 13) {
@@ -688,7 +689,10 @@ async function renderEditor(type) {
   const active = type || types[0]?.type;
   setRail(null);
   setCrumbs([{ label: 'library' }]);
-  topActions(el('button', { className: 'btn line', onclick: newType }, icon('plus', 12), 'Asset type'));
+  topActions(
+    el('button', { className: 'btn', onclick: importTemplates, title: 'Import checklist templates from a file' }, icon('up', 12), 'Import'),
+    el('button', { className: 'btn', onclick: () => exportTemplates(), title: 'Export every asset type as one file' }, icon('down', 12), 'Export all'),
+    el('button', { className: 'btn line', onclick: newType }, icon('plus', 12), 'Asset type'));
 
   const side = el('div', { className: 'tpl-side' });
   for (const t of types) {
@@ -715,6 +719,7 @@ async function renderEditor(type) {
       el('div', { style: 'display:flex;gap:6px;margin-left:auto' },
         el('button', { className: 'btn sm', onclick: () => editType(t) }, 'Edit'),
         el('button', { className: 'btn sm', onclick: () => tplItemModal(t.type) }, '+ Item'),
+        el('button', { className: 'btn sm', onclick: () => exportTemplates(t.type), title: 'Export this asset type to a file' }, '⬇ Export'),
         el('button', { className: 'btn sm', onclick: () => resetTypeDefaults(t) }, '↺ Defaults'),
         el('button', { className: 'btn sm danger', onclick: () => delType(t) }, 'Delete'))));
 
@@ -810,6 +815,70 @@ async function resetTypeDefaults(t) {
     },
   });
 }
+// ---- share templates ----
+// Download the given type (or everything, when type is omitted) as a portable bundle.
+async function exportTemplates(type) {
+  const path = type ? `/templates/${type}/export` : '/templates/export';
+  const text = await api(path);                    // api() returns text for non-JSON content types
+  const body = typeof text === 'string' ? text : JSON.stringify(text, null, 2);
+  const blob = new Blob([body], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = el('a', { href: url, download: type ? `magi-template-${type}.json` : 'magi-templates.json' });
+  document.body.append(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+  toast(type ? `Exported ${type}` : 'Exported all templates');
+}
+
+// Pick a .json file, preview what it would do, let the user choose the conflict mode.
+function importTemplates() {
+  const picker = el('input', { type: 'file', accept: '.json,application/json', style: 'display:none' });
+  picker.onchange = async () => {
+    const file = picker.files[0]; picker.remove();
+    if (!file) return;
+    let bundle;
+    try { bundle = JSON.parse(await file.text()); }
+    catch { return alert('That file is not valid JSON.'); }
+    let preview;
+    try { preview = await api('/templates/import/preview', { method: 'POST', body: bundle }); }
+    catch (e) { return alert('Not a Magi template file: ' + e.message); }
+
+    const anyConflict = preview.types.some(t => t.exists);
+    modal({
+      kicker: 'Import', title: 'Import checklist templates',
+      note: `${file.name} · ${preview.types.length} asset type${preview.types.length === 1 ? '' : 's'}`
+        + (preview.exported ? ` · exported ${new Date(preview.exported).toLocaleDateString()}` : ''),
+      cta: 'Import', build: (b) => {
+        const list = el('div', { className: 'tpl-panel', style: 'margin:14px 0' });
+        for (const t of preview.types) {
+          list.append(el('div', { className: 'tpl-row' },
+            el('span', { className: 'num' }, t.icon || '◆'),
+            el('div', { className: 'body' },
+              el('div', { className: 't' }, t.label + '  '),
+              el('div', { className: 'd' }, `${t.items} items · ${t.groups} follow-up/catalog groups`)),
+            el('span', { className: t.exists ? 'tag trigger' : 'tag' }, t.exists ? 'already exists' : 'new')));
+        }
+        b.append(list);
+        if (anyConflict) {
+          field(b, 'Some of these already exist — what should happen?', 'onConflict', {
+            value: 'skip', options: [
+              { value: 'skip', label: 'Skip the ones that already exist' },
+              { value: 'rename', label: 'Import them under a new key (keep both)' },
+              { value: 'replace', label: 'Overwrite the existing ones' }],
+          });
+          b.append(el('p', { className: 'modal-note' }, 'Overwriting discards your current version of that asset type. Existing targets already created from it are never changed.'));
+        }
+      },
+      onSubmit: async (fd) => {
+        const onConflict = fd.get('onConflict') || 'skip';
+        const r = await api('/templates/import', { method: 'POST', body: { bundle, onConflict } });
+        const made = r.results.filter(x => x.action !== 'skipped (already exists)').length;
+        toast(made ? `Imported ${made} asset type${made === 1 ? '' : 's'}` : 'Nothing imported (all skipped)');
+        renderEditor();
+      },
+    });
+  };
+  document.body.append(picker); picker.click();
+}
+
 function groupModal(type) {
   modal({
     kicker: 'Library', title: 'New follow-up or catalog', cta: 'Create',

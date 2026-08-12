@@ -212,7 +212,7 @@ if (db.prepare(`SELECT COUNT(*) c FROM users`).get().c === 0) {
   const user = env('USER', 'admin');
   const pass = env('PASS', DEFAULT_PASS);
   db.prepare(`INSERT INTO users (username, pass_hash) VALUES (?,?)`).run(user, hashPassword(pass));
-  console.log(`\n  [auth] created login  ->  ${user} / ${pass}`);
+  console.error(`\n  [auth] created login  ->  ${user} / ${pass}`);
 }
 
 /** True while any account still uses the shipped default password. */
@@ -287,14 +287,14 @@ if (db.prepare(`SELECT COUNT(*) c FROM tpl_types`).get().c === 0) {
     insType.run(t.type, t.label, t.icon || null, t.hint || null, i);
     seedTypeItems(t.type);
   });
-  console.log(`  [templates] seeded default checklists for ${ASSET_TYPES.length} asset types`);
+  console.error(`  [templates] seeded default checklists for ${ASSET_TYPES.length} asset types`);
 }
 
 // Spawn groups / catalogs moved into the DB after the first release, so this runs
 // on upgrade too — otherwise existing DBs would have triggers that spawn nothing.
 if (db.prepare(`SELECT COUNT(*) c FROM tpl_groups`).get().c === 0) {
   for (const t of ASSET_TYPES) seedTypeGroups(t.type);
-  console.log(`  [templates] seeded follow-up checklists & catalogs`);
+  console.error(`  [templates] seeded follow-up checklists & catalogs`);
 }
 
 export default db;

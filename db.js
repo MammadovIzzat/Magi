@@ -127,6 +127,20 @@ CREATE TABLE IF NOT EXISTS findings (
 );
 CREATE INDEX IF NOT EXISTS idx_findings_asset ON findings(asset_id);
 
+-- Image attachments for a finding (screenshots). Stored as BLOBs in the DB rather than
+-- loose files: it keeps the "one local file" property, travels with a project export,
+-- and never leaves orphaned files behind on delete.
+CREATE TABLE IF NOT EXISTS attachments (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  finding_id  INTEGER NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+  filename    TEXT NOT NULL,
+  mime        TEXT NOT NULL,
+  size        INTEGER NOT NULL,
+  data        BLOB NOT NULL,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_finding ON attachments(finding_id);
+
 -- auth
 CREATE TABLE IF NOT EXISTS users (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,

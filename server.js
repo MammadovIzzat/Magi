@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { db, hashPassword, verifyPassword, resetType, SESSION_TTL_DAYS, env, usingDefaultPassword } from './db.js';
 import { exportBundle, importBundle, validateBundle } from './templates-io.js';
 import { exportProject as exportProjectBundle, importProject, validateProjectBundle } from './projects-io.js';
+import { projectReportHTML } from './report-html.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -23,7 +24,10 @@ app.use((req, res, next) => {
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
   next();
 });
-app.use(express.json({ limit: '2mb' }));
+// Generous limit: a project import carries its screenshots inline as base64, and this
+// is a local single-user tool, not a public endpoint. Raw image uploads have their own
+// tighter per-file cap below.
+app.use(express.json({ limit: '64mb' }));
 
 // A packaged build has no public/ on disk: build/build.mjs compiles those files into
 // the bundle and its entry point sets globalThis.__MAGI_ASSETS before this module runs.
@@ -470,7 +474,8 @@ app.get('/api/assets/:id', (req, res) => {
   if (!a) return res.status(404).json({ error: 'not found' });
   const items = q(`SELECT * FROM items WHERE asset_id=? ORDER BY sort, id`).all(req.params.id)
     .map(i => ({ ...i, payloads: JSON.parse(i.payloads || '[]'), options: JSON.parse(i.options || '[]') }));
-  const findings = q(`SELECT * FROM findings WHERE asset_id=? ORDER BY created_at DESC`).all(req.params.id);
+  const findings = q(`SELECT * FROM findings WHERE asset_id=? ORDER BY created_at DESC`).all(req.params.id)
+    .map(f => ({ ...f, attachments: q(`SELECT id, filename, mime, size FROM attachments WHERE finding_id=? ORDER BY id`).all(f.id) }));
   res.json({ ...assetSummary(a), items, findings });
 });
 
@@ -587,12 +592,64 @@ app.post('/api/assets/:id/findings', (req, res) => {
   res.status(201).json(q(`SELECT * FROM findings WHERE id=?`).get(info.lastInsertRowid));
 });
 
+app.patch('/api/findings/:id', (req, res) => {
+  const cur = q(`SELECT * FROM findings WHERE id=?`).get(req.params.id);
+  if (!cur) return res.status(404).json({ error: 'not found' });
+  const b = req.body || {};
+  if ('title' in b && !b.title) return res.status(400).json({ error: 'title cannot be empty' });
+  q(`UPDATE findings SET title=?, kind=?, severity=?, body=? WHERE id=?`).run(
+    b.title ?? cur.title, b.kind ?? cur.kind,
+    b.severity === undefined ? cur.severity : (b.severity || null),
+    b.body === undefined ? cur.body : (b.body || null), cur.id);
+  res.json(q(`SELECT * FROM findings WHERE id=?`).get(cur.id));
+});
+
 app.delete('/api/findings/:id', (req, res) => {
   q(`DELETE FROM findings WHERE id=?`).run(req.params.id);
   res.json({ ok: true });
 });
 
+// ---- image attachments on a finding ----
+const MAX_UPLOAD = 15 * 1024 * 1024;
+// Raw body, any content-type, so screenshots upload without base64 bloat or a multipart parser.
+const rawUpload = express.raw({ type: () => true, limit: MAX_UPLOAD });
+app.post('/api/findings/:id/attachments', rawUpload, (req, res) => {
+  if (!q(`SELECT id FROM findings WHERE id=?`).get(req.params.id)) return res.status(404).json({ error: 'finding not found' });
+  const mime = (req.headers['content-type'] || '').split(';')[0].trim();
+  if (!mime.startsWith('image/')) return res.status(400).json({ error: 'only image files are accepted' });
+  const buf = req.body;
+  if (!Buffer.isBuffer(buf) || !buf.length) return res.status(400).json({ error: 'empty upload' });
+  if (buf.length > MAX_UPLOAD) return res.status(413).json({ error: 'image too large (15 MB max)' });
+  // filename comes in a header so the raw body stays the file itself
+  const raw = req.headers['x-filename'] ? decodeURIComponent(req.headers['x-filename']) : 'image';
+  const filename = raw.replace(/[\\/\x00-\x1f]+/g, '_').slice(0, 120) || 'image';
+  const info = q(`INSERT INTO attachments (finding_id, filename, mime, size, data) VALUES (?,?,?,?,?)`)
+    .run(req.params.id, filename, mime, buf.length, buf);
+  res.status(201).json(q(`SELECT id, finding_id, filename, mime, size, created_at FROM attachments WHERE id=?`).get(info.lastInsertRowid));
+});
+app.get('/api/attachments/:id', (req, res) => {
+  const a = q(`SELECT filename, mime, data FROM attachments WHERE id=?`).get(req.params.id);
+  if (!a) return res.status(404).json({ error: 'not found' });
+  res.setHeader('Content-Type', a.mime);
+  res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+  res.setHeader('Content-Disposition', `inline; filename="${a.filename.replace(/"/g, '')}"`);
+  res.end(Buffer.from(a.data));
+});
+app.delete('/api/attachments/:id', (req, res) => {
+  q(`DELETE FROM attachments WHERE id=?`).run(req.params.id);
+  res.json({ ok: true });
+});
+
 // ---- export ----
+// Standalone HTML findings report with screenshots embedded as data: URIs.
+app.get('/api/projects/:id/report.html', (req, res) => {
+  const html = projectReportHTML(req.params.id);
+  if (html == null) return res.status(404).json({ error: 'not found' });
+  const safe = (q(`SELECT name FROM projects WHERE id=?`).get(req.params.id)?.name || 'report')
+    .replace(/[^a-z0-9._-]+/gi, '-').slice(0, 60);
+  res.setHeader('Content-Disposition', `attachment; filename="magi-findings-${safe}.html"`);
+  res.type('html').send(html);
+});
 app.get('/api/projects/:id/export', (req, res) => {
   const p = q(`SELECT * FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'not found' });

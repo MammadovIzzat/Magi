@@ -41,7 +41,12 @@ export function exportProject(id, nowISO) {
           options: parseArr(r.options), opt_key: r.opt_key, status: r.status, answer: r.answer,
           sort: r.sort, is_custom: r.is_custom, created_at: r.created_at,
         })),
-        findings: db.prepare(`SELECT title,kind,severity,body,created_at FROM findings WHERE asset_id=? ORDER BY id`).all(a.id),
+        findings: db.prepare(`SELECT id,title,kind,severity,body,created_at FROM findings WHERE asset_id=? ORDER BY id`).all(a.id)
+          .map(f => ({
+            title: f.title, kind: f.kind, severity: f.severity, body: f.body, created_at: f.created_at,
+            attachments: db.prepare(`SELECT filename,mime,size,data,created_at FROM attachments WHERE finding_id=? ORDER BY id`).all(f.id)
+              .map(at => ({ filename: at.filename, mime: at.mime, size: at.size, created_at: at.created_at, data: Buffer.from(at.data).toString('base64') })),
+          })),
       };
     }),
   };
@@ -75,6 +80,7 @@ export function importProject(bundle, nameOverride) {
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
     const setParent = db.prepare(`UPDATE items SET parent_id=? WHERE id=?`);
     const insFinding = db.prepare(`INSERT INTO findings (asset_id,title,kind,severity,body,created_at) VALUES (?,?,?,?,?,?)`);
+    const insAttach = db.prepare(`INSERT INTO attachments (finding_id,filename,mime,size,data,created_at) VALUES (?,?,?,?,?,?)`);
 
     let nAssets = 0, nItems = 0, nFindings = 0;
     for (const a of (bundle.assets || [])) {
@@ -105,9 +111,15 @@ export function importProject(bundle, nameOverride) {
 
       for (const f of (a.findings || [])) {
         if (!f.title) continue;
-        insFinding.run(aid, f.title, f.kind || 'note', f.severity ?? null, f.body ?? null,
-          f.created_at || new Date().toISOString());
+        const fid = insFinding.run(aid, f.title, f.kind || 'note', f.severity ?? null, f.body ?? null,
+          f.created_at || new Date().toISOString()).lastInsertRowid;
         nFindings++;
+        for (const at of (f.attachments || [])) {
+          if (!at.data || !at.mime) continue;
+          const buf = Buffer.from(at.data, 'base64');
+          insAttach.run(fid, at.filename || 'image', at.mime, at.size || buf.length, buf,
+            at.created_at || new Date().toISOString());
+        }
       }
     }
     db.prepare('COMMIT').run();

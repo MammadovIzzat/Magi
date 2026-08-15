@@ -22,6 +22,7 @@ const ICON = {
   exit: ['M6 2H3v12h3M10 5l3 3-3 3M13 8H6', 1.4],
   down: ['M8 3v8M4.5 7.5L8 11l3.5-3.5', 1.5],
   up: ['M8 13V5M4.5 8.5L8 5l3.5 3.5', 1.5],
+  image: ['M2.5 3.5h11v9h-11zM2.5 10l3-3 3 3M9 8.5l2-2 2.5 2.5', 1.3],
   key: ['M10.5 2.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7zM8 8l-5.5 5.5V15h2l4-4', 1.3],
 };
 function icon(name, size = 13) {
@@ -509,13 +510,24 @@ async function renderAsset(id) {
   if (!a.findings.length) dbody.append(el('div', { className: 'pmeta', style: 'padding:4px 2px;line-height:1.7' },
     'Nothing captured yet. Save raw requests, credentials and confirmed vulnerabilities here — the export is built from them.'));
   for (const f of a.findings) {
-    const del = el('button', { className: 'ibtn del', title: 'Delete', onclick: async () => { await api('/findings/' + f.id, { method: 'DELETE' }); renderAsset(id); } }, icon('x', 11));
+    const tools = el('div', { className: 'f-tools' },
+      el('button', { className: 'ibtn', title: 'Add image', onclick: () => uploadToFinding(f.id, id) }, icon('image', 11)),
+      el('button', { className: 'ibtn', title: 'Edit', onclick: () => editFinding(f, id) }, icon('edit', 11)),
+      el('button', { className: 'ibtn del', title: 'Delete', onclick: async () => { if (confirm('Delete this finding and its images?')) { await api('/findings/' + f.id, { method: 'DELETE' }); renderAsset(id); } } }, icon('x', 11)));
+    const shots = el('div', { className: 'f-shots' });
+    for (const im of (f.attachments || [])) {
+      const thumb = el('img', { src: '/api/attachments/' + im.id, title: im.filename, loading: 'lazy' });
+      thumb.onclick = () => lightbox('/api/attachments/' + im.id, im.filename);
+      const x = el('button', { className: 'shotx', title: 'Remove image', onclick: async (e) => { e.stopPropagation(); await api('/attachments/' + im.id, { method: 'DELETE' }); renderAsset(id); } }, '✕');
+      shots.append(el('span', { className: 'f-shot' }, thumb, x));
+    }
     dbody.append(el('div', { className: 'finding sev-' + (f.severity || 'info') },
       el('div', { className: 'f-top' },
         el('span', { className: 'f-sev' }, f.severity || 'note'),
-        el('span', { className: 'f-kind' }, f.kind)),
+        el('span', { className: 'f-kind' }, f.kind), tools),
       el('div', { className: 'f-title' }, f.title),
-      f.body ? el('pre', {}, f.body) : null, del));
+      f.body ? el('pre', {}, f.body) : null,
+      (f.attachments || []).length ? shots : null));
   }
   dock.append(dbody);
 
@@ -653,27 +665,65 @@ function itemModal(assetId, item = null, parentId = null) {
   });
 }
 
-function addFinding(assetId) {
+const FINDING_KINDS = [{ value: 'note', label: 'Note' }, { value: 'request', label: 'HTTP request' },
+{ value: 'credential', label: 'Credential' }, { value: 'vuln', label: 'Vulnerability' }];
+const SEVERITIES = [{ value: '', label: '—' }, { value: 'info', label: 'Info' }, { value: 'low', label: 'Low' },
+{ value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }, { value: 'critical', label: 'Critical' }];
+
+// Add (finding=null) or edit an existing finding.
+function findingModal(assetId, finding = null) {
+  const editing = !!finding;
   modal({
-    kicker: 'Evidence', title: 'Capture evidence', cta: 'Save',
-    note: 'Raw requests, credentials and confirmed issues. These become the findings section of the export.',
+    kicker: 'Evidence', title: editing ? 'Edit finding' : 'Capture evidence', cta: editing ? 'Save' : 'Save',
+    note: editing ? 'Update the note or vulnerability. Attached images stay put.'
+      : 'Raw requests, credentials and confirmed issues. These become the findings in the report.',
     build: (b) => {
-      field(b, 'Title', 'title', { ph: 'Login endpoint captured' });
-      field(b, 'Type', 'kind', {
-        options: [{ value: 'note', label: 'Note' }, { value: 'request', label: 'HTTP request' },
-        { value: 'credential', label: 'Credential' }, { value: 'vuln', label: 'Vulnerability' }]
-      });
-      field(b, 'Severity', 'severity', {
-        options: [{ value: '', label: '—' }, { value: 'info', label: 'Info' }, { value: 'low', label: 'Low' },
-        { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }, { value: 'critical', label: 'Critical' }]
-      });
-      field(b, 'Body', 'body', { textarea: true, ph: 'POST /login HTTP/1.1\nHost: ...' });
+      field(b, 'Title', 'title', { value: finding?.title || '', ph: 'Login endpoint captured' });
+      field(b, 'Type', 'kind', { value: finding?.kind || 'note', options: FINDING_KINDS });
+      field(b, 'Severity', 'severity', { value: finding?.severity || '', options: SEVERITIES });
+      field(b, 'Body', 'body', { value: finding?.body || '', textarea: true, ph: 'POST /login HTTP/1.1\nHost: ...' });
     },
     onSubmit: async (fd) => {
-      await api(`/assets/${assetId}/findings`, { method: 'POST', body: Object.fromEntries(fd) });
+      const body = Object.fromEntries(fd);
+      if (editing) await api('/findings/' + finding.id, { method: 'PATCH', body });
+      else await api(`/assets/${assetId}/findings`, { method: 'POST', body });
       renderAsset(assetId);
     },
   });
+}
+const addFinding = (assetId) => findingModal(assetId, null);
+const editFinding = (finding, assetId) => findingModal(assetId, finding);
+
+// Upload one or more images to a finding via the raw endpoint (no base64 bloat).
+function uploadToFinding(findingId, assetId) {
+  const picker = el('input', { type: 'file', accept: 'image/*', multiple: true, style: 'display:none' });
+  picker.onchange = async () => {
+    const files = [...picker.files]; picker.remove();
+    if (!files.length) return;
+    try {
+      for (const f of files) {
+        if (!f.type.startsWith('image/')) { toast(`${f.name}: not an image, skipped`); continue; }
+        const r = await fetch(`/api/findings/${findingId}/attachments`, {
+          method: 'POST',
+          headers: { 'content-type': f.type || 'application/octet-stream', 'x-filename': encodeURIComponent(f.name) },
+          body: await f.arrayBuffer(),
+        });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+      }
+      toast(files.length > 1 ? `Added ${files.length} images` : 'Image added');
+    } catch (e) { alert('Upload failed: ' + e.message); }
+    renderAsset(assetId);
+  };
+  document.body.append(picker); picker.click();
+}
+
+// Full-size image overlay.
+function lightbox(src, caption) {
+  const root = $('#modalRoot');
+  const close = () => root.replaceChildren();
+  root.replaceChildren(el('div', { className: 'lightbox', onclick: close },
+    el('img', { src }),
+    caption ? el('div', { className: 'lb-cap' }, caption) : null));
 }
 
 function download(body, filename, mime) {
@@ -696,6 +746,12 @@ function exportProjectMenu(id, name) {
         return el2;
       };
       b.append(
+        row('HTML findings report', 'A polished, self-contained page of your notes and vulnerabilities, screenshots embedded. Opens anywhere.',
+          async () => {
+            const html = await api(`/projects/${id}/report.html`);
+            download(typeof html === 'string' ? html : String(html), `magi-findings-${safe}.html`, 'text/html');
+            toast('HTML report exported');
+          }),
         row('Markdown report', 'A readable summary of targets, checklist state and findings.',
           async () => { download(await api(`/projects/${id}/export`), `magi-report-${safe}.md`, 'text/markdown'); toast('Report exported'); }),
         row('Project file (.json)', 'The complete engagement, re-importable into another Magi. Confidential.',

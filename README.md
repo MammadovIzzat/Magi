@@ -93,6 +93,12 @@ magi import-templates web-template.json            # skip existing types
 magi import-templates web-template.json --replace  # overwrite  (or --rename to keep both)
 ```
 
+**Findings** can be edited after the fact, and each one takes **image attachments** —
+screenshots, stored in the database so they travel with a project export and never
+leave loose files behind. A project's **Export** offers a self-contained **HTML findings
+report** with those screenshots embedded (as data URIs), alongside the Markdown report
+and the portable project file.
+
 **Whole engagements** move too — the project's targets, checklist state, answers and
 findings. On a project's **Export** you choose a Markdown report or a portable project
 file; the engagements page has **Import**. A project file contains client-confidential

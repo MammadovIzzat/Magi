@@ -18,7 +18,7 @@ const str = (v) => (v == null ? null : String(v));
 
 /** Build a portable object for one asset type, or null if it does not exist. */
 export function exportType(type) {
-  const t = db.prepare(`SELECT type,label,icon,hint FROM tpl_types WHERE type=?`).get(type);
+  const t = db.prepare(`SELECT type,label,icon,hint,grp FROM tpl_types WHERE type=?`).get(type);
   if (!t) return null;
   const items = db.prepare(`SELECT group_key,group_title,title,detail,payloads,kind,spawns,catalog,options,sort
                             FROM tpl_items WHERE type=? ORDER BY sort,id`).all(type)
@@ -29,7 +29,7 @@ export function exportType(type) {
       items: db.prepare(`SELECT title,detail,payloads,kind,spawns,sort FROM tpl_group_items WHERE group_id=? ORDER BY sort,id`).all(g.id)
         .map(it => ({ ...it, payloads: parseArr(it.payloads) })),
     }));
-  return { type: t.type, label: t.label, icon: t.icon, hint: t.hint, items, groups };
+  return { type: t.type, label: t.label, icon: t.icon, hint: t.hint, grp: t.grp, items, groups };
 }
 
 /** Build a bundle for the given type keys, or every type when `types` is omitted. */
@@ -57,7 +57,7 @@ export function validateBundle(b) {
   return b;
 }
 
-const insType = () => db.prepare(`INSERT INTO tpl_types (type,label,icon,hint,sort) VALUES (?,?,?,?,?)`);
+const insType = () => db.prepare(`INSERT INTO tpl_types (type,label,icon,hint,grp,sort) VALUES (?,?,?,?,?,?)`);
 const insItem = () => db.prepare(`INSERT INTO tpl_items
   (type,group_key,group_title,title,detail,payloads,kind,spawns,catalog,options,sort)
   VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
@@ -67,7 +67,7 @@ const insGroupItem = () => db.prepare(`INSERT INTO tpl_group_items (group_id,tit
 function writeType(t, targetKey) {
   const type = targetKey || t.type;
   const maxSort = db.prepare(`SELECT COALESCE(MAX(sort),0)+1 s FROM tpl_types`).get().s;
-  insType().run(type, t.label, t.icon || null, t.hint || null, maxSort);
+  insType().run(type, t.label, t.icon || null, t.hint || null, t.grp || null, maxSort);
   const ii = insItem();
   (t.items || []).forEach((r, i) => ii.run(type, r.group_key || 'custom', r.group_title || 'Custom',
     r.title || '(untitled)', r.detail || '', JSON.stringify(r.payloads || []), r.kind || 'check',

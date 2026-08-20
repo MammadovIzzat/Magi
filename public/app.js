@@ -75,6 +75,32 @@ const KIND_OPTS = [
 const daysSince = (iso) => Math.max(1, Math.round((Date.now() - new Date(iso.replace(' ', 'T') + 'Z')) / 864e5));
 
 let TYPES = [];
+// Engagement-group order/labels for the grouped add-target picker (mirrors ENGAGEMENT_GROUPS).
+const GROUP_ORDER = [
+  { key: 'internal', label: 'Internal' }, { key: 'external', label: 'External' },
+  { key: 'mobile', label: 'Mobile' }, { key: 'wireless', label: 'Wireless' },
+  { key: 'otiot', label: 'OT / IoT' }, { key: 'additional', label: 'Additional' },
+];
+
+// Fill {url}/{ip}/{domain}/… placeholders from the target's identifier, so payloads and
+// guidance show the real target. Best-effort and non-destructive: unknown tokens are left
+// as-is, and attacker-controlled ones like {callback} are never substituted.
+let SUBST_MAP = {};
+function substMap(a) {
+  const raw = (a?.label || '').trim();
+  const m = { target: raw, label: raw };
+  let host = raw, u = null;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) { try { u = new URL(raw); } catch {} }
+  else if (/^[a-z0-9.-]+\.[a-z]{2,}(:\d+)?(\/|$)/i.test(raw)) { try { u = new URL('https://' + raw); } catch {} }
+  if (u) { host = u.hostname; m.url = /:\/\//.test(raw) ? raw : 'https://' + raw; m.base = m.url; m.domain = host; }
+  const ipm = raw.match(/^(\d{1,3}(?:\.\d{1,3}){3})(\/\d{1,2})?$/);
+  if (ipm) { m.ip = ipm[1]; host = ipm[1]; m.target = raw; if (ipm[2]) m.cidr = raw; }
+  m.host = host;
+  for (const k of ['url', 'domain', 'ip', 'host', 'base', 'cidr', 'pkg', 'image', 'ssid', 'bssid', 'model', 'fw', 'system', 'proto', 'dc'])
+    if (!(k in m)) m[k] = raw;
+  return m;
+}
+const subst = (text) => String(text ?? '').replace(/\{([a-z_]+)\}/gi, (full, k) => (k in SUBST_MAP ? SUBST_MAP[k] : full));
 let CURRENT_USER = null;
 
 // ---------- modal ----------
@@ -326,21 +352,32 @@ function addAsset(projectId) {
   modal({
     kicker: 'Scope', title: 'Add a target', cta: 'Add target',
     build: (b) => {
-      const hidden = el('input', { type: 'hidden', name: 'type', value: TYPES[0]?.type || 'web' });
-      const grid = el('div', { className: 'typegrid' });
-      const label = el('input', { name: 'label', placeholder: TYPES[0]?.hint || 'value' });
-      for (const t of TYPES) {
-        const btn = el('button', { type: 'button', className: 'type' + (t.type === hidden.value ? ' sel' : '') },
-          el('span', { className: 'lbl' }, `${t.icon || ''} ${t.label}`),
-          el('span', { className: 'hint' }, t.hint || t.type));
-        btn.onclick = () => {
-          hidden.value = t.type; label.placeholder = t.hint || 'value';
-          for (const x of grid.children) x.classList.remove('sel');
-          btn.classList.add('sel'); label.focus();
-        };
-        grid.append(btn);
+      const first = TYPES.find(t => !t.soon) || TYPES[0];
+      const hidden = el('input', { type: 'hidden', name: 'type', value: first?.type || 'web' });
+      const label = el('input', { name: 'label', placeholder: first?.hint || 'value' });
+      const allBtns = [];
+      b.append(el('label', {}, 'Asset type'));
+      // one section per engagement group; a single project can hold targets from several
+      for (const g of GROUP_ORDER) {
+        const inGroup = TYPES.filter(t => (t.grp || 'additional') === g.key);
+        if (!inGroup.length) continue;
+        b.append(el('div', { className: 'typegrouphdr kicker' }, g.label));
+        const grid = el('div', { className: 'typegrid' });
+        for (const t of inGroup) {
+          const btn = el('button', { type: 'button', className: 'type' + (t.type === hidden.value ? ' sel' : '') + (t.soon ? ' soon' : '') },
+            el('span', { className: 'lbl' }, `${t.icon || ''} ${t.label}`),
+            el('span', { className: 'hint' }, t.soon ? 'coming soon' : (t.hint || t.type)));
+          if (t.soon) { btn.disabled = true; }
+          else btn.onclick = () => {
+            hidden.value = t.type; label.placeholder = t.hint || 'value';
+            for (const x of allBtns) x.classList.remove('sel');
+            btn.classList.add('sel'); label.focus();
+          };
+          allBtns.push(btn); grid.append(btn);
+        }
+        b.append(grid);
       }
-      b.append(el('label', {}, 'Asset type'), grid, hidden, el('label', {}, 'Identifier'), label);
+      b.append(hidden, el('label', {}, 'Identifier'), label);
     },
     onSubmit: async (fd) => {
       const body = { type: fd.get('type'), label: fd.get('label') };
@@ -388,6 +425,7 @@ const MATCH = {
 async function renderAsset(id) {
   id = String(id);
   const a = await api('/assets/' + id);
+  SUBST_MAP = substMap(a);
   const t = TYPES.find(x => x.type === a.type) || {};
   if (curAssetId !== id) { curAssetId = id; openGroups.clear(); openPayloads.clear(); FILTER = 'all'; }
 
@@ -561,7 +599,7 @@ function renderItem(it, assetId, num, depth, childrenBy = {}) {
     onclick: () => { pOpen ? openPayloads.delete(it.id) : openPayloads.add(it.id); renderAsset(assetId); },
   }, `${pOpen ? '▾' : '▸'} ${pcount} payload${pcount > 1 ? 's' : ''}`));
   body.append(row);
-  if (it.detail) body.append(el('p', { className: 'detail' }, it.detail));
+  if (it.detail) body.append(el('p', { className: 'detail' }, subst(it.detail)));
 
   if (isSelect) {
     const chosen = new Set(kids.map(k => k.opt_key));
@@ -579,8 +617,9 @@ function renderItem(it, assetId, num, depth, childrenBy = {}) {
   if (pcount && pOpen) {
     const box = el('div', { className: 'payloads' });
     for (const p of it.payloads) {
-      const c = el('code', { title: 'click to copy' }, p);
-      c.onclick = () => { navigator.clipboard?.writeText(p); toast('Copied'); };
+      const val = subst(p);
+      const c = el('code', { title: 'click to copy' }, val);
+      c.onclick = () => { navigator.clipboard?.writeText(val); toast('Copied'); };
       box.append(c);
     }
     body.append(box);
@@ -813,13 +852,21 @@ async function renderEditor(type) {
     el('button', { className: 'btn line', onclick: newType }, icon('plus', 12), 'Asset type'));
 
   const side = el('div', { className: 'tpl-side' });
-  for (const t of types) {
-    side.append(el('button', {
-      className: 'tpl-type' + (t.type === active ? ' on' : ''),
-      onclick: () => location.hash = `/editor/${t.type}`,
-    }, el('span', { className: 'tt-label' }, `${t.icon || ''} ${t.label}`),
-      el('span', { className: 'tt-count' }, String(t.item_count))));
+  const typeBtn = (t) => el('button', {
+    className: 'tpl-type' + (t.type === active ? ' on' : ''),
+    onclick: () => location.hash = `/editor/${t.type}`,
+  }, el('span', { className: 'tt-label' }, `${t.icon || ''} ${t.label}`),
+    el('span', { className: 'tt-count' }, String(t.item_count)));
+  for (const g of GROUP_ORDER) {
+    const inG = types.filter(t => (t.grp || 'additional') === g.key);
+    if (!inG.length) continue;
+    side.append(el('div', { className: 'kicker', style: 'padding:10px 12px 4px' }, g.label));
+    for (const t of inG) side.append(typeBtn(t));
   }
+  // any types with an unknown group still show up
+  const shown = new Set(GROUP_ORDER.map(g => g.key));
+  const orphans = types.filter(t => !shown.has(t.grp || 'additional'));
+  for (const t of orphans) side.append(typeBtn(t));
   side.append(el('button', { className: 'dashbtn', style: 'margin-top:8px', onclick: newType }, '+ New asset type'));
 
   const panel = el('div', { className: 'tpl-panel' });
@@ -896,6 +943,7 @@ function newType() {
     build: (b) => {
       field(b, 'Key (lowercase, no spaces)', 'type', { ph: 'thickclient' });
       field(b, 'Label', 'label', { ph: 'Thick Client' });
+      field(b, 'Engagement group', 'grp', { value: 'additional', options: GROUP_ORDER.map(g => ({ value: g.key, label: g.label })) });
       field(b, 'Icon (emoji)', 'icon', { ph: '▣' });
       field(b, 'Example hint', 'hint', { ph: 'app.exe' });
     },

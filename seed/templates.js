@@ -8,18 +8,28 @@
 //
 // {target} / {url} / {ip} / {domain} are placeholders you can substitute in the UI.
 
+export const ENGAGEMENT_GROUPS = [
+  { key: 'internal',   label: 'Internal' },
+  { key: 'external',   label: 'External' },
+  { key: 'mobile',     label: 'Mobile' },
+  { key: 'wireless',   label: 'Wireless' },
+  { key: 'otiot',      label: 'OT / IoT' },
+  { key: 'additional', label: 'Additional' },
+];
+
+// Leaf asset types, grouped into engagement types for the add-target picker. A single
+// project can hold targets from several groups at once. `soon` marks a not-yet-ready type.
 export const ASSET_TYPES = [
-  { type: 'web',       label: 'Web App',            icon: '🌐', hint: 'https://app.example.com' },
-  { type: 'ip',        label: 'IP / Host',          icon: '🖥️', hint: '10.0.0.5' },
-  { type: 'subnet',    label: 'Subnet',             icon: '🕸️', hint: '10.0.0.0/24' },
-  { type: 'domain',    label: 'Domain',             icon: '🔗', hint: 'example.com' },
-  { type: 'ad',        label: 'AD Domain',          icon: '🏢', hint: 'CORP.LOCAL' },
-  { type: 'api',       label: 'API',                icon: '⚙️', hint: 'https://api.example.com' },
-  { type: 'mobile',    label: 'Mobile App',         icon: '📱', hint: 'com.example.app' },
-  { type: 'container', label: 'Container / Cloud',  icon: '📦', hint: 'registry/image:tag' },
-  { type: 'wireless',  label: 'Wireless / Wi-Fi',   icon: '📡', hint: 'SSID or BSSID' },
-  { type: 'iot',       label: 'IoT Device',         icon: '🔌', hint: 'model / firmware' },
-  { type: 'ot',        label: 'OT / ICS',           icon: '🏭', hint: 'PLC / SCADA host' },
+  { type: 'ip',        group: 'internal',   label: 'Host / Network',   icon: '\u{1F5A5}️', hint: '10.0.0.5 or 10.0.0.0/24' },
+  { type: 'ad',        group: 'internal',   label: 'AD Domain',        icon: '\u{1F3E2}', hint: 'CORP.LOCAL' },
+  { type: 'web',       group: 'external',   label: 'Web App',          icon: '\u{1F310}', hint: 'https://app.example.com' },
+  { type: 'api',       group: 'external',   label: 'API',              icon: '\u{2699}️', hint: 'https://api.example.com' },
+  { type: 'domain',    group: 'external',   label: 'Domain',           icon: '\u{1F517}', hint: 'example.com' },
+  { type: 'mobile',    group: 'mobile',     label: 'Mobile App',       icon: '\u{1F4F1}', hint: 'com.example.app' },
+  { type: 'wireless',  group: 'wireless',   label: 'Wi-Fi',            icon: '\u{1F4E1}', hint: 'SSID or BSSID', soon: true },
+  { type: 'iot',       group: 'otiot',      label: 'IoT Device',       icon: '\u{1F50C}', hint: 'model / firmware' },
+  { type: 'ot',        group: 'otiot',      label: 'OT / ICS',         icon: '\u{1F3ED}', hint: 'PLC / SCADA host' },
+  { type: 'container', group: 'additional', label: 'Container / Cloud', icon: '\u{1F4E6}', hint: 'registry/image:tag' },
 ];
 
 // Selectable tech/CMS/server options for the web "stack" node.
@@ -1383,7 +1393,27 @@ const ot = {
   spawnGroups: {}
 };
 
-export const TEMPLATES = { web, ip, subnet, domain, ad, api, mobile, container, wireless, iot, ot };
+// "Host / Network" folds the old standalone Subnet coverage into the IP/Host type, so
+// one target covers a single host or a whole range. Subnet is no longer its own type.
+subnet.groups.forEach((g, i) => {
+  g.title = `${5 + i}. ${g.title.replace(/^\d+\.\s*/, '')}`;
+  ip.groups.push(g);
+});
+
+// Mobile apps share large parts of web/API testing. Reuse those checklists verbatim and
+// let mobile triggers spawn them, rather than duplicating the content.
+mobile.spawnGroups = {
+  oauth: web.spawnGroups.oauth,
+  mfa: web.spawnGroups.mfa,
+  jwt: api.spawnGroups.jwt,
+};
+mobile.groups.find(g => g.key === 'backend').items.push(
+  { kind: 'trigger', title: 'OAuth / SSO / social login used?', detail: 'The mobile flow has the same redirect_uri, state and token-validation pitfalls as the web.', spawns: 'oauth', payloads: [] },
+  { kind: 'trigger', title: 'OTP / 2FA in the app?', detail: 'Same weaknesses as web: skip the step, brute-force the code, reuse it, tamper the response.', spawns: 'mfa', payloads: [] },
+  { kind: 'trigger', title: 'Backend uses JWTs?', detail: 'Decode and attack the token exactly as on the web/API side (alg confusion, weak secret, no expiry).', spawns: 'jwt', payloads: [] },
+);
+
+export const TEMPLATES = { web, ip, domain, ad, api, mobile, container, wireless, iot, ot };
 
 export function instantiateItems(assetType) {
   const t = TEMPLATES[assetType];

@@ -160,6 +160,8 @@ CREATE TABLE IF NOT EXISTS tpl_types (
   label  TEXT NOT NULL,
   icon   TEXT,
   hint   TEXT,
+  grp    TEXT,                        -- engagement group: internal|external|mobile|wireless|otiot|additional
+  soon   INTEGER NOT NULL DEFAULT 0,  -- 1 = shown in the picker but not yet selectable
   sort   INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS tpl_items (
@@ -215,6 +217,11 @@ addCol('options', `TEXT NOT NULL DEFAULT '[]'`);
 addCol('opt_key', 'TEXT');
 db.exec(`CREATE INDEX IF NOT EXISTS idx_items_parent ON items(parent_id);`);
 
+// tpl_types gained engagement-group columns after the first releases.
+const tplCols = new Set(db.prepare(`PRAGMA table_info(tpl_types)`).all().map(r => r.name));
+if (!tplCols.has('grp'))  db.exec(`ALTER TABLE tpl_types ADD COLUMN grp TEXT`);
+if (!tplCols.has('soon')) db.exec(`ALTER TABLE tpl_types ADD COLUMN soon INTEGER NOT NULL DEFAULT 0`);
+
 // --- seed the first user ---
 // admin/admin by default. A generated password is lost the moment you launch from a
 // desktop icon and never see a console, which locks you out of your own data. The
@@ -241,7 +248,7 @@ export const SESSION_TTL_DAYS = Number(env('SESSION_DAYS', 30));
 db.exec(`DELETE FROM sessions WHERE created_at < datetime('now', '-${SESSION_TTL_DAYS} days')`);
 
 // --- seeding the editable templates from seed/templates.js ---
-const insType = db.prepare(`INSERT INTO tpl_types (type,label,icon,hint,sort) VALUES (?,?,?,?,?)`);
+const insType = db.prepare(`INSERT INTO tpl_types (type,label,icon,hint,grp,soon,sort) VALUES (?,?,?,?,?,?,?)`);
 const insTplItem = db.prepare(`INSERT INTO tpl_items
   (type,group_key,group_title,title,detail,payloads,kind,spawns,catalog,options,sort)
   VALUES (@type,@group_key,@group_title,@title,@detail,@payloads,@kind,@spawns,@catalog,@options,@sort)`);
@@ -298,7 +305,7 @@ export function resetType(type) {
 // first run: install the shipped asset types and their checklists
 if (db.prepare(`SELECT COUNT(*) c FROM tpl_types`).get().c === 0) {
   ASSET_TYPES.forEach((t, i) => {
-    insType.run(t.type, t.label, t.icon || null, t.hint || null, i);
+    insType.run(t.type, t.label, t.icon || null, t.hint || null, t.group || null, t.soon ? 1 : 0, i);
     seedTypeItems(t.type);
   });
   console.error(`  [templates] seeded default checklists for ${ASSET_TYPES.length} asset types`);
@@ -309,6 +316,33 @@ if (db.prepare(`SELECT COUNT(*) c FROM tpl_types`).get().c === 0) {
 if (db.prepare(`SELECT COUNT(*) c FROM tpl_groups`).get().c === 0) {
   for (const t of ASSET_TYPES) seedTypeGroups(t.type);
   console.error(`  [templates] seeded follow-up checklists & catalogs`);
+}
+
+// --- upgrade path for databases seeded before engagement groups existed ---
+// Fresh installs already have the merged, grouped structure above; this only touches
+// older databases so the grouped picker works without forcing a reseed.
+{
+  const GRP = { ip: 'internal', ad: 'internal', web: 'external', api: 'external', domain: 'external',
+    mobile: 'mobile', wireless: 'wireless', iot: 'otiot', ot: 'otiot', container: 'additional' };
+
+  // Fold the old standalone Subnet type into Host/Network (ip). Existing subnet assets
+  // keep their already-copied checklists; only the template type is merged away.
+  const hasSubnet = db.prepare(`SELECT 1 FROM tpl_types WHERE type='subnet'`).get();
+  const hasIp = db.prepare(`SELECT 1 FROM tpl_types WHERE type='ip'`).get();
+  if (hasSubnet && hasIp) {
+    const bump = db.prepare(`SELECT COALESCE(MAX(sort),0) s FROM tpl_items WHERE type='ip'`).get().s + 1000;
+    db.prepare(`UPDATE tpl_items SET type='ip', sort=sort+? WHERE type='subnet'`).run(bump);
+    db.prepare(`DELETE FROM tpl_groups WHERE type='subnet'`).run();   // subnet had none; safe
+    db.prepare(`DELETE FROM tpl_types WHERE type='subnet'`).run();
+    db.prepare(`UPDATE tpl_types SET label='Host / Network', hint='10.0.0.5 or 10.0.0.0/24'
+                WHERE type='ip' AND label='IP / Host'`).run();
+    console.error(`  [templates] merged Subnet into Host / Network`);
+  }
+
+  // Backfill engagement group for shipped types that don't have one yet (never overwrites edits).
+  const setGrp = db.prepare(`UPDATE tpl_types SET grp=? WHERE type=? AND (grp IS NULL OR grp='')`);
+  for (const [t, g] of Object.entries(GRP)) setGrp.run(g, t);
+  db.prepare(`UPDATE tpl_types SET soon=1 WHERE type='wireless' AND soon=0`).run();
 }
 
 export default db;

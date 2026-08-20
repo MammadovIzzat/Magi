@@ -201,7 +201,7 @@ function createAssetWithItems(projectId, type, label, metadata = {}) {
 app.get('/api/asset-types', (req, res) => {
   const types = q(`SELECT * FROM tpl_types ORDER BY sort, type`).all();
   res.json(types.map(t => ({
-    type: t.type, label: t.label, icon: t.icon, hint: t.hint,
+    type: t.type, label: t.label, icon: t.icon, hint: t.hint, grp: t.grp, soon: !!t.soon,
     groups: [...new Set(tplRows(t.type).map(i => i.group_title))],
   })));
 });
@@ -330,20 +330,20 @@ app.post('/api/templates/:type/reset', (req, res) => {
   res.json({ ok: true, items: n });
 });
 app.post('/api/templates', (req, res) => {
-  const { type, label, icon, hint } = req.body || {};
+  const { type, label, icon, hint, grp } = req.body || {};
   if (!type || !/^[a-z0-9_]+$/.test(type)) return res.status(400).json({ error: 'type must be lowercase letters/numbers/underscore' });
   if (!label) return res.status(400).json({ error: 'label required' });
   if (q(`SELECT type FROM tpl_types WHERE type=?`).get(type)) return res.status(409).json({ error: 'type already exists' });
   const sort = q(`SELECT COALESCE(MAX(sort),0)+1 s FROM tpl_types`).get().s;
-  q(`INSERT INTO tpl_types (type,label,icon,hint,sort) VALUES (?,?,?,?,?)`).run(type, label, icon || null, hint || null, sort);
+  q(`INSERT INTO tpl_types (type,label,icon,hint,grp,sort) VALUES (?,?,?,?,?,?)`).run(type, label, icon || null, hint || null, grp || null, sort);
   res.status(201).json(q(`SELECT * FROM tpl_types WHERE type=?`).get(type));
 });
 app.patch('/api/templates/:type', (req, res) => {
   const t = q(`SELECT * FROM tpl_types WHERE type=?`).get(req.params.type);
   if (!t) return res.status(404).json({ error: 'not found' });
   const b = req.body || {};
-  q(`UPDATE tpl_types SET label=?, icon=?, hint=? WHERE type=?`)
-    .run(b.label ?? t.label, b.icon ?? t.icon, b.hint ?? t.hint, t.type);
+  q(`UPDATE tpl_types SET label=?, icon=?, hint=?, grp=? WHERE type=?`)
+    .run(b.label ?? t.label, b.icon ?? t.icon, b.hint ?? t.hint, b.grp ?? t.grp, t.type);
   res.json(q(`SELECT * FROM tpl_types WHERE type=?`).get(t.type));
 });
 app.delete('/api/templates/:type', (req, res) => {
@@ -463,7 +463,9 @@ app.post('/api/projects/:id/assets', (req, res) => {
   const { type, label, metadata } = req.body || {};
   // validate against the editable types, not the seed file — otherwise asset types
   // created in the template editor can be listed but never used
-  if (!q(`SELECT type FROM tpl_types WHERE type=?`).get(type || '')) return res.status(400).json({ error: 'unknown asset type' });
+  const t = q(`SELECT type, soon FROM tpl_types WHERE type=?`).get(type || '');
+  if (!t) return res.status(400).json({ error: 'unknown asset type' });
+  if (t.soon) return res.status(400).json({ error: 'that asset type is coming soon and not selectable yet' });
   if (!label) return res.status(400).json({ error: 'label required' });
   const id = createAssetWithItems(req.params.id, type, label, metadata || {});
   res.status(201).json(assetSummary(q(`SELECT * FROM assets WHERE id=?`).get(id)));

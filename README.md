@@ -3,7 +3,7 @@
 *The pentester's familiar.*
 
 Engagement-based checklist, target tracker and evidence log. **Web app + CLI**, sharing one local SQLite DB.
-Add assets (Web, IP, Subnet, Domain, AD, API, Mobile, Container, Wireless, IoT, OT/ICS); each gets a tailored
+Add targets grouped by engagement type — Internal, External, Mobile, Wireless, OT/IoT, Additional — each a tailored
 attack checklist. Answer trigger questions ("Is there a login?") and the app spawns the
 matching follow-up checklist (login/register/upload/injection attacks…). Record findings
 (raw HTTP requests, creds, vulns) and export a Markdown report.
@@ -80,6 +80,9 @@ shipped content for a type, discarding your template edits for it.
 
 Editing a template never touches assets you already created — it applies to newly-added assets.
 Both the web app and the CLI build new assets from these same editable templates.
+
+Placeholders like `{url}`, `{ip}`, `{domain}` and `{host}` in payloads and guidance are filled
+in from a target's identifier when you open its checklist, so commands show the real target.
 
 **Sharing.** The **Import** and **Export all** buttons (and a per-type **⬇ Export**) move
 checklist templates between installs as portable JSON — an asset type with its items,
@@ -209,7 +212,7 @@ node cli.js reseed all          # reinstall shipped defaults (after pulling new 
 
 ## Asset types & content
 
-Around 780 checklist items ship across 11 types, split between the base checklist, the
+Around 800 checklist items ship across 10 types, grouped into engagement types (Internal / External / Mobile / Wireless / OT-IoT / Additional) in the add-target picker, split between the base checklist, the
 follow-up checklists triggers spawn, and the catalog entries selects unfold. Coverage is
 cross-checked against the OWASP Web Application Security Testing Checklist, the OWASP
 MASVS for mobile, the OWASP API Security Top 10 (2023), and the PortSwigger Web Security
@@ -219,11 +222,10 @@ Academy topic list (including a dedicated LLM/AI attack checklist).
 |------|--------|
 | **web** | recon/fingerprint, discovery, auth, injection, upload, access control, session, protocol/cache/infra and cryptography — with deep-dives for login, registration, password reset, MFA, OAuth/SSO, upload, injection, GraphQL, LLM/AI assistants, race conditions, cache poisoning, 403 bypass, payment/checkout and non-production exposure |
 | **ip** | full/UDP scans, OS guess, per-service triggers (SSH, FTP, SMB, HTTP, RDP, DB, SNMP, LDAP, SMTP, NFS, Redis/Elastic, WinRM), exploitation and post-exploitation with dedicated Linux and Windows privesc deep-dives (sudo/SUID/capabilities/GTFOBins; token privileges, service misconfig, credential dumping, DnsAdmins, PtH) |
-| **subnet** | host discovery, sweeps, poisoning/relay, segmentation and egress testing, triage |
 | **domain** | DNS/OSINT, ASN, subdomain enum + takeover, email posture, public exposure & leaks |
 | **ad** | enumeration + BloodHound, AS-REP/Kerberoast/spray, escalation and lateral movement, domain compromise — with deep-dives for AD CS (ESC1-16), delegation, NTLM coercion/relay and ACL abuse |
 | **api** | surface mapping and the full OWASP API Security Top 10 (2023), including sensitive business-flow abuse (API6), with JWT and GraphQL deep-dives |
-| **mobile** | static, dynamic, backend and privacy phases mapped to OWASP MASVS — storage, crypto/key management, network config, IPC, WebViews, deep links, resilience (attestation, debugger/emulator detection) and privacy controls |
+| **mobile** | static, dynamic, backend and privacy phases mapped to OWASP MASVS (reuses the web/API OAuth, OTP and JWT checklists) — storage, crypto/key management, network config, IPC, WebViews, deep links, resilience (attestation, debugger/emulator detection) and privacy controls |
 | **container** | image & supply chain, runtime/escape, Kubernetes, cloud identity & blast radius |
 | **wireless** | survey, WPA/WPA2 handshake & PMKID cracking, WPA-Enterprise (802.1X) EAP attacks, WEP/WPS, evil-twin/rogue AP, post-association reach, defences |
 | **iot** | exposure & default creds, network/protocol (MQTT/CoAP/UPnP), RF & SDR (replay, BLE, Zigbee), firmware extraction & RE, hardware interfaces (UART/JTAG/flash) |

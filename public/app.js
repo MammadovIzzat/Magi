@@ -170,9 +170,10 @@ async function route() {
     if (h === '/editor') return renderEditor();
     const gm = h.match(/^\/group\/(\d+)/); if (gm) return renderGroup(gm[1]);
     const em = h.match(/^\/editor\/([a-z0-9_]+)/); if (em) return renderEditor(em[1]);
-    const [, kind, id] = h.match(/^\/(project|asset)\/(\d+)/) || [];
+    const [, kind, id] = h.match(/^\/(project|asset|target)\/(\d+)/) || [];
     if (kind === 'project') return renderProject(id);
-    if (kind === 'asset') return renderAsset(id);
+    if (kind === 'asset') return renderAssetFolder(id);
+    if (kind === 'target') return renderTarget(id);
     return renderHome();
   } catch (e) {
     setRail(null);
@@ -265,21 +266,27 @@ function delProject(p, assetCount, after) {
   });
 }
 
-// ---------- rail (targets of the current engagement) ----------
-function railFor(project, activeAssetId) {
-  const total = project.assets.reduce((a, x) => a + x.total, 0);
-  const handled = project.assets.reduce((a, x) => a + x.handled, 0);
+// ---------- rail (targets inside the current asset folder) ----------
+const GROUP_ICON = { internal: '🏛️', external: '🌐', mobile: '📱', wireless: '📡', otiot: '🏭', additional: '📦' };
+function groupLabel(key) { return (GROUP_ORDER.find(g => g.key === key) || {}).label || key; }
+// engagement groups that actually have a selectable (non-soon) target type
+function selectableGroups() { return new Set(TYPES.filter(t => !t.soon).map(t => t.grp || 'additional')); }
+
+function railForFolder(folder, activeTargetId) {
+  const targets = folder.targets || [];
+  const total = targets.reduce((a, x) => a + x.total, 0);
+  const handled = targets.reduce((a, x) => a + x.handled, 0);
   const head = el('div', { className: 'rail-head' },
-    el('div', { className: 'kicker' }, 'Engagement'),
-    el('div', { className: 'rail-title' }, project.name),
+    el('div', { className: 'kicker' }, 'Asset · ' + groupLabel(folder.grp)),
+    el('div', { className: 'rail-title' }, `${GROUP_ICON[folder.grp] || ''} ${folder.label}`),
     el('div', { className: 'rail-status' }, el('span', { className: 'pulse' }),
-      `${pct(handled, total)}% · ${project.assets.length} TARGET${project.assets.length === 1 ? '' : 'S'}`));
+      `${pct(handled, total)}% · ${targets.length} TARGET${targets.length === 1 ? '' : 'S'}`));
   const list = el('div', { className: 'rail-list' });
-  for (const a of project.assets) {
+  for (const a of targets) {
     const p = pct(a.handled, a.total);
     list.append(el('button', {
-      className: 'railtarget' + (String(a.id) === String(activeAssetId) ? ' on' : ''),
-      onclick: () => location.hash = `/asset/${a.id}`,
+      className: 'railtarget' + (String(a.id) === String(activeTargetId) ? ' on' : ''),
+      onclick: () => location.hash = `/target/${a.id}`,
     },
       el('span', { className: 'rt-top' },
         el('span', { className: 'rt-kind' }, a.type.toUpperCase()),
@@ -287,16 +294,18 @@ function railFor(project, activeAssetId) {
       el('span', { className: 'rt-name' }, a.label),
       el('span', { className: 'bar thin' + (p > 70 ? ' good' : !p ? ' idle' : '') }, el('span', { style: `width:${p}%` }))));
   }
-  if (!project.assets.length) list.append(el('div', { className: 'pmeta', style: 'padding:10px' }, 'No targets yet'));
-  return [head, el('div', { className: 'rail-label kicker' }, 'Targets'), list,
+  if (!targets.length) list.append(el('div', { className: 'pmeta', style: 'padding:10px' }, 'No targets yet'));
+  return [head,
+    el('button', { className: 'railback', onclick: () => location.hash = `/project/${folder.project_id}` }, '‹ Back to engagement'),
+    el('div', { className: 'rail-label kicker' }, 'Targets'), list,
     el('div', { className: 'rail-foot' },
-      el('button', { className: 'dashbtn', onclick: () => addAsset(project.id) }, icon('plus', 12), 'Add target'))];
+      el('button', { className: 'dashbtn', onclick: () => addTarget(folder) }, icon('plus', 12), 'Add target'))];
 }
 
-// ---------- engagement detail ----------
+// ---------- engagement (project) — lists Asset folders ----------
 async function renderProject(id) {
   const p = await api('/projects/' + id);
-  setRail(railFor(p, null));
+  setRail(null);
   setCrumbs([{ label: 'engagements', go: () => location.hash = '' }, { label: p.name }]);
   topActions(
     el('button', { className: 'btn', onclick: () => exportProjectMenu(id, p.name) }, icon('down', 12), 'Export'),
@@ -306,6 +315,7 @@ async function renderProject(id) {
   const handled = p.assets.reduce((a, x) => a + x.handled, 0);
   const findings = p.assets.reduce((a, x) => a + (x.findings || 0), 0);
   const flags = p.assets.reduce((a, x) => a + x.flags, 0);
+  const targets = p.assets.reduce((a, x) => a + (x.targets || 0), 0);
 
   const stat = (label, value, cls) => el('div', { className: 'stat' },
     el('div', { className: 'kicker' }, label), el('div', { className: 'stat-value ' + (cls || '') }, value));
@@ -313,19 +323,18 @@ async function renderProject(id) {
   const list = el('div', { className: 'tlist' });
   if (!p.assets.length) {
     list.append(el('div', { className: 'empty', style: 'border:0' },
-      el('div', {}, 'No targets in scope yet. Add a URL, host, subnet, domain, API or app.'),
-      el('button', { className: 'btn gold', onclick: () => addAsset(id) }, icon('plus', 12), 'Add target')));
+      el('div', {}, 'No assets yet. Create an Internal, External, Mobile, OT/IoT or Additional asset, then add targets inside it.'),
+      el('button', { className: 'btn gold', onclick: () => addAsset(id) }, icon('plus', 12), 'Add asset')));
   }
   for (const a of p.assets) {
-    const t = TYPES.find(x => x.type === a.type) || {};
     const cov = pct(a.handled, a.total);
-    const del = el('button', { className: 'ibtn del', title: 'Delete target' }, icon('trash'));
+    const del = el('button', { className: 'ibtn del', title: 'Delete asset' }, icon('trash'));
     del.onclick = (e) => { e.stopPropagation(); delAsset(a, () => renderProject(id)); };
     list.append(el('button', { className: 'trow', onclick: () => location.hash = `/asset/${a.id}` },
-      el('span', { className: 'ticon' }, t.icon || '◇'),
+      el('span', { className: 'ticon' }, GROUP_ICON[a.grp] || '◇'),
       el('span', { className: 'tgrow' },
         el('span', { className: 'tname' }, a.label),
-        el('span', { className: 'tmeta' }, `${(t.label || a.type).toUpperCase()} · ${a.handled}/${a.total} handled`)),
+        el('span', { className: 'tmeta' }, `${groupLabel(a.grp).toUpperCase()} · ${a.targets || 0} target${a.targets === 1 ? '' : 's'} · ${a.handled}/${a.total} handled`)),
       el('span', { className: 'tprog' },
         el('span', { className: 'bar' + (cov > 70 ? ' good' : !cov ? ' idle' : '') }, el('span', { style: `width:${cov}%` })),
         el('span', { className: 'pct' + (cov > 70 ? ' good' : cov ? ' some' : '') }, cov + '%')),
@@ -340,61 +349,159 @@ async function renderProject(id) {
     el('div', { className: 'stats' },
       stat('Coverage', pct(handled, total) + '%', 'gold'),
       stat('Findings', String(findings + flags), 'red'),
-      stat('Targets', String(p.assets.length)),
-      stat('Days open', String(daysSince(p.created_at)))),
+      stat('Assets', String(p.assets.length)),
+      stat('Targets', String(targets))),
     el('div', { className: 'srule' },
-      el('span', { className: 'kicker' }, 'Targets'), el('span', { className: 'rule' }),
-      el('button', { className: 'btn line sm', onclick: () => addAsset(id) }, '+ Add target')),
+      el('span', { className: 'kicker' }, 'Assets'), el('span', { className: 'rule' }),
+      el('button', { className: 'btn line sm', onclick: () => addAsset(id) }, '+ Add asset')),
     list));
 }
 
+// ---------- asset folder — lists its targets ----------
+async function renderAssetFolder(id) {
+  const f = await api('/assets/' + id);
+  setRail(railForFolder(f, null));
+  setCrumbs([
+    { label: 'engagements', go: () => location.hash = '' },
+    { label: f.project?.name || 'project', go: () => location.hash = `/project/${f.project_id}` },
+    { label: f.label }]);
+  topActions(
+    el('button', { className: 'btn danger', onclick: () => delAsset(f, () => location.hash = `/project/${f.project_id}`) }, 'Delete asset'));
+
+  const total = f.targets.reduce((a, x) => a + x.total, 0);
+  const handled = f.targets.reduce((a, x) => a + x.handled, 0);
+
+  const list = el('div', { className: 'tlist' });
+  if (!f.targets.length) {
+    list.append(el('div', { className: 'empty', style: 'border:0' },
+      el('div', {}, `No targets in this ${groupLabel(f.grp)} asset yet.`),
+      el('button', { className: 'btn gold', onclick: () => addTarget(f) }, icon('plus', 12), 'Add target')));
+  }
+  for (const a of f.targets) {
+    const t = TYPES.find(x => x.type === a.type) || {};
+    const cov = pct(a.handled, a.total);
+    const del = el('button', { className: 'ibtn del', title: 'Delete target' }, icon('trash'));
+    del.onclick = (e) => { e.stopPropagation(); delTarget(a, () => renderAssetFolder(id)); };
+    list.append(el('button', { className: 'trow', onclick: () => location.hash = `/target/${a.id}` },
+      el('span', { className: 'ticon' }, t.icon || '◇'),
+      el('span', { className: 'tgrow' },
+        el('span', { className: 'tname' }, a.label),
+        el('span', { className: 'tmeta' }, `${(t.label || a.type).toUpperCase()} · ${a.handled}/${a.total} handled`)),
+      el('span', { className: 'tprog' },
+        el('span', { className: 'bar' + (cov > 70 ? ' good' : !cov ? ' idle' : '') }, el('span', { style: `width:${cov}%` })),
+        el('span', { className: 'pct' + (cov > 70 ? ' good' : cov ? ' some' : '') }, cov + '%')),
+      el('span', { className: 'tflag' + (a.flags ? ' on' : '') }, a.flags ? '⚑ ' + a.flags : '—'),
+      del));
+  }
+
+  $('#view').replaceChildren(el('div', { className: 'page narrow' },
+    el('div', { className: 'kicker' }, 'Asset · ' + groupLabel(f.grp)),
+    el('h1', {}, `${GROUP_ICON[f.grp] || ''} ${f.label}`),
+    el('div', { className: 'stats' },
+      stat3('Coverage', pct(handled, total) + '%', 'gold'),
+      stat3('Targets', String(f.targets.length)),
+      stat3('Handled', `${handled}/${total}`)),
+    el('div', { className: 'srule' },
+      el('span', { className: 'kicker' }, 'Targets'), el('span', { className: 'rule' }),
+      el('button', { className: 'btn line sm', onclick: () => addTarget(f) }, '+ Add target')),
+    list));
+}
+function stat3(label, value, cls) {
+  return el('div', { className: 'stat' }, el('div', { className: 'kicker' }, label),
+    el('div', { className: 'stat-value ' + (cls || '') }, value));
+}
+
+// Create an engagement-type Asset folder inside a project.
 function addAsset(projectId) {
+  const selectable = selectableGroups();
   modal({
-    kicker: 'Scope', title: 'Add a target', cta: 'Add target',
+    kicker: 'Scope', title: 'Add an asset', cta: 'Add asset',
+    note: 'An asset is an engagement type. You add targets (web, host, AD…) inside it.',
     build: (b) => {
-      const first = TYPES.find(t => !t.soon) || TYPES[0];
-      const hidden = el('input', { type: 'hidden', name: 'type', value: first?.type || 'web' });
-      const label = el('input', { name: 'label', placeholder: first?.hint || 'value' });
-      const allBtns = [];
-      b.append(el('label', {}, 'Asset type'));
-      // one section per engagement group; a single project can hold targets from several
+      const firstGrp = GROUP_ORDER.find(g => selectable.has(g.key))?.key || 'internal';
+      const hidden = el('input', { type: 'hidden', name: 'grp', value: firstGrp });
+      const label = el('input', { name: 'label', placeholder: 'e.g. Corporate internal, Acme external' });
+      const grid = el('div', { className: 'typegrid' });
+      const btns = [];
       for (const g of GROUP_ORDER) {
-        const inGroup = TYPES.filter(t => (t.grp || 'additional') === g.key);
-        if (!inGroup.length) continue;
-        b.append(el('div', { className: 'typegrouphdr kicker' }, g.label));
-        const grid = el('div', { className: 'typegrid' });
-        for (const t of inGroup) {
-          const btn = el('button', { type: 'button', className: 'type' + (t.type === hidden.value ? ' sel' : '') + (t.soon ? ' soon' : '') },
-            el('span', { className: 'lbl' }, `${t.icon || ''} ${t.label}`),
-            el('span', { className: 'hint' }, t.soon ? 'coming soon' : (t.hint || t.type)));
-          if (t.soon) { btn.disabled = true; }
-          else btn.onclick = () => {
-            hidden.value = t.type; label.placeholder = t.hint || 'value';
-            for (const x of allBtns) x.classList.remove('sel');
-            btn.classList.add('sel'); label.focus();
-          };
-          allBtns.push(btn); grid.append(btn);
-        }
-        b.append(grid);
+        const soon = !selectable.has(g.key);
+        const btn = el('button', { type: 'button', className: 'type' + (g.key === hidden.value ? ' sel' : '') + (soon ? ' soon' : '') },
+          el('span', { className: 'lbl' }, `${GROUP_ICON[g.key] || ''} ${g.label}`),
+          el('span', { className: 'hint' }, soon ? 'coming soon' : (g.key === 'internal' ? 'host, subnet, AD'
+            : g.key === 'external' ? 'web, api, domain' : g.key === 'otiot' ? 'IoT, OT/ICS'
+            : g.key === 'additional' ? 'container / cloud' : g.label.toLowerCase())));
+        if (soon) btn.disabled = true;
+        else btn.onclick = () => { hidden.value = g.key; for (const x of btns) x.classList.remove('sel'); btn.classList.add('sel'); label.focus(); };
+        btns.push(btn); grid.append(btn);
       }
-      b.append(hidden, el('label', {}, 'Identifier'), label);
+      b.append(el('label', {}, 'Engagement type'), grid, hidden, el('label', {}, 'Name'), label);
     },
     onSubmit: async (fd) => {
-      const body = { type: fd.get('type'), label: fd.get('label') };
-      if (!body.label) throw new Error('Enter an identifier');
-      const a = await api(`/projects/${projectId}/assets`, { method: 'POST', body });
-      location.hash = `/asset/${a.id}`;
+      const body = { grp: fd.get('grp'), label: fd.get('label') };
+      if (!body.label) throw new Error('Name the asset');
+      const f = await api(`/projects/${projectId}/assets`, { method: 'POST', body });
+      location.hash = `/asset/${f.id}`;
     },
   });
 }
 
-function delAsset(a, after) {
+// Create a Target inside an asset folder — types limited to the folder's engagement group.
+function addTarget(folder) {
+  const types = TYPES.filter(t => (t.grp || 'additional') === folder.grp && !t.soon);
+  if (!types.length) return alert('No target types are available for this engagement type yet.');
+  modal({
+    kicker: 'Target', title: `Add a target — ${groupLabel(folder.grp)}`, cta: 'Add target',
+    build: (b) => {
+      const hidden = el('input', { type: 'hidden', name: 'type', value: types[0].type });
+      const label = el('input', { name: 'label', placeholder: types[0].hint || 'value' });
+      const grid = el('div', { className: 'typegrid' });
+      const btns = [];
+      for (const t of types) {
+        const btn = el('button', { type: 'button', className: 'type' + (t.type === hidden.value ? ' sel' : '') },
+          el('span', { className: 'lbl' }, `${t.icon || ''} ${t.label}`),
+          el('span', { className: 'hint' }, t.hint || t.type));
+        btn.onclick = () => { hidden.value = t.type; label.placeholder = t.hint || 'value'; for (const x of btns) x.classList.remove('sel'); btn.classList.add('sel'); label.focus(); };
+        btns.push(btn); grid.append(btn);
+      }
+      b.append(el('label', {}, 'Target type'), grid, hidden, el('label', {}, 'Identifier'), label);
+    },
+    onSubmit: async (fd) => {
+      const body = { type: fd.get('type'), label: fd.get('label') };
+      if (!body.label) throw new Error('Enter an identifier');
+      const a = await api(`/assets/${folder.id}/targets`, { method: 'POST', body });
+      location.hash = `/target/${a.id}`;
+    },
+  });
+}
+
+// Delete an Asset folder and everything inside it.
+function delAsset(f, after) {
+  const targets = f.targets ?? (Array.isArray(f.targets) ? f.targets.length : 0);
+  const n = typeof targets === 'number' ? targets : (f.targets?.length || 0);
+  modal({
+    kicker: 'Destructive', title: `Delete asset “${f.label}”?`, danger: true, cta: 'Delete forever',
+    note: 'The engagement is kept. This asset and every target inside it are removed.',
+    build: (b) => b.append(el('div', { className: 'dangerbox' },
+      el('div', { className: 'kicker' }, 'Irreversible'),
+      el('ul', { className: 'dellist' },
+        el('li', {}, `${n} target${n === 1 ? '' : 's'} and their checklists`),
+        el('li', {}, 'All findings, evidence and progress inside them')))),
+    onSubmit: async () => {
+      await api('/assets/' + f.id, { method: 'DELETE' });
+      curAssetId = null; toast('Asset deleted');
+      if (after) after();
+    },
+  });
+}
+
+// Delete a single Target.
+function delTarget(a, after) {
   const items = a.total ?? a.items?.length ?? 0;
   const findings = a.findings?.length ?? a.findings ?? 0;
   const done = a.handled ?? a.items?.filter(i => HANDLED.includes(i.status)).length ?? 0;
   modal({
     kicker: 'Destructive', title: `Delete target “${a.label}”?`, danger: true, cta: 'Delete forever',
-    note: 'The engagement is kept. Everything recorded against this target is not.',
+    note: 'The asset is kept. Everything recorded against this target is not.',
     build: (b) => b.append(el('div', { className: 'dangerbox' },
       el('div', { className: 'kicker' }, 'Irreversible'),
       el('ul', { className: 'dellist' },
@@ -402,9 +509,9 @@ function delAsset(a, after) {
         el('li', {}, findings ? `${findings} finding${findings === 1 ? '' : 's'} and captured evidence` : 'Any findings and evidence recorded against it'),
         el('li', {}, 'All answers and progress')))),
     onSubmit: async () => {
-      await api('/assets/' + a.id, { method: 'DELETE' });
+      await api('/targets/' + a.id, { method: 'DELETE' });
       curAssetId = null; toast('Target deleted');
-      if (after) after(); else location.hash = `/project/${a.project_id}`;
+      if (after) after(); else location.hash = `/asset/${a.folder?.id || a.folder_id}`;
     },
   });
 }
@@ -422,21 +529,22 @@ const MATCH = {
   done: (i) => HANDLED.includes(i.status),
 };
 
-async function renderAsset(id) {
+async function renderTarget(id) {
   id = String(id);
-  const a = await api('/assets/' + id);
+  const a = await api('/targets/' + id);
   SUBST_MAP = substMap(a);
   const t = TYPES.find(x => x.type === a.type) || {};
   if (curAssetId !== id) { curAssetId = id; openGroups.clear(); openPayloads.clear(); FILTER = 'all'; }
 
-  const project = await api('/projects/' + a.project_id);
-  setRail(railFor(project, id));
+  const folder = await api('/assets/' + a.folder_id);   // full folder → sibling targets for the rail
+  setRail(railForFolder(folder, id));
   setCrumbs([
     { label: 'engagements', go: () => location.hash = '' },
-    { label: project.name, go: () => location.hash = `/project/${a.project_id}` },
+    { label: folder.project?.name || 'project', go: () => location.hash = `/project/${folder.project_id}` },
+    { label: folder.label, go: () => location.hash = `/asset/${folder.id}` },
     { label: a.label }]);
   topActions(
-    el('button', { className: 'btn', onclick: () => delAsset(a) }, 'Delete target'));
+    el('button', { className: 'btn danger', onclick: () => delTarget(a) }, 'Delete target'));
 
   const childrenBy = {}, byGroup = {};
   for (const it of a.items) {
@@ -484,7 +592,7 @@ async function renderAsset(id) {
       onclick: () => {
         FILTER = f.k;
         if (f.k !== 'all') groups.forEach(g => openGroups.add(g.key)); // show what you filtered for
-        renderAsset(id);
+        renderTarget(id);
       },
     }, f.l, el('span', {}, String(f.n))));
   }
@@ -495,8 +603,8 @@ async function renderAsset(id) {
         el('div', { className: 'kicker' }, t.label || a.type),
         el('h1', {}, a.label)),
       el('div', { className: 'target-actions' },
-        el('button', { className: 'btn', onclick: () => { groups.forEach(g => openGroups.add(g.key)); renderAsset(id); } }, 'Expand all'),
-        el('button', { className: 'btn', onclick: () => { openGroups.clear(); renderAsset(id); } }, 'Collapse'),
+        el('button', { className: 'btn', onclick: () => { groups.forEach(g => openGroups.add(g.key)); renderTarget(id); } }, 'Expand all'),
+        el('button', { className: 'btn', onclick: () => { openGroups.clear(); renderTarget(id); } }, 'Collapse'),
         el('button', { className: 'btn line', onclick: () => itemModal(id) }, '+ Item'))),
     el('div', { className: 'seg' }, segbar,
       el('span', { className: 'count' }, String(handled), el('b', {}, '/' + actionable.length)),
@@ -521,7 +629,7 @@ async function renderAsset(id) {
       gf ? el('span', { className: 'gflag' }, '⚑ ' + gf) : null,
       el('span', { className: 'gcount' }, String(done), el('b', {}, '/' + all.length)),
       el('span', { className: 'bar' + (pct(done, all.length) > 70 ? ' good' : '') }, el('span', { style: `width:${pct(done, all.length)}%` })));
-    hdr.onclick = () => { open ? openGroups.delete(g.key) : openGroups.add(g.key); renderAsset(id); };
+    hdr.onclick = () => { open ? openGroups.delete(g.key) : openGroups.add(g.key); renderTarget(id); };
     const box = el('div', { className: 'group' }, hdr);
     if (open) {
       const body = el('div', { className: 'gbody' });
@@ -551,12 +659,12 @@ async function renderAsset(id) {
     const tools = el('div', { className: 'f-tools' },
       el('button', { className: 'ibtn', title: 'Add image', onclick: () => uploadToFinding(f.id, id) }, icon('image', 11)),
       el('button', { className: 'ibtn', title: 'Edit', onclick: () => editFinding(f, id) }, icon('edit', 11)),
-      el('button', { className: 'ibtn del', title: 'Delete', onclick: async () => { if (confirm('Delete this finding and its images?')) { await api('/findings/' + f.id, { method: 'DELETE' }); renderAsset(id); } } }, icon('x', 11)));
+      el('button', { className: 'ibtn del', title: 'Delete', onclick: async () => { if (confirm('Delete this finding and its images?')) { await api('/findings/' + f.id, { method: 'DELETE' }); renderTarget(id); } } }, icon('x', 11)));
     const shots = el('div', { className: 'f-shots' });
     for (const im of (f.attachments || [])) {
       const thumb = el('img', { src: '/api/attachments/' + im.id, title: im.filename, loading: 'lazy' });
       thumb.onclick = () => lightbox('/api/attachments/' + im.id, im.filename);
-      const x = el('button', { className: 'shotx', title: 'Remove image', onclick: async (e) => { e.stopPropagation(); await api('/attachments/' + im.id, { method: 'DELETE' }); renderAsset(id); } }, '✕');
+      const x = el('button', { className: 'shotx', title: 'Remove image', onclick: async (e) => { e.stopPropagation(); await api('/attachments/' + im.id, { method: 'DELETE' }); renderTarget(id); } }, '✕');
       shots.append(el('span', { className: 'f-shot' }, thumb, x));
     }
     dbody.append(el('div', { className: 'finding sev-' + (f.severity || 'info') },
@@ -596,7 +704,7 @@ function renderItem(it, assetId, num, depth, childrenBy = {}) {
   const pOpen = openPayloads.has(it.id);
   if (pcount) row.append(el('button', {
     className: 'ptoggle',
-    onclick: () => { pOpen ? openPayloads.delete(it.id) : openPayloads.add(it.id); renderAsset(assetId); },
+    onclick: () => { pOpen ? openPayloads.delete(it.id) : openPayloads.add(it.id); renderTarget(assetId); },
   }, `${pOpen ? '▾' : '▸'} ${pcount} payload${pcount > 1 ? 's' : ''}`));
   body.append(row);
   if (it.detail) body.append(el('p', { className: 'detail' }, subst(it.detail)));
@@ -608,7 +716,7 @@ function renderItem(it, assetId, num, depth, childrenBy = {}) {
       const on = chosen.has(o.key);
       chips.append(el('button', {
         className: 'chip' + (on ? ' on' : ''),
-        onclick: async () => { await api('/items/' + it.id + '/select', { method: 'POST', body: { key: o.key } }); renderAsset(assetId); },
+        onclick: async () => { await api('/items/' + it.id + '/select', { method: 'POST', body: { key: o.key } }); renderTarget(assetId); },
       }, (on ? '✓ ' : '') + o.label));
     }
     body.append(chips);
@@ -652,7 +760,7 @@ function renderItem(it, assetId, num, depth, childrenBy = {}) {
         await api('/items/' + it.id, { method: 'PATCH', body: { status: next } });
         it.status = next;
         if (isTrigger && next === 'yes' && it.spawns && !hasGroup) return doSpawn(it, assetId);
-        renderAsset(assetId);
+        renderTarget(assetId);
       };
       stBox.append(b);
     }
@@ -663,7 +771,7 @@ function renderItem(it, assetId, num, depth, childrenBy = {}) {
     el('button', { className: 'ibtn', title: 'Edit', onclick: () => itemModal(assetId, it) }, icon('edit', 12)),
     el('button', {
       className: 'ibtn del', title: 'Delete',
-      onclick: async () => { if (confirm(kids.length ? 'Delete this item and everything under it?' : 'Delete this item?')) { await api('/items/' + it.id, { method: 'DELETE' }); renderAsset(assetId); } },
+      onclick: async () => { if (confirm(kids.length ? 'Delete this item and everything under it?' : 'Delete this item?')) { await api('/items/' + it.id, { method: 'DELETE' }); renderTarget(assetId); } },
     }, icon('x', 12))));
 
   node.append(el('span', { className: 'inum' }, pad(num)), body, actions);
@@ -673,7 +781,7 @@ function renderItem(it, assetId, num, depth, childrenBy = {}) {
 async function doSpawn(it, assetId) {
   const r = await api('/items/' + it.id + '/spawn', { method: 'POST' });
   toast(r.instance > 1 ? `Added follow-up #${r.instance}` : `Added ${r.added} items`);
-  renderAsset(assetId);
+  renderTarget(assetId);
 }
 
 function itemModal(assetId, item = null, parentId = null) {
@@ -699,7 +807,7 @@ function itemModal(assetId, item = null, parentId = null) {
         else openGroups.add(o.group_title === 'Custom / Notes' ? 'custom' : o.group_title);
         await api(`/assets/${assetId}/items`, { method: 'POST', body: o });
       }
-      renderAsset(assetId);
+      renderTarget(assetId);
     },
   });
 }
@@ -726,7 +834,7 @@ function findingModal(assetId, finding = null) {
       const body = Object.fromEntries(fd);
       if (editing) await api('/findings/' + finding.id, { method: 'PATCH', body });
       else await api(`/assets/${assetId}/findings`, { method: 'POST', body });
-      renderAsset(assetId);
+      renderTarget(assetId);
     },
   });
 }
@@ -751,7 +859,7 @@ function uploadToFinding(findingId, assetId) {
       }
       toast(files.length > 1 ? `Added ${files.length} images` : 'Image added');
     } catch (e) { alert('Upload failed: ' + e.message); }
-    renderAsset(assetId);
+    renderTarget(assetId);
   };
   document.body.append(picker); picker.click();
 }

@@ -83,15 +83,22 @@ checks.push(['sign in works', await ev(`
 checks.push(['engagements screen paints', await ev(`
   const j = async (u, o) => (await fetch(u, { headers: { "content-type": "application/json" }, ...o })).json();
   const p = await j("/api/projects", { method: "POST", body: JSON.stringify({ name: "smoke" }) });
-  await j("/api/projects/" + p.id + "/assets", { method: "POST", body: JSON.stringify({ type: "web", label: "https://smoke.test" }) });
+  const asset = await j("/api/projects/" + p.id + "/assets", { method: "POST", body: JSON.stringify({ grp: "external", label: "smoke ext" }) });
+  await j("/api/assets/" + asset.id + "/targets", { method: "POST", body: JSON.stringify({ type: "web", label: "https://smoke.test" }) });
   // setting an already-empty hash fires no hashchange, and reloading would destroy
   // this execution context, so re-render by calling the router directly
   await route(); await new Promise(r => setTimeout(r, 600));
   return document.querySelectorAll(".prow").length > 0`)]);
+checks.push(['asset folder screen paints', await ev(`
+  const p = (await (await fetch("/api/projects")).json())[0];
+  const d = await (await fetch("/api/projects/" + p.id)).json();
+  location.hash = "#/asset/" + d.assets[0].id; await new Promise(r => setTimeout(r, 1200));
+  return document.querySelectorAll(".trow").length > 0`)]);
 checks.push(['checklist screen paints', await ev(`
-  const a = (await (await fetch("/api/projects")).json())[0];
-  const d = await (await fetch("/api/projects/" + a.id)).json();
-  location.hash = "#/asset/" + d.assets[0].id; await new Promise(r => setTimeout(r, 1400));
+  const p = (await (await fetch("/api/projects")).json())[0];
+  const d = await (await fetch("/api/projects/" + p.id)).json();
+  const f = await (await fetch("/api/assets/" + d.assets[0].id)).json();
+  location.hash = "#/target/" + f.targets[0].id; await new Promise(r => setTimeout(r, 1400));
   document.querySelectorAll(".ghdr")[0]?.click(); await new Promise(r => setTimeout(r, 700));
   return document.querySelectorAll(".item").length > 0`)]);
 checks.push(['template library paints', await ev(`

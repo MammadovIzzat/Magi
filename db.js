@@ -141,6 +141,19 @@ CREATE TABLE IF NOT EXISTS attachments (
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_finding ON attachments(finding_id);
 
+-- Three-level model: a project holds "Asset" folders (engagement types: internal,
+-- external, mobile, otiot, additional, wireless); each folder holds "Target" rows.
+-- Internally the existing assets table IS the Target (it owns items and findings);
+-- this folders table is the engagement "Asset" the user sees. assets.folder_id links them.
+CREATE TABLE IF NOT EXISTS folders (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  grp         TEXT NOT NULL,             -- engagement type: internal|external|mobile|otiot|additional|wireless
+  label       TEXT NOT NULL,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_folders_project ON folders(project_id);
+
 -- auth
 CREATE TABLE IF NOT EXISTS users (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -216,6 +229,11 @@ addCol('catalog', 'TEXT');
 addCol('options', `TEXT NOT NULL DEFAULT '[]'`);
 addCol('opt_key', 'TEXT');
 db.exec(`CREATE INDEX IF NOT EXISTS idx_items_parent ON items(parent_id);`);
+
+// assets (Targets) gained a parent folder (engagement Asset) with the three-level model.
+const assetCols = new Set(db.prepare(`PRAGMA table_info(assets)`).all().map(r => r.name));
+if (!assetCols.has('folder_id')) db.exec(`ALTER TABLE assets ADD COLUMN folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_assets_folder ON assets(folder_id)`);
 
 // tpl_types gained engagement-group columns after the first releases.
 const tplCols = new Set(db.prepare(`PRAGMA table_info(tpl_types)`).all().map(r => r.name));
@@ -343,6 +361,28 @@ if (db.prepare(`SELECT COUNT(*) c FROM tpl_groups`).get().c === 0) {
   const setGrp = db.prepare(`UPDATE tpl_types SET grp=? WHERE type=? AND (grp IS NULL OR grp='')`);
   for (const [t, g] of Object.entries(GRP)) setGrp.run(g, t);
   db.prepare(`UPDATE tpl_types SET soon=1 WHERE type='wireless' AND soon=0`).run();
+}
+
+// Three-level upgrade: existing targets (assets rows) predate the folder layer. Group
+// each one under an engagement "Asset" folder for its project, matched by its type's
+// engagement group. Runs once — new targets are created with a folder from the start.
+{
+  const orphans = db.prepare(`SELECT id, project_id, type FROM assets WHERE folder_id IS NULL`).all();
+  if (orphans.length) {
+    const grpOf = (type) => db.prepare(`SELECT grp FROM tpl_types WHERE type=?`).get(type)?.grp || 'additional';
+    const GRP_LABEL = { internal: 'Internal', external: 'External', mobile: 'Mobile',
+      wireless: 'Wireless', otiot: 'OT / IoT', additional: 'Additional' };
+    const findFolder = db.prepare(`SELECT id FROM folders WHERE project_id=? AND grp=?`);
+    const makeFolder = db.prepare(`INSERT INTO folders (project_id, grp, label) VALUES (?,?,?)`);
+    const setFolder = db.prepare(`UPDATE assets SET folder_id=? WHERE id=?`);
+    for (const a of orphans) {
+      const grp = grpOf(a.type);
+      let fid = findFolder.get(a.project_id, grp)?.id;
+      if (!fid) fid = makeFolder.run(a.project_id, grp, GRP_LABEL[grp] || 'Additional').lastInsertRowid;
+      setFolder.run(fid, a.id);
+    }
+    console.error(`  [migrate] grouped ${orphans.length} target(s) under engagement folders`);
+  }
 }
 
 export default db;

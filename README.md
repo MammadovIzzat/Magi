@@ -3,10 +3,17 @@
 *The pentester's familiar.*
 
 Engagement-based checklist, target tracker and evidence log. **Web app + CLI**, sharing one local SQLite DB.
-Add targets grouped by engagement type — Internal, External, Mobile, Wireless, OT/IoT, Additional — each a tailored
-attack checklist. Answer trigger questions ("Is there a login?") and the app spawns the
-matching follow-up checklist (login/register/upload/injection attacks…). Record findings
-(raw HTTP requests, creds, vulns) and export a Markdown report.
+Structure an engagement in three levels: a **project** holds **Assets** (engagement types —
+Internal, External, Mobile, OT/IoT, Additional), and each Asset holds **Targets** (a web app,
+host, AD domain, API…) with its own tailored attack checklist. Answer trigger questions ("Is there a login?") and the app spawns the
+matching follow-up checklist (login/register/upload/injection attacks…). Record findings (raw HTTP requests, creds, vulns), attach screenshots, and export a Markdown
+or self-contained HTML report.
+
+```
+Project (engagement)
+ └─ Asset  (Internal / External / Mobile / OT-IoT / Additional)
+     └─ Target  (web · host · AD · api · domain · mobile · container …)  → checklist + findings
+```
 
 > For authorized security testing only.
 

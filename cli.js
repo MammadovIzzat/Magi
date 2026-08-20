@@ -15,16 +15,19 @@ function help() {
   magi projects                          list projects
   magi new-project "<name>" [client]     create a project
   magi types                             list asset types
-  magi assets <projectId>                list assets in a project
-  magi add-asset <projectId> <type> <label>   add an asset (+ its checklist)
-  magi show <assetId>                     show an asset checklist
+  magi assets <projectId>                list assets (engagement types) in a project
+  magi add-asset <projectId> <engagement-type> <name>   add an asset folder
+                                         (internal|external|mobile|wireless|otiot|additional)
+  magi targets <assetId>                 list targets inside an asset
+  magi add-target <assetId> <type> <identifier>   add a target (+ its checklist)
+  magi show <targetId>                    show a target's checklist
   magi set <itemId> <status>             status: todo|done|na|flag|yes|no
   magi export <projectId>                print markdown report
   magi export-project <projectId>        print a portable project file (JSON, re-importable)
   magi import-project <file.json> [name] import a project file as a new engagement
-  magi rm-project <projectId> [--yes]    delete a project + all its targets
-  magi rm-asset <assetId> [--yes]        delete one target + its checklist
-                                                (both print what they would remove without --yes)
+  magi rm-project <projectId> [--yes]    delete a project + everything in it
+  magi rm-asset <assetId> [--yes]        delete an asset + all its targets
+  magi rm-target <targetId> [--yes]      delete one target + its checklist
   magi reseed [type|all]                 restore shipped default checklists
                                                 (discards template edits; assets untouched)
 
@@ -67,27 +70,48 @@ switch (cmd) {
 
   case 'assets':
     if (!args[1]) { console.error('projectId required'); process.exit(1); }
-    table(q(`SELECT id, type, label FROM assets WHERE project_id=? ORDER BY id`).all(args[1]), ['id', 'type', 'label']);
+    table(q(`SELECT f.id, f.grp, f.label,
+             (SELECT COUNT(*) FROM assets a WHERE a.folder_id=f.id) AS targets
+             FROM folders f WHERE f.project_id=? ORDER BY f.id`).all(args[1]), ['id', 'grp', 'label', 'targets']);
     break;
 
   case 'add-asset': {
-    const [, pid, type, ...rest] = args;
+    const [, pid, grp, ...rest] = args;
     const label = rest.join(' ');
-    if (!pid || !type || !label) { console.error('usage: add-asset <projectId> <type> <label>'); process.exit(1); }
-    // Build from the editable DB templates, exactly like the web app: the seed file is
-    // only the factory default, and using it here silently ignored the user's edits and
-    // any asset type they added in the template editor.
-    const known = q(`SELECT type FROM tpl_types ORDER BY sort, type`).all().map(r => r.type);
-    if (!known.includes(type)) { console.error(`unknown type "${type}". Try: ${known.join(', ')}`); process.exit(1); }
+    const GRPS = ['internal', 'external', 'mobile', 'wireless', 'otiot', 'additional'];
+    if (!pid || !grp || !label) { console.error('usage: add-asset <projectId> <engagement-type> <name>\n  engagement-type: ' + GRPS.join(' | ')); process.exit(1); }
+    if (!GRPS.includes(grp)) { console.error(`unknown engagement type "${grp}". Try: ${GRPS.join(', ')}`); process.exit(1); }
+    const selectable = new Set(q(`SELECT DISTINCT grp FROM tpl_types WHERE soon=0 AND grp IS NOT NULL`).all().map(r => r.grp));
+    if (!selectable.has(grp)) { console.error(`engagement type "${grp}" is coming soon`); process.exit(1); }
     if (!q(`SELECT id FROM projects WHERE id=?`).get(pid)) { console.error('project not found'); process.exit(1); }
-    const info = q(`INSERT INTO assets (project_id, type, label) VALUES (?,?,?)`).run(pid, type, label);
+    const info = q(`INSERT INTO folders (project_id, grp, label) VALUES (?,?,?)`).run(pid, grp, label);
+    console.log(`Added ${grp} asset #${info.lastInsertRowid} "${label}". Add targets with: add-target ${info.lastInsertRowid} <type> <identifier>`);
+    break;
+  }
+
+  case 'targets':
+    if (!args[1]) { console.error('assetId required'); process.exit(1); }
+    table(q(`SELECT id, type, label FROM assets WHERE folder_id=? ORDER BY id`).all(args[1]), ['id', 'type', 'label']);
+    break;
+
+  case 'add-target': {
+    const [, fid, type, ...rest] = args;
+    const label = rest.join(' ');
+    if (!fid || !type || !label) { console.error('usage: add-target <assetId> <type> <identifier>'); process.exit(1); }
+    const folder = q(`SELECT * FROM folders WHERE id=?`).get(fid);
+    if (!folder) { console.error('asset not found'); process.exit(1); }
+    const t = q(`SELECT type, soon, grp FROM tpl_types WHERE type=?`).get(type);
+    if (!t) { console.error(`unknown type "${type}". See: magi types`); process.exit(1); }
+    if (t.soon) { console.error(`type "${type}" is coming soon`); process.exit(1); }
+    if (t.grp && t.grp !== folder.grp) { console.error(`a ${type} target does not belong in a ${folder.grp} asset`); process.exit(1); }
+    const info = q(`INSERT INTO assets (project_id, folder_id, type, label) VALUES (?,?,?,?)`).run(folder.project_id, folder.id, type, label);
     const aid = info.lastInsertRowid;
     const stmt = q(`INSERT INTO items (asset_id, group_key, group_title, title, detail, payloads, kind, spawns, catalog, options, sort)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
     const rows = q(`SELECT * FROM tpl_items WHERE type=? ORDER BY sort, id`).all(type);
     for (const r of rows) stmt.run(aid, r.group_key, r.group_title, r.title, r.detail, r.payloads,
       r.kind, r.spawns, r.catalog, r.options, r.sort);
-    console.log(`Added ${type} asset #${aid} "${label}" with ${rows.length} checklist items.`);
+    console.log(`Added ${type} target #${aid} "${label}" with ${rows.length} checklist items.`);
     break;
   }
 
@@ -159,15 +183,31 @@ switch (cmd) {
   }
 
   case 'rm-asset': {
+    const f = q(`SELECT * FROM folders WHERE id=?`).get(args[1]);
+    if (!f) { console.error('asset not found'); process.exit(1); }
+    const targets = q(`SELECT COUNT(*) c FROM assets WHERE folder_id=?`).get(f.id).c;
+    console.log(`\nAsset #${f.id} ${f.grp} "${f.label}" (project #${f.project_id})`);
+    console.log(`  ${targets} target(s) and all their checklists/findings`);
+    if (!args.includes('--yes')) {
+      console.log(`\nNothing deleted. Re-run with --yes to delete permanently:`);
+      console.log(`  node cli.js rm-asset ${f.id} --yes\n`);
+      break;
+    }
+    q(`DELETE FROM folders WHERE id=?`).run(f.id);
+    console.log(`\nDeleted asset #${f.id} and everything inside it.\n`);
+    break;
+  }
+
+  case 'rm-target': {
     const a = q(`SELECT * FROM assets WHERE id=?`).get(args[1]);
-    if (!a) { console.error('asset not found'); process.exit(1); }
+    if (!a) { console.error('target not found'); process.exit(1); }
     const items = q(`SELECT COUNT(*) c FROM items WHERE asset_id=?`).get(a.id).c;
     const finds = q(`SELECT COUNT(*) c FROM findings WHERE asset_id=?`).get(a.id).c;
-    console.log(`\nTarget #${a.id} ${a.type} "${a.label}" (project #${a.project_id})`);
+    console.log(`\nTarget #${a.id} ${a.type} "${a.label}"`);
     console.log(`  ${items} checklist item(s), ${finds} finding(s)`);
     if (!args.includes('--yes')) {
       console.log(`\nNothing deleted. Re-run with --yes to delete permanently:`);
-      console.log(`  node cli.js rm-asset ${a.id} --yes\n`);
+      console.log(`  node cli.js rm-target ${a.id} --yes\n`);
       break;
     }
     q(`DELETE FROM assets WHERE id=?`).run(a.id);
@@ -205,7 +245,7 @@ switch (cmd) {
     catch (e) { console.error(`cannot read ${file}: ${e.message}`); process.exit(1); }
     try {
       const r = importProject(bundle, args[2] || null);
-      console.log(`Imported project #${r.projectId}: ${r.assets} target(s), ${r.items} item(s), ${r.findings} finding(s).`);
+      console.log(`Imported project #${r.projectId}: ${r.assets} asset(s), ${r.targets} target(s), ${r.items} item(s), ${r.findings} finding(s).`);
     } catch (e) { console.error(`import failed: ${e.message}`); process.exit(1); }
     break;
   }

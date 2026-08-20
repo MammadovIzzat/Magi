@@ -186,15 +186,21 @@ function tplGroup(type, kind, catalog, gkey) {
   if (!g) return null;
   return { ...g, items: q(`SELECT * FROM tpl_group_items WHERE group_id=? ORDER BY sort, id`).all(g.id) };
 }
-function createAssetWithItems(projectId, type, label, metadata = {}) {
-  const info = q(`INSERT INTO assets (project_id, type, label, metadata) VALUES (?,?,?,?)`)
-    .run(projectId, type, label, JSON.stringify(metadata));
-  const assetId = info.lastInsertRowid;
-  for (const r of tplRows(type)) addItem(assetId, {
+// A Target (checklist-bearing) lives in an Asset folder; assets.project_id is kept
+// denormalised so the project-wide roll-up queries stay simple.
+function createTarget(folderId, projectId, type, label, metadata = {}) {
+  const info = q(`INSERT INTO assets (project_id, folder_id, type, label, metadata) VALUES (?,?,?,?,?)`)
+    .run(projectId, folderId, type, label, JSON.stringify(metadata));
+  const targetId = info.lastInsertRowid;
+  for (const r of tplRows(type)) addItem(targetId, {
     group_key: r.group_key, group_title: r.group_title, title: r.title, detail: r.detail,
     payloads: r.payloads, kind: r.kind, spawns: r.spawns, catalog: r.catalog, options: r.options, sort: r.sort,
   });
-  return assetId;
+  return targetId;
+}
+// Engagement groups that can actually hold a target (have at least one non-"soon" type).
+function selectableGroups() {
+  return new Set(q(`SELECT DISTINCT grp FROM tpl_types WHERE soon=0 AND grp IS NOT NULL`).all().map(r => r.grp));
 }
 
 // ---- meta ----
@@ -436,52 +442,90 @@ app.post('/api/projects/import', (req, res) => {
 app.get('/api/projects/:id', (req, res) => {
   const p = q(`SELECT * FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'not found' });
-  // counts exclude select/group containers — they are structure, not work
-  const assets = q(`SELECT a.*,
-      (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group')) AS total,
-      (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group')
+  // Asset folders with roll-up progress across all their targets.
+  const assets = q(`SELECT f.*,
+      (SELECT COUNT(*) FROM assets a WHERE a.folder_id=f.id) AS targets,
+      (SELECT COUNT(*) FROM items i JOIN assets a ON a.id=i.asset_id WHERE a.folder_id=f.id AND i.kind NOT IN ('select','group')) AS total,
+      (SELECT COUNT(*) FROM items i JOIN assets a ON a.id=i.asset_id WHERE a.folder_id=f.id AND i.kind NOT IN ('select','group')
          AND i.status IN ('done','na','yes','no')) AS handled,
-      (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.status='flag') AS flags,
-      (SELECT COUNT(*) FROM findings f WHERE f.asset_id=a.id) AS findings
-      FROM assets a WHERE a.project_id=? ORDER BY a.created_at`).all(req.params.id);
-  res.json({ ...p, assets: assets.map(assetSummary) });
+      (SELECT COUNT(*) FROM items i JOIN assets a ON a.id=i.asset_id WHERE a.folder_id=f.id AND i.status='flag') AS flags,
+      (SELECT COUNT(*) FROM findings fi JOIN assets a ON a.id=fi.asset_id WHERE a.folder_id=f.id) AS findings
+      FROM folders f WHERE f.project_id=? ORDER BY f.created_at, f.id`).all(req.params.id);
+  res.json({ ...p, assets });
 });
 
 // Cascades to assets -> items/findings via the schema's ON DELETE CASCADE.
 app.delete('/api/projects/:id', (req, res) => {
   const p = q(`SELECT id FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'not found' });
-  const assets = q(`SELECT COUNT(*) c FROM assets WHERE project_id=?`).get(p.id).c;
+  const assets = q(`SELECT COUNT(*) c FROM folders WHERE project_id=?`).get(p.id).c;
   q(`DELETE FROM projects WHERE id=?`).run(p.id);
   res.json({ ok: true, assets });
 });
 
-// ---- assets ----
+// ---- assets (engagement-type folders) ----
+const GRP_KEYS = new Set(['internal', 'external', 'mobile', 'wireless', 'otiot', 'additional']);
 app.post('/api/projects/:id/assets', (req, res) => {
   const p = q(`SELECT id FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'project not found' });
+  const { grp, label } = req.body || {};
+  if (!GRP_KEYS.has(grp)) return res.status(400).json({ error: 'unknown engagement type' });
+  if (!selectableGroups().has(grp)) return res.status(400).json({ error: 'that engagement type is coming soon' });
+  if (!label) return res.status(400).json({ error: 'name required' });
+  const info = q(`INSERT INTO folders (project_id, grp, label) VALUES (?,?,?)`).run(p.id, grp, label);
+  res.status(201).json(q(`SELECT * FROM folders WHERE id=?`).get(info.lastInsertRowid));
+});
+
+// Asset folder detail + its targets, each with progress.
+app.get('/api/assets/:id', (req, res) => {
+  const f = q(`SELECT * FROM folders WHERE id=?`).get(req.params.id);
+  if (!f) return res.status(404).json({ error: 'not found' });
+  const targets = q(`SELECT a.*,
+      (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group')) AS total,
+      (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group')
+         AND i.status IN ('done','na','yes','no')) AS handled,
+      (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.status='flag') AS flags,
+      (SELECT COUNT(*) FROM findings fi WHERE fi.asset_id=a.id) AS findings
+      FROM assets a WHERE a.folder_id=? ORDER BY a.created_at, a.id`).all(f.id);
+  const project = q(`SELECT id, name FROM projects WHERE id=?`).get(f.project_id);
+  res.json({ ...f, project, targets: targets.map(assetSummary) });
+});
+
+app.delete('/api/assets/:id', (req, res) => {
+  const f = q(`SELECT id FROM folders WHERE id=?`).get(req.params.id);
+  if (!f) return res.status(404).json({ error: 'not found' });
+  const targets = q(`SELECT COUNT(*) c FROM assets WHERE folder_id=?`).get(f.id).c;
+  q(`DELETE FROM folders WHERE id=?`).run(f.id);   // cascades targets -> items/findings
+  res.json({ ok: true, targets });
+});
+
+// ---- targets (the checklist-bearing things inside an asset) ----
+app.post('/api/assets/:id/targets', (req, res) => {
+  const f = q(`SELECT * FROM folders WHERE id=?`).get(req.params.id);
+  if (!f) return res.status(404).json({ error: 'asset not found' });
   const { type, label, metadata } = req.body || {};
-  // validate against the editable types, not the seed file — otherwise asset types
-  // created in the template editor can be listed but never used
-  const t = q(`SELECT type, soon FROM tpl_types WHERE type=?`).get(type || '');
-  if (!t) return res.status(400).json({ error: 'unknown asset type' });
-  if (t.soon) return res.status(400).json({ error: 'that asset type is coming soon and not selectable yet' });
-  if (!label) return res.status(400).json({ error: 'label required' });
-  const id = createAssetWithItems(req.params.id, type, label, metadata || {});
+  const t = q(`SELECT type, soon, grp FROM tpl_types WHERE type=?`).get(type || '');
+  if (!t) return res.status(400).json({ error: 'unknown target type' });
+  if (t.soon) return res.status(400).json({ error: 'that target type is coming soon and not selectable yet' });
+  if (t.grp && t.grp !== f.grp) return res.status(400).json({ error: `a ${t.type} target does not belong in a ${f.grp} asset` });
+  if (!label) return res.status(400).json({ error: 'identifier required' });
+  const id = createTarget(f.id, f.project_id, type, label, metadata || {});
   res.status(201).json(assetSummary(q(`SELECT * FROM assets WHERE id=?`).get(id)));
 });
 
-app.get('/api/assets/:id', (req, res) => {
+app.get('/api/targets/:id', (req, res) => {
   const a = q(`SELECT * FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'not found' });
   const items = q(`SELECT * FROM items WHERE asset_id=? ORDER BY sort, id`).all(req.params.id)
     .map(i => ({ ...i, payloads: JSON.parse(i.payloads || '[]'), options: JSON.parse(i.options || '[]') }));
   const findings = q(`SELECT * FROM findings WHERE asset_id=? ORDER BY created_at DESC`).all(req.params.id)
     .map(f => ({ ...f, attachments: q(`SELECT id, filename, mime, size FROM attachments WHERE finding_id=? ORDER BY id`).all(f.id) }));
-  res.json({ ...assetSummary(a), items, findings });
+  const folder = q(`SELECT id, grp, label, project_id FROM folders WHERE id=?`).get(a.folder_id);
+  const project = folder ? q(`SELECT id, name FROM projects WHERE id=?`).get(folder.project_id) : null;
+  res.json({ ...assetSummary(a), items, findings, folder, project });
 });
 
-app.delete('/api/assets/:id', (req, res) => {
+app.delete('/api/targets/:id', (req, res) => {
   const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'not found' });
   const items = q(`SELECT COUNT(*) c FROM items WHERE asset_id=?`).get(a.id).c;
@@ -512,7 +556,7 @@ app.patch('/api/items/:id', (req, res) => {
   res.json(q(`SELECT * FROM items WHERE id=?`).get(req.params.id));
 });
 
-app.post('/api/assets/:id/items', (req, res) => {
+app.post('/api/targets/:id/items', (req, res) => {
   const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'asset not found' });
   const { title, detail, group_title, payloads, kind, parent_id } = req.body || {};
@@ -584,7 +628,7 @@ app.delete('/api/items/:id', (req, res) => {
 });
 
 // ---- findings ----
-app.post('/api/assets/:id/findings', (req, res) => {
+app.post('/api/targets/:id/findings', (req, res) => {
   const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'asset not found' });
   const { title, kind, severity, body } = req.body || {};

@@ -1,54 +1,59 @@
-// Portable import/export of a whole engagement — the project, its targets, the full
-// checklist item tree (statuses, answers, custom items and spawned/unfolded children)
-// and every finding. Unlike a template bundle this DOES contain client-confidential
-// data (credentials, raw requests), so the UI warns before writing one to disk.
+// Portable import/export of a whole engagement across the three-level model:
+//   project  ->  assets (engagement-type folders)  ->  targets (checklist + findings)
+// Unlike a template bundle this DOES contain client-confidential data (credentials, raw
+// requests, screenshots), so the UI warns before writing one to disk. Import always
+// creates a NEW project and never overwrites. The item tree is rebuilt by index remap.
 //
-// Import always creates a NEW project and never overwrites, so there is no conflict
-// handling to get wrong. Item ids are remapped on the way in to rebuild the tree.
-//
-// Shape:
-//   { magi: 'engagement', version: 1, exported: '<iso>',
-//     project: { name, client, scope, notes, created_at },
-//     assets: [ { type, label, metadata, created_at,
-//                 items: [ { i, parent, group_key, group_title, title, detail, payloads[],
-//                            kind, spawns, catalog, options[], opt_key, status, answer, sort,
-//                            is_custom, created_at } ],
-//                 findings: [ { title, kind, severity, body, created_at } ] } ] }
+// Shape (version 2):
+//   { magi:'engagement', version:2, exported,
+//     project:{ name, client, scope, notes, created_at },
+//     assets:[ { grp, label, created_at,
+//                targets:[ { type, label, metadata, created_at,
+//                            items:[ {i,parent,...,status,answer,...} ],
+//                            findings:[ {title,kind,severity,body, attachments:[{filename,mime,size,data(b64)}]} ] } ] } ] }
+// Version-1 files (assets = flat targets, no folders) still import: each is wrapped in
+// a folder chosen from its type's engagement group.
 import { db } from './db.js';
 
 const FORMAT = 'engagement';
-const VERSION = 1;
+const VERSION = 2;
 const parseArr = (s) => { try { const v = JSON.parse(s || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } };
+const GRP_LABEL = { internal: 'Internal', external: 'External', mobile: 'Mobile', wireless: 'Wireless', otiot: 'OT / IoT', additional: 'Additional' };
+const grpOfType = (type) => db.prepare(`SELECT grp FROM tpl_types WHERE type=?`).get(type)?.grp || 'additional';
+
+function serializeTarget(a) {
+  const rows = db.prepare(`SELECT * FROM items WHERE asset_id=? ORDER BY id`).all(a.id);
+  const idx = new Map(rows.map((r, i) => [r.id, i]));
+  return {
+    type: a.type, label: a.label, metadata: JSON.parse(a.metadata || '{}'), created_at: a.created_at,
+    items: rows.map((r, i) => ({
+      i, parent: r.parent_id == null ? null : (idx.has(r.parent_id) ? idx.get(r.parent_id) : null),
+      group_key: r.group_key, group_title: r.group_title, title: r.title, detail: r.detail,
+      payloads: parseArr(r.payloads), kind: r.kind, spawns: r.spawns, catalog: r.catalog,
+      options: parseArr(r.options), opt_key: r.opt_key, status: r.status, answer: r.answer,
+      sort: r.sort, is_custom: r.is_custom, created_at: r.created_at,
+    })),
+    findings: db.prepare(`SELECT id,title,kind,severity,body,created_at FROM findings WHERE asset_id=? ORDER BY id`).all(a.id)
+      .map(f => ({
+        title: f.title, kind: f.kind, severity: f.severity, body: f.body, created_at: f.created_at,
+        attachments: db.prepare(`SELECT filename,mime,size,data,created_at FROM attachments WHERE finding_id=? ORDER BY id`).all(f.id)
+          .map(at => ({ filename: at.filename, mime: at.mime, size: at.size, created_at: at.created_at, data: Buffer.from(at.data).toString('base64') })),
+      })),
+  };
+}
 
 /** Build a portable, fully re-importable object for one project, or null if missing. */
 export function exportProject(id, nowISO) {
   const p = db.prepare(`SELECT name,client,scope,notes,created_at FROM projects WHERE id=?`).get(id);
   if (!p) return null;
-  const assets = db.prepare(`SELECT id,type,label,metadata,created_at FROM assets WHERE project_id=? ORDER BY created_at,id`).all(id);
+  const folders = db.prepare(`SELECT id,grp,label,created_at FROM folders WHERE project_id=? ORDER BY created_at,id`).all(id);
   return {
     magi: FORMAT, version: VERSION, exported: nowISO || null,
     project: { name: p.name, client: p.client, scope: p.scope, notes: p.notes, created_at: p.created_at },
-    assets: assets.map(a => {
-      const rows = db.prepare(`SELECT * FROM items WHERE asset_id=? ORDER BY id`).all(a.id);
-      // stable local index per item, and the index of its parent (or null)
-      const idx = new Map(rows.map((r, i) => [r.id, i]));
-      return {
-        type: a.type, label: a.label, metadata: JSON.parse(a.metadata || '{}'), created_at: a.created_at,
-        items: rows.map((r, i) => ({
-          i, parent: r.parent_id == null ? null : (idx.has(r.parent_id) ? idx.get(r.parent_id) : null),
-          group_key: r.group_key, group_title: r.group_title, title: r.title, detail: r.detail,
-          payloads: parseArr(r.payloads), kind: r.kind, spawns: r.spawns, catalog: r.catalog,
-          options: parseArr(r.options), opt_key: r.opt_key, status: r.status, answer: r.answer,
-          sort: r.sort, is_custom: r.is_custom, created_at: r.created_at,
-        })),
-        findings: db.prepare(`SELECT id,title,kind,severity,body,created_at FROM findings WHERE asset_id=? ORDER BY id`).all(a.id)
-          .map(f => ({
-            title: f.title, kind: f.kind, severity: f.severity, body: f.body, created_at: f.created_at,
-            attachments: db.prepare(`SELECT filename,mime,size,data,created_at FROM attachments WHERE finding_id=? ORDER BY id`).all(f.id)
-              .map(at => ({ filename: at.filename, mime: at.mime, size: at.size, created_at: at.created_at, data: Buffer.from(at.data).toString('base64') })),
-          })),
-      };
-    }),
+    assets: folders.map(f => ({
+      grp: f.grp, label: f.label, created_at: f.created_at,
+      targets: db.prepare(`SELECT * FROM assets WHERE folder_id=? ORDER BY created_at,id`).all(f.id).map(serializeTarget),
+    })),
   };
 }
 
@@ -61,10 +66,23 @@ export function validateProjectBundle(b) {
   return b;
 }
 
-/**
- * Import a project bundle as a brand-new project. Rebuilds the item tree by remapping
- * each item's local index to its new rowid. Returns a summary. Transactional.
- */
+// Normalise either format into folders[] -> targets[].
+function foldersFromBundle(b) {
+  // v2: assets are folders with a targets[] array
+  if (b.assets.some(a => Array.isArray(a.targets))) {
+    return b.assets.map(a => ({ grp: a.grp || 'additional', label: a.label || GRP_LABEL[a.grp] || 'Additional', created_at: a.created_at, targets: a.targets || [] }));
+  }
+  // v1: assets ARE targets; wrap each under a folder for its type's group
+  const byGrp = new Map();
+  for (const t of b.assets) {
+    const grp = grpOfType(t.type);
+    if (!byGrp.has(grp)) byGrp.set(grp, { grp, label: GRP_LABEL[grp] || 'Additional', targets: [] });
+    byGrp.get(grp).targets.push(t);
+  }
+  return [...byGrp.values()];
+}
+
+/** Import a project bundle as a brand-new project. Transactional. */
 export function importProject(bundle, nameOverride) {
   validateProjectBundle(bundle);
   const P = bundle.project;
@@ -74,7 +92,8 @@ export function importProject(bundle, nameOverride) {
       .run(nameOverride || P.name, P.client ?? null, P.scope ?? null, P.notes ?? null,
         P.created_at || new Date().toISOString()).lastInsertRowid;
 
-    const insAsset = db.prepare(`INSERT INTO assets (project_id,type,label,metadata,created_at) VALUES (?,?,?,?,?)`);
+    const insFolder = db.prepare(`INSERT INTO folders (project_id,grp,label,created_at) VALUES (?,?,?,?)`);
+    const insTarget = db.prepare(`INSERT INTO assets (project_id,folder_id,type,label,metadata,created_at) VALUES (?,?,?,?,?,?)`);
     const insItem = db.prepare(`INSERT INTO items
       (asset_id,parent_id,group_key,group_title,title,detail,payloads,kind,spawns,catalog,options,opt_key,status,answer,sort,is_custom,created_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
@@ -82,48 +101,49 @@ export function importProject(bundle, nameOverride) {
     const insFinding = db.prepare(`INSERT INTO findings (asset_id,title,kind,severity,body,created_at) VALUES (?,?,?,?,?,?)`);
     const insAttach = db.prepare(`INSERT INTO attachments (finding_id,filename,mime,size,data,created_at) VALUES (?,?,?,?,?,?)`);
 
-    let nAssets = 0, nItems = 0, nFindings = 0;
-    for (const a of (bundle.assets || [])) {
-      if (!a.type || !a.label) continue;
-      const aid = insAsset.run(pid, a.type, a.label, JSON.stringify(a.metadata || {}),
-        a.created_at || new Date().toISOString()).lastInsertRowid;
+    let nAssets = 0, nTargets = 0, nItems = 0, nFindings = 0;
+    for (const folder of foldersFromBundle(bundle)) {
+      const fid = insFolder.run(pid, folder.grp || 'additional', folder.label || 'Additional',
+        folder.created_at || new Date().toISOString()).lastInsertRowid;
       nAssets++;
+      for (const tgt of (folder.targets || [])) {
+        if (!tgt.type || !tgt.label) continue;
+        const aid = insTarget.run(pid, fid, tgt.type, tgt.label, JSON.stringify(tgt.metadata || {}),
+          tgt.created_at || new Date().toISOString()).lastInsertRowid;
+        nTargets++;
 
-      // insert every item first (parent_id null), remember local index -> new rowid
-      const map = new Map();
-      const items = a.items || [];
-      items.forEach((it, i) => {
-        const localIdx = it.i ?? i;
-        const rowid = insItem.run(aid, null, it.group_key || 'custom', it.group_title || 'Custom',
-          it.title || '(untitled)', it.detail || '', JSON.stringify(it.payloads || []), it.kind || 'check',
-          it.spawns ?? null, it.catalog ?? null, JSON.stringify(it.options || []), it.opt_key ?? null,
-          it.status || 'todo', it.answer ?? null, it.sort ?? i, it.is_custom ? 1 : 0,
-          it.created_at || new Date().toISOString()).lastInsertRowid;
-        map.set(localIdx, rowid);
-        nItems++;
-      });
-      // second pass: wire up parent links
-      items.forEach((it, i) => {
-        if (it.parent == null) return;
-        const child = map.get(it.i ?? i), parent = map.get(it.parent);
-        if (child && parent) setParent.run(parent, child);
-      });
+        const map = new Map();
+        const items = tgt.items || [];
+        items.forEach((it, i) => {
+          const rowid = insItem.run(aid, null, it.group_key || 'custom', it.group_title || 'Custom',
+            it.title || '(untitled)', it.detail || '', JSON.stringify(it.payloads || []), it.kind || 'check',
+            it.spawns ?? null, it.catalog ?? null, JSON.stringify(it.options || []), it.opt_key ?? null,
+            it.status || 'todo', it.answer ?? null, it.sort ?? i, it.is_custom ? 1 : 0,
+            it.created_at || new Date().toISOString()).lastInsertRowid;
+          map.set(it.i ?? i, rowid);
+          nItems++;
+        });
+        items.forEach((it, i) => {
+          if (it.parent == null) return;
+          const child = map.get(it.i ?? i), parent = map.get(it.parent);
+          if (child && parent) setParent.run(parent, child);
+        });
 
-      for (const f of (a.findings || [])) {
-        if (!f.title) continue;
-        const fid = insFinding.run(aid, f.title, f.kind || 'note', f.severity ?? null, f.body ?? null,
-          f.created_at || new Date().toISOString()).lastInsertRowid;
-        nFindings++;
-        for (const at of (f.attachments || [])) {
-          if (!at.data || !at.mime) continue;
-          const buf = Buffer.from(at.data, 'base64');
-          insAttach.run(fid, at.filename || 'image', at.mime, at.size || buf.length, buf,
-            at.created_at || new Date().toISOString());
+        for (const f of (tgt.findings || [])) {
+          if (!f.title) continue;
+          const fnd = insFinding.run(aid, f.title, f.kind || 'note', f.severity ?? null, f.body ?? null,
+            f.created_at || new Date().toISOString()).lastInsertRowid;
+          nFindings++;
+          for (const at of (f.attachments || [])) {
+            if (!at.data || !at.mime) continue;
+            const buf = Buffer.from(at.data, 'base64');
+            insAttach.run(fnd, at.filename || 'image', at.mime, at.size || buf.length, buf, at.created_at || new Date().toISOString());
+          }
         }
       }
     }
     db.prepare('COMMIT').run();
-    return { projectId: pid, assets: nAssets, items: nItems, findings: nFindings };
+    return { projectId: pid, assets: nAssets, targets: nTargets, items: nItems, findings: nFindings };
   } catch (e) {
     db.prepare('ROLLBACK').run();
     throw e;

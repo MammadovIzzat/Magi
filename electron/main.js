@@ -5,13 +5,25 @@
 // network, and no browser is involved.
 process.env.MAGI_EMBED = '1';               // stop server.js from listening
 
-import { app, BrowserWindow, Menu, dialog, protocol, shell } from 'electron';
+import { app, BrowserWindow, Menu, dialog, protocol, shell, safeStorage } from 'electron';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname, normalize } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createDispatcher } from './dispatch.js';
+
+// safeStorage (token-at-rest encryption) backend selection. Chromium only auto-detects
+// GNOME and KDE; on tiling WMs (i3, sway, Hyprland) it silently uses a no-op "basic" store
+// and reports encryption unavailable — even when gnome-keyring's Secret Service is running.
+// Point it at the standard Secret Service (libsecret), which gnome-keyring and KWallet both
+// provide, so the token gets real OS-keychain encryption. KDE keeps its native kwallet.
+// Override anywhere with MAGI_PASSWORD_STORE=basic|gnome-libsecret|kwallet6|…
+{
+  const de = (process.env.XDG_CURRENT_DESKTOP || '').toLowerCase();
+  const store = process.env.MAGI_PASSWORD_STORE || (/kde|plasma/.test(de) ? '' : 'gnome-libsecret');
+  if (store) app.commandLine.appendSwitch('password-store', store);
+}
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
@@ -56,6 +68,20 @@ async function createWindow() {
     join(ROOT, 'server.js'),                // source checkout
   ].find(existsSync);
   if (!entry) throw new Error('Magi: could not find the server bundle next to ' + ROOT);
+
+  // Encrypt the team-server token at rest with the OS keychain (Keychain / DPAPI / libsecret).
+  // Set before the server bundle loads so its background sync reads it. A global so it reaches
+  // client-link whether the server is bundled or a loose file.
+  try {
+    if (safeStorage.isEncryptionAvailable()) {
+      globalThis.__MAGI_ENCRYPTOR = {
+        available: true,
+        encrypt: (s) => safeStorage.encryptString(s).toString('base64'),
+        decrypt: (b) => safeStorage.decryptString(Buffer.from(String(b), 'base64')),
+      };
+    }
+  } catch { /* no keychain available — client-link falls back to a 0600 file and the UI warns */ }
+
   const mod = await import(pathToFileURL(entry).href);
   const dispatch = createDispatcher(mod.default?.default ?? mod.default);
 

@@ -10,7 +10,8 @@ license=('MIT')
 # node:sqlite is built into Node from 22.5, so there is no native module to compile.
 # Pinned to the electron series this was tested against — the launcher will use any
 # electron39+ it finds, so change this line if you prefer a different one.
-depends=('nodejs>=22.5.0' 'electron43')
+# openssl: 'magi server' shells out to it once to create its durable certificate.
+depends=('nodejs>=22.5.0' 'electron43' 'openssl')
 makedepends=('npm')
 options=('!debug' '!strip')
 
@@ -24,6 +25,10 @@ build() {
 
 check() {
   cd "$_srcdir"
+  # A database from before the sync columns existed must still migrate on first boot.
+  # (That upgrade path shipped broken once — it belongs in the package's own gate.)
+  node scripts/migrate-smoke.mjs
+  node scripts/stash-smoke.mjs
   # Paint the real UI in a headless browser: a render-time ReferenceError passes
   # every syntax check and still produces a blank window.
   node scripts/smoke.mjs
@@ -33,6 +38,12 @@ check() {
   ( cd "$tmp"
     MAGI_PORT=45998 MAGI_DB="$tmp/check.db" timeout 6 node magi.cjs >out.log 2>&1 || true
     grep -q "MAGI" out.log || { echo "bundle failed to start:"; cat out.log; exit 1; } )
+  # team-server mode must boot over HTTPS and mint its durable certificate
+  ( cd "$tmp"
+    MAGI_SERVER=1 MAGI_HOST=127.0.0.1 MAGI_PORT=45996 MAGI_DB="$tmp/srv.db" MAGI_DATA_DIR="$tmp/srvdir" \
+      MAGI_PASS=checkpassword123 timeout 6 node magi.cjs >srv.log 2>&1 || true
+    { grep -q "MAGI SERVER" srv.log && [ -f "$tmp/srvdir/server/server.crt" ]; } \
+      || { echo "server-mode bundle failed:"; cat srv.log; exit 1; } )
   # and the embeddable one must export the Express app without listening
   MAGI_EMBED=1 MAGI_DB="$tmp/check2.db" node -e '
     const m = require("'"$_srcdir"'/dist/magi-server.cjs");

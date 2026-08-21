@@ -22,3 +22,6 @@ packaging/*.pkg.tar.zst
 
 # electron-builder output and its downloaded runtimes
 dist/installers/
+
+# Local secrets — never commit (holds MAGI_PASS). .env.example is the template.
+.env

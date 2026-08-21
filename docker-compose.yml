@@ -1,0 +1,34 @@
+# Magi team server.
+#
+#   cp .env.example .env        # then set a strong MAGI_PASS
+#   docker compose up -d --build
+#   docker compose logs magi | grep -A1 fingerprint     # the value clients pin
+#   docker compose exec magi magi enroll-code           # a one-time code per client
+#
+# Clients connect to  https://<this-host>:8443  with that fingerprint + code.
+services:
+  magi:
+    build: .
+    image: magi-server
+    container_name: magi-server
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    volumes:
+      # Durable: database + certificate + identity survive restarts and rebuilds.
+      - magi-data:/data
+    environment:
+      # REQUIRED — the server refuses to start on the default password.
+      MAGI_PASS: ${MAGI_PASS:?set a strong admin password in .env}
+      # Optional — extra names/IPs clients use to reach this server (they pin the
+      # fingerprint regardless, so this only affects the cert's SAN):
+      # MAGI_SERVER_SAN: "DNS:magi.corp.local,IP:10.0.0.9"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('https').get({host:'127.0.0.1',port:8443,path:'/api/me',rejectUnauthorized:false},r=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  magi-data:

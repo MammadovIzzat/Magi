@@ -24,6 +24,7 @@ const ICON = {
   up: ['M8 13V5M4.5 8.5L8 5l3.5 3.5', 1.5],
   image: ['M2.5 3.5h11v9h-11zM2.5 10l3-3 3 3M9 8.5l2-2 2.5 2.5', 1.3],
   key: ['M10.5 2.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7zM8 8l-5.5 5.5V15h2l4-4', 1.3],
+  server: ['M2.5 4h11v3.4h-11zM2.5 8.6h11V12h-11zM4.6 5.7h.01M4.6 10.3h.01', 1.3],
 };
 function icon(name, size = 13) {
   const [d, w] = ICON[name];
@@ -102,6 +103,7 @@ function substMap(a) {
 }
 const subst = (text) => String(text ?? '').replace(/\{([a-z_]+)\}/gi, (full, k) => (k in SUBST_MAP ? SUBST_MAP[k] : full));
 let CURRENT_USER = null;
+let LINK = { linked: false }; // team-server link status, refreshed from /api/link
 
 // ---------- modal ----------
 // kicker + title + optional note, fields, optional danger box, gold/red CTA
@@ -147,11 +149,22 @@ function setCrumbs(parts) {
   });
 }
 function renderAccount() {
+  const badge = LINK?.linked
+    ? el('button', { className: 'linkbadge on', title: `Linked to ${LINK.link?.server_url} — open settings`, onclick: () => location.hash = '/settings' },
+        el('span', { className: 'dot' }), LINK.link?.display_name || 'linked')
+    : LINK?.unavailable ? null
+      : el('button', { className: 'linkbadge', title: 'Working locally — click to connect to a team server', onclick: () => location.hash = '/settings' },
+          el('span', { className: 'dot' }), 'local');
   $('#account').replaceChildren(el('div', { className: 'acct' },
+    badge,
     el('div', { className: 'avatar' }, (CURRENT_USER || '?')[0].toUpperCase()),
     el('span', { className: 'who' }, CURRENT_USER || ''),
     el('button', { className: 'iconbtn', title: 'Change password', onclick: changePassword }, icon('key')),
     el('button', { className: 'iconbtn danger', title: 'Sign out', onclick: logout }, icon('exit'))));
+}
+async function refreshLink() {
+  try { LINK = await api('/link'); } catch { LINK = { linked: false, unavailable: true }; }
+  if (CURRENT_USER) renderAccount();
 }
 function topActions(...btns) { $('#topActions').replaceChildren(...btns.filter(Boolean)); }
 function setRail(node) {
@@ -167,6 +180,7 @@ async function route() {
   topActions();
   if (!CURRENT_USER) return;
   try {
+    if (h === '/settings') return renderSettings();
     if (h === '/editor') return renderEditor();
     const gm = h.match(/^\/group\/(\d+)/); if (gm) return renderGroup(gm[1]);
     const em = h.match(/^\/editor\/([a-z0-9_]+)/); if (em) return renderEditor(em[1]);
@@ -1280,6 +1294,98 @@ function tplItemModal(type, item = null) {
   });
 }
 
+// ---------- settings: team server link ----------
+async function renderSettings() {
+  setRail(null);
+  setCrumbs([{ label: 'engagements', go: () => location.hash = '' }, { label: 'settings' }]);
+  topActions();
+  try { LINK = await api('/link'); } catch { LINK = { linked: false, unavailable: true }; }
+  renderAccount();
+  const view = $('#view');
+  const page = el('div', { className: 'page' });
+  page.append(el('div', { className: 'page-head' },
+    el('div', {}, el('div', { className: 'kicker' }, 'Settings'), el('h1', {}, 'Team server'))));
+
+  if (LINK.unavailable) {
+    page.append(el('div', { className: 'empty' }, 'This instance is running as a server — linking is for client installs.'));
+    return view.replaceChildren(page);
+  }
+  const kv = (k, v) => el('div', { className: 'kv' }, el('span', { className: 'k' }, k), el('span', { className: 'v' }, v));
+
+  if (!LINK.linked) {
+    page.append(el('div', { className: 'setcard' },
+      el('div', { className: 'setcard-hd' }, el('span', { className: 'linkbadge' }, el('span', { className: 'dot' }), 'Working locally')),
+      el('p', { className: 'muted' }, 'Everything you create stays in this install. Connect to a team server to share engagements — you will need the server address, its certificate fingerprint, and a one-time enrollment code from an admin.'),
+      el('div', { className: 'setcard-actions' },
+        el('button', { className: 'btn gold', onclick: connectDialog }, icon('server'), 'Connect to a server'))));
+  } else {
+    const L = LINK.link || {};
+    const atRest = L.token_at_rest === 'encrypted' ? el('span', { className: 'pill ok' }, 'encrypted · OS keychain')
+      : L.token_at_rest === 'unencrypted' ? el('span', { className: 'pill warn' }, 'stored unencrypted — no keychain here')
+        : el('span', { className: 'pill' }, L.token_at_rest || 'unknown');
+    page.append(el('div', { className: 'setcard' },
+      el('div', { className: 'setcard-hd' }, el('span', { className: 'linkbadge on' }, el('span', { className: 'dot' }), 'Linked')),
+      kv('Server', L.server_url),
+      kv('Signed as', `${L.display_name} · ${L.username} · ${L.role}`),
+      kv('This device', L.device_id),
+      kv('Fingerprint', el('code', { className: 'fp' }, L.fingerprint || '—')),
+      el('div', { className: 'kv' }, el('span', { className: 'k' }, 'Token at rest'), el('span', { className: 'v' }, atRest)),
+      kv('Connected', L.connected_at ? new Date(L.connected_at).toLocaleString() : '—'),
+      kv('Last sync', L.last_sync ? new Date(L.last_sync).toLocaleString() : 'not yet'),
+      el('p', { className: 'muted' }, 'Your work saves locally and syncs in the background. Offline changes are kept and sent when the server is reachable again.'),
+      el('div', { className: 'setcard-actions' },
+        el('button', { className: 'btn gold', onclick: syncNowUI }, icon('down'), 'Sync now'),
+        el('button', { className: 'btn', onclick: pingLink }, 'Check connection'),
+        el('button', { className: 'btn danger', onclick: disconnectDialog }, icon('exit'), 'Disconnect'))));
+  }
+  view.replaceChildren(page);
+}
+function connectDialog() {
+  modal({
+    kicker: 'Team server', title: 'Connect to a server', cta: 'Connect',
+    note: 'Get these from an admin. The connection is refused if the certificate fingerprint does not match. Your current local engagements are set aside and restored if you disconnect.',
+    build: (b) => {
+      field(b, 'Server address', 'server_url', { ph: 'https://magi.corp.local:8443' });
+      field(b, 'Certificate fingerprint', 'fingerprint', { ph: 'AB:CD:… (SHA-256)' });
+      field(b, 'One-time code', 'code', { ph: 'from your admin' });
+      field(b, 'Username', 'username', { ph: 'a new login name' });
+      field(b, 'Your display name', 'display_name', { ph: 'shown on your changes, e.g. Ana R.' });
+    },
+    onSubmit: async (fd) => {
+      const link = await api('/link/connect', { method: 'POST', body: Object.fromEntries(fd) });
+      LINK = { linked: true, link };
+      toast('Linked to ' + link.server_url);
+      renderSettings();
+    },
+  });
+}
+async function pingLink() {
+  try {
+    const r = await api('/link/ping');
+    toast(r.online ? 'Server reachable' : ('Server not reachable' + (r.error ? ` — ${r.error}` : '')));
+    renderSettings();
+  } catch (e) { toast('Ping failed: ' + e.message); }
+}
+async function syncNowUI() {
+  try {
+    const r = await api('/link/sync', { method: 'POST' });
+    toast(r.ok ? (r.applied ? `Synced — ${r.applied} update(s) in` : 'Synced — up to date') : `Sync failed${r.error ? ' — ' + r.error : ''}`);
+    renderSettings();
+  } catch (e) { toast('Sync failed: ' + e.message); }
+}
+function disconnectDialog() {
+  modal({
+    kicker: 'Team server', title: 'Disconnect from the server?', cta: 'Disconnect', danger: true,
+    note: 'Removes the stored credentials and the cached server data from this device, and restores the local engagements you had before connecting. The server keeps its copy.',
+    onSubmit: async () => {
+      await api('/link/disconnect', { method: 'POST' });
+      LINK = { linked: false };
+      toast('Disconnected');
+      renderSettings();
+    },
+  });
+}
+
 // ---------- auth ----------
 function showLogin() {
   CURRENT_USER = null;
@@ -1327,7 +1433,7 @@ function onAuthed(me) {
   CURRENT_USER = me.username;
   $('#topbar').hidden = false;
   renderAccount();
-  (async () => { TYPES = await api('/asset-types'); route(); })();
+  (async () => { TYPES = await api('/asset-types'); route(); refreshLink(); })();
 }
 async function logout() { await api('/auth/logout', { method: 'POST' }); showLogin(); }
 function changePassword() {

@@ -2,7 +2,9 @@
 
 *The pentester's familiar.*
 
-Engagement-based checklist, target tracker and evidence log. **Web app + CLI**, sharing one local SQLite DB.
+Engagement-based checklist, target tracker and evidence log. Runs four ways off one code
+base and one SQLite schema — a **desktop app** (no port, no browser), a **local web app**, a
+**CLI**, or a **shared team server** many testers sync to.
 Structure an engagement in three levels: a **project** holds **Assets** (engagement types —
 Internal, External, Mobile, OT/IoT, Additional), and each Asset holds **Targets** (a web app,
 host, AD domain, API…) with its own tailored attack checklist. Answer trigger questions ("Is there a login?") and the app spawns the
@@ -14,6 +16,10 @@ Project (engagement)
  └─ Asset  (Internal / External / Mobile / OT-IoT / Additional)
      └─ Target  (web · host · AD · api · domain · mobile · container …)  → checklist + findings
 ```
+
+Work solo on a local database, or connect to a [team server](#team-server-multi-user) and
+Magi keeps working **local-first** — instant and offline-capable — while a background loop
+syncs your engagements with the team and attributes every change.
 
 > For authorized security testing only.
 
@@ -132,6 +138,97 @@ npm run app          # from a checkout
 magi                 # installed
 ```
 
+## Team server (multi-user)
+
+Magi also runs as a **shared server** so a whole team works one set of engagements over
+the network — same API, same checklists, but with accounts, roles and attribution. The
+default single-user app is unchanged; the server surface stays dormant until you turn it on.
+
+```bash
+MAGI_PASS=a-long-admin-passphrase magi server      # first run sets the admin password
+magi server                                        # subsequent runs
+```
+
+- **Encrypted transport.** It serves HTTPS with a **self-signed certificate generated
+  once and reused on every restart** — clients trust it by *pinning its fingerprint*
+  (printed on start), not via a public CA. Restarting **never re-runs setup**: the
+  identity and database are durable, so a server that goes down and comes back keeps every
+  client enrolled and every token valid.
+- **Joining is a single-use code.** An admin mints one; a client redeems it *once*:
+
+  ```bash
+  magi enroll-code                       # a worker code
+  magi enroll-code --admin --note "Ana laptop" --expires 48
+  ```
+
+  The client sends a device id (a UUID it generates and keeps) and a human **display
+  name**, and receives a **device-bound token** — the only credential it uses afterwards.
+  The same token replayed from a different device is refused, and only code *hashes* are
+  ever stored.
+- **Roles.** `worker` works engagements; `admin` also manages users, devices and codes.
+  A lost laptop or a departure is one call to revoke: the device's token dies instantly.
+- **Attribution.** Every change is logged with who made it (the display name), so a lead
+  can see the current position — who touched what, when.
+
+It refuses to start while any account still uses the default password. Bind and expose it
+carefully — it holds client-confidential data. `MAGI_HOST` (default `0.0.0.0`), `MAGI_PORT`
+(default `8443`) and `MAGI_SERVER_SAN` (extra cert names/IPs) tune it.
+
+### Run the server with Docker
+
+A `Dockerfile` and `docker-compose.yml` build a minimal image — Node + openssl + the bundled
+server, no source and no `node_modules` — and run it with a durable volume:
+
+```bash
+cp .env.example .env          # set a strong MAGI_PASS
+docker compose up -d --build
+docker compose logs magi | grep -A1 fingerprint    # the value clients pin
+docker compose exec magi magi enroll-code          # a one-time code per client
+```
+
+The database, certificate and identity all live on the `magi-data` volume, so restarts and
+rebuilds **never re-run setup or re-mint the certificate**. Clients connect to
+`https://<this-host>:8443` with that fingerprint and code; add other names/IPs they reach it
+by with `MAGI_SERVER_SAN` in `.env`.
+
+### Joining from a client
+
+In the app, **account bar → the `local` badge → Team server → Connect**. Paste the server
+address, its fingerprint, your one-time code, a username and a **display name** (what your
+teammates see on your changes). The app generates a device id, enrols, and stores the
+device-bound token **encrypted in the OS keychain** (Keychain / DPAPI / libsecret; it falls
+back to a `0600` file and says so if no keychain is present). On a tiling WM (i3 / sway /
+Hyprland) — where Electron doesn't auto-detect the keyring — Magi points it at the Secret
+Service so gnome-keyring or KWallet still encrypts the token; force a backend with
+`MAGI_PASSWORD_STORE` (`gnome-libsecret`, `kwallet6`, or `basic` to opt out).
+
+### Local-first sync
+
+Once linked, the app keeps talking to its **local** database, so it stays instant and works
+offline. A background loop reconciles with the server every few seconds and on demand
+(**Sync now**). Every row carries a global id and a logical clock; merges are
+**last-writer-wins by that clock**, additive for new findings/targets, with tombstones for
+deletes — so two testers on one engagement converge, and edits made offline are kept and
+flushed when the server is reachable again. Connecting **sets your existing local
+engagements aside** (exported, then removed *without* telling the server) and **disconnecting
+restores them**; the server always keeps its own copy. Engagement data syncs; checklist
+*templates* stay per-install. Keep client and server on the same Magi version — the schema
+must match.
+
+## Tests
+
+Headless, no fixtures, no network mocks — real servers and a real headless browser:
+
+```bash
+npm test        # migrate + UI + server + link + sync smokes
+```
+
+- **migrate** — a pre-sync database upgrades cleanly on first boot (the `uid`/clock columns backfill).
+- **smoke** — the SPA paints every screen in headless Chrome (a render-time `ReferenceError` still passes a syntax check but ships a blank window).
+- **server** — pinned TLS, single-use codes, device-bound tokens, role gating, restart durability.
+- **link** — client enrolment, fingerprint/MITM refusal, token encrypted at rest.
+- **sync** — bidirectional replication, last-writer-wins both ways, tombstones, offline-then-reconnect, the stash, and rejection of a crafted (SQL-injection) tombstone.
+
 ## Install
 
 ### Arch Linux (recommended here)
@@ -215,6 +312,14 @@ node cli.js export 1 > report.md
 node cli.js reseed all          # reinstall shipped defaults (after pulling new content)
 ```
 
+Team server (see [Team server](#team-server-multi-user)):
+
+```bash
+MAGI_PASS=a-long-pass node cli.js server    # run as a shared HTTPS server
+node cli.js enroll-code --admin             # mint a one-time join code
+node cli.js server-info                     # print the cert fingerprint clients pin
+```
+
 `node cli.js` with no args prints all commands.
 
 ## Asset types & content
@@ -250,16 +355,22 @@ You can also add custom items and findings per-asset directly in the UI.
 ## Project layout
 
 ```
-server.js            Express API + static host
+server.js            Express API + static host (+ team-server routes: enrol, admin, sync)
 db.js                node:sqlite schema, seeding & auth hashing
+sync.js              replication engine — per-row uid + logical clock, LWW merge, triggers
+client-link.js       client side of a link: enrol, pin cert, encrypt token, sync loop, stash
+server-identity.js   the server's durable self-signed certificate (generated once)
 seed/templates.js    shipped checklist content (the factory default)
-cli.js               command-line interface
-public/              vanilla-JS single-page UI
+cli.js               command-line interface (incl. server / enroll-code / server-info)
+public/              vanilla-JS single-page UI (incl. the Team-server settings screen)
 data/magi.db         your data — client-confidential, gitignored
 public/fonts/        self-hosted webfonts (Magi never calls out to a CDN)
 electron/            desktop app: window, magi:// scheme, socket-free Express dispatch
 build/build.mjs      bundles everything into dist/
 packaging/           PKGBUILD, launcher, icon, desktop entry
+Dockerfile           multi-stage build of the team server (Node + openssl + bundle)
+docker-compose.yml   run the team server with a durable volume
+scripts/*-smoke.mjs  headless tests: UI, migrate, server, link, sync  (npm test)
 ```
 
 Templates live in the DB (`tpl_types`, `tpl_items`, `tpl_groups`, `tpl_group_items`) once

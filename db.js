@@ -57,7 +57,7 @@ function resolveDataDir() {
   return XDG_DIR;
 }
 
-const DATA_DIR = resolveDataDir();
+export const DATA_DIR = resolveDataDir();
 export const PACKAGED = DATA_DIR === XDG_DIR;
 
 // New installs get magi.db. An existing checklister.db is adopted as-is rather than
@@ -167,6 +167,49 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- ---- team server (multi-user) ----
+-- Single-use codes an admin mints to let a new client join the server. Only the hash is
+-- stored, so a later read of the database never reveals a live code. Consumed atomically.
+CREATE TABLE IF NOT EXISTS enroll_codes (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  code_hash   TEXT NOT NULL UNIQUE,
+  role        TEXT NOT NULL DEFAULT 'worker',   -- worker | admin
+  note        TEXT,                             -- optional label ("Ana's laptop")
+  created_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at  TEXT,
+  used_at     TEXT,
+  used_by     INTEGER REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- One row per enrolled client device. The bearer token is device-bound: only its hash is
+-- kept, and a token presented from a different device id is rejected. revoked=1 kills it.
+CREATE TABLE IF NOT EXISTS devices (
+  id           TEXT PRIMARY KEY,                -- client-generated UUID
+  user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  display_name TEXT NOT NULL,                   -- human name shown in attribution
+  token_hash   TEXT NOT NULL,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen    TEXT,
+  revoked      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);
+CREATE INDEX IF NOT EXISTS idx_devices_token ON devices(token_hash);
+
+-- Append-only attribution log: who changed what, when. Drives the "current position" view.
+CREATE TABLE IF NOT EXISTS audit (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  at           TEXT NOT NULL DEFAULT (datetime('now')),
+  user_id      INTEGER,
+  username     TEXT,
+  display_name TEXT,
+  device_id    TEXT,
+  method       TEXT NOT NULL,
+  path         TEXT NOT NULL,
+  action       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit(id);
+
 -- editable default templates (what new assets are instantiated from)
 CREATE TABLE IF NOT EXISTS tpl_types (
   type   TEXT PRIMARY KEY,
@@ -240,6 +283,14 @@ const tplCols = new Set(db.prepare(`PRAGMA table_info(tpl_types)`).all().map(r =
 if (!tplCols.has('grp'))  db.exec(`ALTER TABLE tpl_types ADD COLUMN grp TEXT`);
 if (!tplCols.has('soon')) db.exec(`ALTER TABLE tpl_types ADD COLUMN soon INTEGER NOT NULL DEFAULT 0`);
 
+// users gained a role with the team server. New accounts default to 'worker'; any account
+// that predates roles is the local owner, so it becomes an admin.
+const userCols = new Set(db.prepare(`PRAGMA table_info(users)`).all().map(r => r.name));
+if (!userCols.has('role')) {
+  db.exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'worker'`);
+  db.exec(`UPDATE users SET role='admin'`);
+}
+
 // --- seed the first user ---
 // admin/admin by default. A generated password is lost the moment you launch from a
 // desktop icon and never see a console, which locks you out of your own data. The
@@ -250,7 +301,7 @@ export const DEFAULT_PASS = 'admin';
 if (db.prepare(`SELECT COUNT(*) c FROM users`).get().c === 0) {
   const user = env('USER', 'admin');
   const pass = env('PASS', DEFAULT_PASS);
-  db.prepare(`INSERT INTO users (username, pass_hash) VALUES (?,?)`).run(user, hashPassword(pass));
+  db.prepare(`INSERT INTO users (username, pass_hash, role) VALUES (?,?, 'admin')`).run(user, hashPassword(pass));
   console.error(`\n  [auth] created login  ->  ${user} / ${pass}`);
 }
 
@@ -264,6 +315,10 @@ export function usingDefaultPassword() {
 // outliving the 30-day cookie they were issued with.
 export const SESSION_TTL_DAYS = Number(env('SESSION_DAYS', 30));
 db.exec(`DELETE FROM sessions WHERE created_at < datetime('now', '-${SESSION_TTL_DAYS} days')`);
+
+// The audit log grows without bound otherwise; keep roughly six months of history.
+const AUDIT_TTL_DAYS = Number(env('AUDIT_DAYS', 180));
+try { db.exec(`DELETE FROM audit WHERE at < datetime('now', '-${AUDIT_TTL_DAYS} days')`); } catch { /* pre-migration DBs */ }
 
 // --- seeding the editable templates from seed/templates.js ---
 const insType = db.prepare(`INSERT INTO tpl_types (type,label,icon,hint,grp,soon,sort) VALUES (?,?,?,?,?,?,?)`);
@@ -350,6 +405,9 @@ if (db.prepare(`SELECT COUNT(*) c FROM tpl_groups`).get().c === 0) {
   if (hasSubnet && hasIp) {
     const bump = db.prepare(`SELECT COALESCE(MAX(sort),0) s FROM tpl_items WHERE type='ip'`).get().s + 1000;
     db.prepare(`UPDATE tpl_items SET type='ip', sort=sort+? WHERE type='subnet'`).run(bump);
+    // Re-type existing subnet TARGETS too, so they carry the merged 'ip' type and group under
+    // Internal (not Additional) in the three-level upgrade below. Their checklists are kept.
+    db.prepare(`UPDATE assets SET type='ip' WHERE type='subnet'`).run();
     db.prepare(`DELETE FROM tpl_groups WHERE type='subnet'`).run();   // subnet had none; safe
     db.prepare(`DELETE FROM tpl_types WHERE type='subnet'`).run();
     db.prepare(`UPDATE tpl_types SET label='Host / Network', hint='10.0.0.5 or 10.0.0.0/24'
@@ -369,7 +427,10 @@ if (db.prepare(`SELECT COUNT(*) c FROM tpl_groups`).get().c === 0) {
 {
   const orphans = db.prepare(`SELECT id, project_id, type FROM assets WHERE folder_id IS NULL`).all();
   if (orphans.length) {
-    const grpOf = (type) => db.prepare(`SELECT grp FROM tpl_types WHERE type=?`).get(type)?.grp || 'additional';
+    // subnet was folded into Host/Network (ip, Internal); map it explicitly in case a DB still
+    // has subnet-typed targets when this runs.
+    const grpOf = (type) => (type === 'subnet' ? 'internal'
+      : db.prepare(`SELECT grp FROM tpl_types WHERE type=?`).get(type)?.grp || 'additional');
     const GRP_LABEL = { internal: 'Internal', external: 'External', mobile: 'Mobile',
       wireless: 'Wireless', otiot: 'OT / IoT', additional: 'Additional' };
     const findFolder = db.prepare(`SELECT id FROM folders WHERE project_id=? AND grp=?`);
@@ -384,5 +445,11 @@ if (db.prepare(`SELECT COUNT(*) c FROM tpl_groups`).get().c === 0) {
     console.error(`  [migrate] grouped ${orphans.length} target(s) under engagement folders`);
   }
 }
+
+// Sync: add the uid/clock columns and capture triggers to the engagement tables so this
+// database can replicate with a team server. Harmless for a purely local install — it just
+// stamps rows it never sends anywhere.
+import { setupSchema as setupSync } from './sync.js';
+setupSync(db);
 
 export default db;

@@ -104,6 +104,12 @@ checks.push(['checklist screen paints', await ev(`
 checks.push(['template library paints', await ev(`
   location.hash = "#/editor"; await new Promise(r => setTimeout(r, 1400));
   return document.querySelectorAll(".tpl-type").length > 0`)]);
+checks.push(['settings screen paints (local)', await ev(`
+  location.hash = "#/settings"; await new Promise(r => setTimeout(r, 900));
+  return !!document.querySelector(".setcard .linkbadge") && /local/i.test(document.querySelector(".linkbadge")?.textContent || "")`)]);
+checks.push(['connect-to-server dialog opens', await ev(`
+  document.querySelector(".setcard-actions .btn.gold")?.click(); await new Promise(r => setTimeout(r, 400));
+  return ["server_url","fingerprint","code","username","display_name"].every(n => document.querySelector(".modal input[name="+n+"]"))`)]);
 
 ws.close();
 

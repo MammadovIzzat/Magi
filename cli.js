@@ -1,9 +1,16 @@
 #!/usr/bin/env node
 // Magi CLI — shares the same SQLite DB as the web app.
-import { readFileSync } from 'node:fs';
-import { db, resetType } from './db.js';
+import { readFileSync, existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { randomBytes, createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { db, resetType, DATA_DIR } from './db.js';
 import { exportBundle, importBundle } from './templates-io.js';
 import { exportProject as exportProjectBundle, importProject } from './projects-io.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const sha256 = (s) => createHash('sha256').update(String(s)).digest('hex');
 
 const q = (s) => db.prepare(s);
 const args = process.argv.slice(2);
@@ -36,6 +43,12 @@ function help() {
   magi import-templates <file.json> [--replace | --rename]
                                          import a bundle; existing types are skipped
                                          by default, --replace overwrites, --rename keeps both
+
+  Team server (multi-user over pinned-cert HTTPS):
+  magi server                            run this Magi as a shared server (MAGI_HOST/PORT/PASS)
+  magi enroll-code [--admin] [--note "x"] [--expires <hours>]
+                                         mint a single-use code for a client to join
+  magi server-info                       show the cert fingerprint clients pin
 
   Web app:  npm start   ->  http://localhost:4173\n`);
 }
@@ -272,6 +285,51 @@ switch (cmd) {
       for (const r of results) console.log(`  ${r.type}: ${r.action}${r.as ? ' ' + r.as : ''}`);
       console.log('\nNewly-added assets of these types use the imported checklist; existing assets are unchanged.');
     } catch (e) { console.error(`import failed: ${e.message}`); process.exit(1); }
+    break;
+  }
+
+  // ---- team server ----
+  case 'server': {
+    // Run this Magi as a shared HTTPS server for enrolled clients. Works from a source
+    // checkout (server.js) and from the packaged bundle (magi.cjs sits beside this file).
+    const entry = [join(__dirname, 'server.js'), join(__dirname, 'magi.cjs')].find(existsSync);
+    if (!entry) { console.error('cannot find the server entry (server.js or magi.cjs)'); process.exit(1); }
+    const r = spawnSync(process.execPath, [entry], { stdio: 'inherit', env: { ...process.env, MAGI_SERVER: '1' } });
+    process.exit(r.status ?? 0);
+    break;
+  }
+
+  case 'enroll-code': {
+    // Mint a single-use code a client redeems to join. Only its hash is stored.
+    const role = args.includes('--admin') ? 'admin' : 'worker';
+    const ni = args.indexOf('--note');
+    const note = ni >= 0 ? args[ni + 1] || null : null;
+    const ei = args.indexOf('--expires');
+    const hours = ei >= 0 ? Math.min(24 * 30, Math.max(0, Math.floor(Number(args[ei + 1]) || 0))) : 0;
+    const admin = q(`SELECT id FROM users WHERE role='admin' ORDER BY id LIMIT 1`).get();
+    const code = randomBytes(9).toString('base64url');
+    q(`INSERT INTO enroll_codes (code_hash, role, note, created_by, expires_at)
+       VALUES (?,?,?,?, ${hours ? `datetime('now','+${hours} hours')` : 'NULL'})`)
+      .run(sha256(code), role, note, admin?.id ?? null);
+    console.log(`\n  Enrollment code (${role})${note ? ' — ' + note : ''}${hours ? ` — expires in ${hours}h` : ''}`);
+    console.log(`  Share it once; it works a single time:\n`);
+    console.log(`      ${code}\n`);
+    break;
+  }
+
+  case 'server-info': {
+    // Print the durable identity without generating one (so it is safe to run anywhere).
+    const meta = join(DATA_DIR, 'server', 'identity.json');
+    const crt = join(DATA_DIR, 'server', 'server.crt');
+    if (!existsSync(crt)) { console.log('\n  No server identity yet. Start one with:  magi server\n'); break; }
+    let fp = '(run `magi server` once to compute)';
+    try { fp = JSON.parse(readFileSync(meta, 'utf8')).fingerprint; } catch { /* fall back below */ }
+    const devices = q(`SELECT COUNT(*) c FROM devices WHERE revoked=0`).get().c;
+    const codes = q(`SELECT COUNT(*) c FROM enroll_codes WHERE used_at IS NULL`).get().c;
+    console.log(`\n  MAGI server identity`);
+    console.log(`  fingerprint (clients pin this):  ${fp}`);
+    console.log(`  data + identity dir:             ${join(DATA_DIR, 'server')}`);
+    console.log(`  enrolled devices: ${devices}   ·   unused codes: ${codes}\n`);
     break;
   }
 

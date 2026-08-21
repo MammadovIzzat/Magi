@@ -16,7 +16,12 @@
     "pkg:appimage": "electron-builder --linux AppImage",
     "pkg:mac": "electron-builder --mac zip --x64 --arm64",
     "pkg:all": "npm run build && electron-builder --linux deb AppImage --mac zip",
-    "test": "node scripts/smoke.mjs"
+    "test": "node scripts/migrate-smoke.mjs && node scripts/stash-smoke.mjs && node scripts/smoke.mjs && node scripts/server-smoke.mjs && node scripts/link-smoke.mjs && node scripts/sync-smoke.mjs",
+    "test:server": "node scripts/server-smoke.mjs",
+    "test:link": "node scripts/link-smoke.mjs",
+    "test:sync": "node scripts/sync-smoke.mjs",
+    "test:migrate": "node scripts/migrate-smoke.mjs",
+    "test:stash": "node scripts/stash-smoke.mjs"
   },
   "dependencies": {
     "express": "^4.19.2"

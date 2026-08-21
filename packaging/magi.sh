@@ -2,7 +2,8 @@
 # Magi launcher.
 #   magi              open the desktop app (no port, no browser)
 #   magi serve        run it as a local web server instead
-#   magi <command>    run a CLI command (projects, add-asset, export, ...)
+#   magi server       run it as a shared team server (HTTPS, enrolled clients)
+#   magi <command>    run a CLI command (projects, add-asset, enroll-code, export, ...)
 set -e
 
 LIB=/usr/lib/magi
@@ -26,6 +27,12 @@ case "${1-}" in
   serve)
     shift
     exec node "$LIB/magi.cjs" "$@"
+    ;;
+  server)
+    # same server bundle, but in team-server mode (HTTPS + enrollment). Needs a strong
+    # admin password: MAGI_PASS=… magi server   (it refuses the default password).
+    shift
+    exec env MAGI_SERVER=1 node "$LIB/magi.cjs" "$@"
     ;;
   -v|--version)
     echo "magi @VERSION@"

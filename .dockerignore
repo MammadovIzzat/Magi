@@ -1,0 +1,15 @@
+# Keep the build context small — and never bake client data or local secrets into an image.
+node_modules
+dist
+data
+**/data
+link.json
+*.pdf
+.git
+.gitignore
+.claude
+.env
+packaging/pkg
+packaging/src
+packaging/*.pkg.tar.zst
+dist/installers

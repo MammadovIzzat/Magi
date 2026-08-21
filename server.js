@@ -1,11 +1,12 @@
 import express from 'express';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { db, hashPassword, verifyPassword, resetType, SESSION_TTL_DAYS, env, usingDefaultPassword } from './db.js';
 import { exportBundle, importBundle, validateBundle } from './templates-io.js';
 import { exportProject as exportProjectBundle, importProject, validateProjectBundle } from './projects-io.js';
 import { projectReportHTML } from './report-html.js';
+import { collectChanges, applyChanges, maxHlc } from './sync.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -15,6 +16,12 @@ app.disable('x-powered-by');
 // Magi stores credentials and raw requests, so it defaults to localhost only.
 const PORT = env('PORT', process.env.PORT || 4173);
 const HOST = env('HOST', '127.0.0.1');
+
+// Team-server mode (MAGI_SERVER=1): serve the same API over pinned-cert HTTPS to enrolled
+// clients. When off, enrollment and the admin surface stay dormant — the local app is
+// unchanged. See server-identity.js for the durable cert.
+const SERVER_MODE = env('SERVER') === '1';
+const sha256 = (s) => createHash('sha256').update(String(s)).digest('hex');
 
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -56,16 +63,44 @@ function parseCookies(req) {
   const out = {};
   for (const p of (req.headers.cookie || '').split(';')) {
     const i = p.indexOf('='); if (i < 0) continue;
-    out[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1).trim());
+    // An unrelated cookie with invalid %-encoding must not throw and take down auth for the
+    // whole request; fall back to the raw value like standard cookie parsers do.
+    let v = p.slice(i + 1).trim();
+    try { v = decodeURIComponent(v); } catch { /* keep raw */ }
+    out[p.slice(0, i).trim()] = v;
   }
   return out;
 }
+// A network client authenticates with the per-device bearer token it got at enrollment.
+// The token is device-bound: the client also states its device id, and a token presented
+// from a different device id is refused — a copied token is useless elsewhere and shows up.
+function bearerDevice(req) {
+  const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
+  if (!m) return null;
+  const dev = q(`SELECT d.id, d.user_id, d.display_name, u.username, u.role
+                 FROM devices d JOIN users u ON u.id=d.user_id
+                 WHERE d.token_hash=? AND d.revoked=0`).get(sha256(m[1]));
+  if (!dev) return null;
+  // Enforce the device binding: a token with no (or a mismatched) device header is refused,
+  // so a token lifted from a log/capture is useless without also spoofing its exact device id.
+  const claimed = req.headers['x-magi-device'];
+  if (!claimed || claimed !== dev.id) return null;
+  return { id: dev.user_id, username: dev.username, role: dev.role, display_name: dev.display_name, device_id: dev.id };
+}
+// Resolve the acting user: bearer token first (network clients), then the session cookie
+// (local web / desktop). Cached on the request so repeat lookups in one request are free.
 function currentUser(req) {
-  const sid = parseCookies(req).sid;
-  if (!sid) return null;
-  // expiry is enforced here, not just by the cookie's Max-Age (which the client controls)
-  return q(`SELECT u.id, u.username FROM sessions s JOIN users u ON u.id=s.user_id
-            WHERE s.token=? AND s.created_at > datetime('now', '-${SESSION_TTL_DAYS} days')`).get(sid) || null;
+  if (req._authUser !== undefined) return req._authUser;
+  let u = bearerDevice(req);
+  if (!u) {
+    const sid = parseCookies(req).sid;
+    // expiry is enforced here, not just by the cookie's Max-Age (which the client controls)
+    const row = sid ? q(`SELECT u.id, u.username, u.role FROM sessions s JOIN users u ON u.id=s.user_id
+              WHERE s.token=? AND s.created_at > datetime('now', '-${SESSION_TTL_DAYS} days')`).get(sid) : null;
+    if (row) u = { ...row, display_name: row.username, device_id: null };
+  }
+  req._authUser = u || null;
+  return req._authUser;
 }
 function sessionCookie(req, token, maxAge) {
   const secure = req.secure || req.headers['x-forwarded-proto'] === 'https' ? ' Secure;' : '';
@@ -85,10 +120,31 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-// gate every /api route except the auth handshake
+// gate every /api route except the auth / enrollment handshakes
 app.use('/api', (req, res, next) => {
-  if (req.path === '/auth/login' || req.path === '/me') return next();
+  if (req.path === '/auth/login' || req.path === '/me' || req.path === '/enroll') return next();
   if (!currentUser(req)) return res.status(401).json({ error: 'unauthorized' });
+  next();
+});
+
+// Attribution: record every accepted mutation with who did it (the login user, or an
+// enrolled device's display name). Reads are not logged. This is what lets a lead see the
+// "current position" — who touched what, when — and it is the audit trail a security firm
+// needs. Logged only after a <400 response so refused calls leave no trace.
+function writeAudit(req, u, action) {
+  try {
+    q(`INSERT INTO audit (user_id, username, display_name, device_id, method, path, action)
+       VALUES (?,?,?,?,?,?,?)`).run(u?.id ?? null, u?.username ?? null, u?.display_name ?? null,
+      u?.device_id ?? null, req.method, req.path, action || null);
+  } catch { /* auditing must never break a request */ }
+}
+app.use('/api', (req, res, next) => {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
+  if (req.path.startsWith('/auth/') || req.path === '/enroll') return next(); // no user yet / self-logged
+  if (req.path.startsWith('/sync/')) return next(); // replication carries its own per-row attribution
+  const u = currentUser(req);
+  if (u?.device_id) { try { q(`UPDATE devices SET last_seen=datetime('now') WHERE id=?`).run(u.device_id); } catch { /* ignore */ } }
+  res.on('finish', () => { if (res.statusCode < 400) writeAudit(req, u, `${req.method} ${req.path}`); });
   next();
 });
 
@@ -142,7 +198,7 @@ app.get('/api/me', (req, res) => {
     const hint = process.env.MAGI_EMBED === '1' && usingDefaultPassword() ? 'admin / admin' : undefined;
     return res.status(401).json({ error: 'unauthorized', hint });
   }
-  res.json({ username: u.username });
+  res.json({ username: u.username, role: u.role, display_name: u.display_name, device: u.device_id ? true : false });
 });
 app.post('/api/change-password', (req, res) => {
   const u = currentUser(req);
@@ -157,6 +213,125 @@ app.post('/api/change-password', (req, res) => {
   q(`DELETE FROM sessions WHERE user_id=? AND token<>?`).run(u.id, sid);
   res.json({ ok: true });
 });
+
+// ---- team server: enrollment & admin ----
+// A client joins by redeeming a single-use code an admin minted. It sends a device id (a
+// UUID it generated and keeps) and a human display name for attribution, and receives a
+// device-bound token — the only credential it uses from then on. Available in server mode.
+app.post('/api/enroll', (req, res) => {
+  if (!SERVER_MODE) return res.status(404).json({ error: 'enrollment is only available on a Magi server' });
+  const { code, username, display_name, device_id } = req.body || {};
+  if (!code || !username || !display_name || !device_id)
+    return res.status(400).json({ error: 'code, username, display_name and device_id are all required' });
+  if (!/^[a-z0-9_.-]{2,40}$/i.test(username)) return res.status(400).json({ error: 'username must be 2-40 chars: letters, numbers, . _ -' });
+  if (!/^[a-z0-9-]{16,64}$/i.test(device_id)) return res.status(400).json({ error: 'device id must look like a UUID' });
+  if (String(display_name).trim().length < 1 || String(display_name).length > 60) return res.status(400).json({ error: 'display name must be 1-60 characters' });
+  if (q(`SELECT 1 FROM devices WHERE id=?`).get(device_id)) return res.status(409).json({ error: 'this device is already enrolled' });
+
+  // Consume atomically: the UPDATE only touches an unused, unexpired code, so two clients
+  // racing on the same code cannot both win.
+  const consumed = q(`UPDATE enroll_codes SET used_at=datetime('now')
+     WHERE code_hash=? AND used_at IS NULL AND (expires_at IS NULL OR expires_at > datetime('now'))`).run(sha256(code));
+  if (!consumed.changes) return res.status(403).json({ error: 'invalid, expired, or already-used enrollment code' });
+  const ec = q(`SELECT * FROM enroll_codes WHERE code_hash=?`).get(sha256(code));
+  const role = ec.role === 'admin' ? 'admin' : 'worker';
+
+  if (q(`SELECT 1 FROM users WHERE username=?`).get(username)) {
+    q(`UPDATE enroll_codes SET used_at=NULL WHERE id=?`).run(ec.id); // don't burn the code on a fixable clash
+    return res.status(409).json({ error: 'that username is taken — choose another' });
+  }
+  // Token-auth accounts do not need a password; store a random one so no default is guessable.
+  const uid = q(`INSERT INTO users (username, pass_hash, role) VALUES (?,?,?)`)
+    .run(username, hashPassword(randomBytes(24).toString('hex')), role).lastInsertRowid;
+  q(`UPDATE enroll_codes SET used_by=? WHERE id=?`).run(uid, ec.id);
+  const token = randomBytes(32).toString('hex');
+  q(`INSERT INTO devices (id, user_id, display_name, token_hash) VALUES (?,?,?,?)`)
+    .run(device_id, uid, String(display_name).trim(), sha256(token));
+  writeAudit(req, { id: uid, username, display_name: String(display_name).trim(), device_id }, `enrolled as ${role}`);
+  res.status(201).json({ token, username, role, display_name: String(display_name).trim() });
+});
+
+function requireAdmin(req, res, next) {
+  const u = currentUser(req);
+  if (!u) return res.status(401).json({ error: 'unauthorized' });
+  if (u.role !== 'admin') return res.status(403).json({ error: 'admin only' });
+  req.user = u;
+  next();
+}
+// Mint a single-use code. The raw code is returned exactly once; only its hash is stored.
+app.post('/api/admin/enroll-codes', requireAdmin, (req, res) => {
+  const b = req.body || {};
+  const role = b.role === 'admin' ? 'admin' : 'worker';
+  const hours = Math.min(24 * 30, Math.max(0, Math.floor(Number(b.expires_in_hours) || 0)));
+  const code = randomBytes(9).toString('base64url'); // 12 high-entropy chars — generated, never user-chosen
+  q(`INSERT INTO enroll_codes (code_hash, role, note, created_by, expires_at)
+     VALUES (?,?,?,?, ${hours ? `datetime('now','+${hours} hours')` : 'NULL'})`)
+    .run(sha256(code), role, b.note || null, req.user.id);
+  res.status(201).json({ code, role, note: b.note || null, expires_in_hours: hours || null });
+});
+app.get('/api/admin/enroll-codes', requireAdmin, (req, res) => {
+  res.json(q(`SELECT id, role, note, created_at, expires_at, used_at,
+    (SELECT username FROM users u WHERE u.id=enroll_codes.used_by) AS used_by
+    FROM enroll_codes ORDER BY created_at DESC, id DESC`).all());
+});
+app.get('/api/admin/users', requireAdmin, (req, res) => {
+  res.json(q(`SELECT id, username, role, created_at,
+    (SELECT COUNT(*) FROM devices d WHERE d.user_id=users.id AND d.revoked=0) AS devices
+    FROM users ORDER BY id`).all());
+});
+app.get('/api/admin/devices', requireAdmin, (req, res) => {
+  res.json(q(`SELECT d.id, d.display_name, d.created_at, d.last_seen, d.revoked, u.username, u.role
+    FROM devices d JOIN users u ON u.id=d.user_id ORDER BY d.created_at DESC`).all());
+});
+// Revoking a device kills its token immediately (someone left, or a laptop was lost).
+app.delete('/api/admin/devices/:id', requireAdmin, (req, res) => {
+  const r = q(`UPDATE devices SET revoked=1 WHERE id=?`).run(req.params.id);
+  res.json({ ok: true, revoked: r.changes });
+});
+// The "who is where" view: recent activity across the whole server.
+app.get('/api/admin/audit', requireAdmin, (req, res) => {
+  const limit = Math.min(1000, Math.max(1, Math.floor(Number(req.query.limit) || 200)));
+  res.json(q(`SELECT at, username, display_name, device_id, method, path, action
+    FROM audit ORDER BY id DESC LIMIT ?`).all(limit));
+});
+
+// ---- replication: clients pull server changes and push their own ----
+// Any enrolled device may sync. Each row carries its own clock and author, so this is not
+// separately audited. Only offered when this instance is a server.
+if (SERVER_MODE) {
+  app.get('/api/sync/pull', (req, res) => {
+    res.json(collectChanges(db, String(req.query.since || '')));
+  });
+  app.post('/api/sync/push', (req, res) => {
+    const { rows, tombstones } = req.body || {};
+    try {
+      const r = applyChanges(db, { rows: rows || [], tombstones: tombstones || [] });
+      res.json({ ok: true, ...r, server_hlc: maxHlc(db) });
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+}
+
+// ---- client link: this Magi acting as a client of a team server ----
+// Only when this instance is not itself a server. Session-authenticated (the local user),
+// so a linked config can only be changed from the app, and only while signed in.
+if (!SERVER_MODE) {
+  const linkMod = () => import('./client-link.js');
+  app.get('/api/link', async (req, res) => { const m = await linkMod(); res.json(m.status()); });
+  app.get('/api/link/ping', async (req, res) => { const m = await linkMod(); res.json(await m.heartbeat()); });
+  app.post('/api/link/connect', async (req, res) => {
+    const m = await linkMod();
+    const { server_url, fingerprint, code, username, display_name } = req.body || {};
+    const r = await m.connect({ server_url, fingerprint, code, username, display_name });
+    if (!r.ok) return res.status(400).json({ error: r.error });
+    res.status(201).json(r.link);
+  });
+  app.post('/api/link/disconnect', async (req, res) => { const m = await linkMod(); res.json(m.disconnect()); });
+  app.post('/api/link/sync', async (req, res) => { const m = await linkMod(); res.json(await m.syncOnce()); });
+  // At boot: recover any stash orphaned by an interrupted connect, then (if linked) start
+  // replicating in the background — covers the desktop app (dispatched, never calls listen)
+  // and `magi serve` alike.
+  import('./client-link.js').then(m => { try { m.reconcileStash(); m.startSyncLoop(); } catch { /* not linked / no creds */ } }).catch(() => {});
+}
 
 const insertItem = q(`INSERT INTO items
   (asset_id, parent_id, group_key, group_title, title, detail, payloads, kind, spawns, catalog, options, opt_key, sort)
@@ -666,8 +841,10 @@ app.post('/api/findings/:id/attachments', rawUpload, (req, res) => {
   const buf = req.body;
   if (!Buffer.isBuffer(buf) || !buf.length) return res.status(400).json({ error: 'empty upload' });
   if (buf.length > MAX_UPLOAD) return res.status(413).json({ error: 'image too large (15 MB max)' });
-  // filename comes in a header so the raw body stays the file itself
-  const raw = req.headers['x-filename'] ? decodeURIComponent(req.headers['x-filename']) : 'image';
+  // filename comes in a header so the raw body stays the file itself; malformed %-encoding
+  // must not 500 the upload.
+  let raw = 'image';
+  if (req.headers['x-filename']) { try { raw = decodeURIComponent(req.headers['x-filename']); } catch { raw = req.headers['x-filename']; } }
   const filename = raw.replace(/[\\/\x00-\x1f]+/g, '_').slice(0, 120) || 'image';
   const info = q(`INSERT INTO attachments (finding_id, filename, mime, size, data) VALUES (?,?,?,?,?)`)
     .run(req.params.id, filename, mime, buf.length, buf);
@@ -760,7 +937,8 @@ app.use('/api', (err, req, res, _next) => {
 // ever opening a socket. MAGI_EMBED=1 tells this module not to listen.
 export default app;
 
-if (process.env.MAGI_EMBED !== '1') {
+// Local single-user mode: plain HTTP, localhost by default. Unchanged behaviour.
+function startLocal() {
   // admin/admin is fine for a local lock screen; it is not fine on a network.
   if (HOST !== '127.0.0.1' && HOST !== 'localhost' && usingDefaultPassword()) {
     console.error(`\n  Refusing to listen on ${HOST} while the password is still the default.`);
@@ -778,4 +956,41 @@ if (process.env.MAGI_EMBED !== '1') {
       console.log(`  Bound to localhost only. Set MAGI_HOST=0.0.0.0 to share it.\n`);
     }
   });
+}
+
+// Team-server mode: the same API over pinned-cert HTTPS for enrolled clients. Moving from
+// a laptop tool to a shared network service, so the guard is stricter than local mode —
+// it refuses to start at all while any account still uses the default password.
+async function startServerMode() {
+  if (usingDefaultPassword()) {
+    console.error(`\n  Refusing to run a Magi server while an account still uses the default password.`);
+    console.error(`  Set a strong admin password first — change it in the app, or start once with MAGI_PASS=<long>.\n`);
+    process.exit(1);
+  }
+  let https, identity;
+  try {
+    https = await import('node:https');
+    const { loadServerIdentity } = await import('./server-identity.js');
+    identity = loadServerIdentity(); // load-or-generate the durable cert (generated only the first time)
+  } catch (e) {
+    console.error(`\n  Cannot start the Magi server: ${e.message}\n`);
+    process.exit(1);
+  }
+  const host = env('HOST', '0.0.0.0');
+  const port = Number(env('PORT', 8443));
+  https.createServer({ key: identity.key, cert: identity.cert }, app).listen(port, host, () => {
+    console.log(`\n  MAGI SERVER  ·  the pentester's familiar`);
+    console.log(`  https://${host}:${port}`);
+    console.log(`\n  Certificate fingerprint — clients pin this exact value:`);
+    console.log(`    ${identity.fingerprint}`);
+    console.log(`\n  Identity + database are durable and reused on every restart —`);
+    console.log(`  restarting never re-runs setup:  ${identity.dir}`);
+    console.log(`\n  Add a client:  magi enroll-code          (worker)`);
+    console.log(`                 magi enroll-code --admin  (admin)\n`);
+  });
+}
+
+if (process.env.MAGI_EMBED !== '1') {
+  if (SERVER_MODE) startServerMode();
+  else startLocal();
 }

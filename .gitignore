@@ -25,3 +25,6 @@ dist/installers/
 
 # Local secrets — never commit (holds MAGI_PASS). .env.example is the template.
 .env
+
+# Claude Code local config — not part of the project
+.claude/

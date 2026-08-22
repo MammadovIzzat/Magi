@@ -704,6 +704,8 @@ app.patch('/api/projects/:id', (req, res) => {
   for (const k of ['client', 'scope', 'notes']) if (k in b) sets[k] = b[k] || null;
   for (const k of ['start_date', 'end_date']) if (k in b) sets[k] = cleanDate(b[k]);
   if ('status' in b) {
+    const u = currentUser(req);
+    if (!u || u.role !== 'admin') return res.status(403).json({ error: 'only an admin can finish or reopen an engagement' });
     if (b.status !== 'active' && b.status !== 'finished') return res.status(400).json({ error: 'status must be active or finished' });
     sets.status = b.status;
     // Marking finished with no end date on file stamps today, so it lands on the timeline.

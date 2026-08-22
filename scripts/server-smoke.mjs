@@ -135,6 +135,14 @@ check('device token authorizes API', list.status === 200 && Array.isArray(list.j
 const made = await req('POST', '/api/projects', { token: workerToken, device: dev1, body: { name: 'Acme Q3' } });
 check('worker can create a project', made.status === 201 && made.json?.id);
 
+// ...but only an admin may finish/reopen an engagement (workers are refused)
+const wFinish = await req('PATCH', `/api/projects/${made.json.id}`, { token: workerToken, device: dev1, body: { status: 'finished' } });
+check('a worker cannot finish an engagement', wFinish.status === 403);
+const wEdit = await req('PATCH', `/api/projects/${made.json.id}`, { token: workerToken, device: dev1, body: { client: 'Acme' } });
+check('a worker can still edit engagement details', wEdit.status === 200 && wEdit.json?.client === 'Acme');
+const aFinish = await req('PATCH', `/api/projects/${made.json.id}`, { cookie, body: { status: 'finished' } });
+check('an admin can finish an engagement', aFinish.status === 200 && aFinish.json?.status === 'finished' && aFinish.json?.end_date);
+
 // the code was consumed on approval — a new request with it is refused
 const reuse = await req('POST', '/api/enroll', { body: { code: workerCode, username: 'eve', display_name: 'Eve', device_id: 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb' } });
 check('the code is single-use (consumed on approval)', reuse.status === 403);

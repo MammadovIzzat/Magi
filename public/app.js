@@ -112,6 +112,7 @@ let ME = null;                // { username, role, display_name } from /api/me
 let LINK = { linked: false }; // team-server link status, refreshed from /api/link
 let ADMIN_PENDING = 0;        // number of pending join requests (for the Admin badge)
 let BACKUP_DUE = false;       // a scheduled backup is due — also lights the Admin badge
+let HOME_TAB = 'active';      // engagements home: 'active' | 'finished' tab
 
 // Where the admin API lives for the signed-in identity, or null if not an admin:
 //  - on the server's own web UI: /api/admin directly (session admin)
@@ -121,6 +122,9 @@ function adminCtx() {
   if (LINK?.unavailable && ME?.role === 'admin') return { base: '/admin' };
   return null;
 }
+// Is the signed-in identity an admin? On a team the linked device's role decides; standalone
+// or on the server's own web UI it's the account role (the local owner is an admin).
+function isAdmin() { return LINK?.linked ? LINK.link?.role === 'admin' : ME?.role === 'admin'; }
 
 // ---------- modal ----------
 // kicker + title + optional note, fields, optional danger box, gold/red CTA
@@ -280,37 +284,37 @@ async function renderHome() {
       del);
   };
 
-  const active = projects.filter(p => p.status !== 'finished');
-  const finished = projects.filter(p => p.status === 'finished');
+  const lists = { active: projects.filter(p => p.status !== 'finished'), finished: projects.filter(p => p.status === 'finished') };
 
-  const table = el('div', { className: 'ptable' },
-    el('div', { className: 'ptable-head kicker' },
-      el('span', {}, 'Engagement'), el('span', { className: 'hide-sm' }, 'Client'),
-      el('span', { className: 'hide-sm' }, 'Coverage'), el('span', { className: 'hide-sm' }, 'Dates'), el('span', {})));
-  if (active.length) active.forEach(p => table.append(projectRow(p)));
-  else table.append(el('div', { className: 'empty', style: 'border:0' }, 'No active engagements. Finished ones are below.'));
-  table.append(el('div', { className: 'end' }));
-
-  const page = el('div', { className: 'page' }, head, table);
-
-  // Finished engagements — collapsed history, searchable by name or client.
-  if (finished.length) {
-    const ftable = el('div', { className: 'ptable' });
-    const paint = (term) => {
-      ftable.replaceChildren();
-      const t = term.trim().toLowerCase();
-      const hits = finished.filter(p => !t || `${p.name} ${p.client || ''}`.toLowerCase().includes(t));
-      if (!hits.length) ftable.append(el('div', { className: 'empty', style: 'border:0' }, 'No finished engagements match.'));
-      else hits.forEach(p => ftable.append(projectRow(p)));
-    };
-    const search = el('input', { className: 'searchbox', type: 'search', placeholder: `Search ${finished.length} finished engagement${finished.length === 1 ? '' : 's'}…` });
-    search.oninput = () => paint(search.value);
-    paint('');
-    page.append(el('div', { className: 'srule', style: 'margin-top:30px' },
-      el('span', { className: 'kicker' }, `Finished (${finished.length})`), el('span', { className: 'rule' })));
-    page.append(search, ftable);
+  // Active / Finished tabs (Sysreptor-style), with a search that filters the open tab.
+  const tabs = el('div', { className: 'filters' });
+  const btns = {};
+  for (const d of [{ k: 'active', l: 'Active' }, { k: 'finished', l: 'Finished' }]) {
+    btns[d.k] = el('button', { className: 'filt', onclick: () => { HOME_TAB = d.k; paint(); } }, d.l, el('span', {}, String(lists[d.k].length)));
+    tabs.append(btns[d.k]);
   }
-  view.replaceChildren(page);
+  const search = el('input', { className: 'searchbox', type: 'search' });
+  const listWrap = el('div');
+
+  function paint() {
+    for (const k in btns) btns[k].classList.toggle('on', k === HOME_TAB);
+    const src = lists[HOME_TAB];
+    search.placeholder = `Search ${src.length} ${HOME_TAB} engagement${src.length === 1 ? '' : 's'}…`;
+    const t = search.value.trim().toLowerCase();
+    const hits = t ? src.filter(p => `${p.name} ${p.client || ''}`.toLowerCase().includes(t)) : src;
+    const table = el('div', { className: 'ptable' },
+      el('div', { className: 'ptable-head kicker' },
+        el('span', {}, 'Engagement'), el('span', { className: 'hide-sm' }, 'Client'),
+        el('span', { className: 'hide-sm' }, 'Coverage'), el('span', { className: 'hide-sm' }, 'Dates'), el('span', {})));
+    if (!hits.length) table.append(el('div', { className: 'empty', style: 'border:0' },
+      t ? 'No engagements match your search.' : HOME_TAB === 'finished' ? 'No finished engagements yet.' : 'No active engagements yet.'));
+    else hits.forEach(p => table.append(projectRow(p)));
+    table.append(el('div', { className: 'end' }));
+    listWrap.replaceChildren(table);
+  }
+  search.oninput = paint;
+  view.replaceChildren(el('div', { className: 'page' }, head, tabs, search, listWrap));
+  paint();
 }
 
 function newProject() {
@@ -426,9 +430,11 @@ async function renderProject(id) {
   topActions(
     el('button', { className: 'btn', onclick: () => exportProjectMenu(id, p.name) }, icon('down', 12), 'Export'),
     el('button', { className: 'btn', onclick: () => editProject(p, () => renderProject(id)) }, icon('edit', 12), 'Edit'),
-    finished
-      ? el('button', { className: 'btn', onclick: () => setProjectStatus(p, 'active', () => renderProject(id)) }, 'Reopen')
-      : el('button', { className: 'btn', onclick: () => setProjectStatus(p, 'finished', () => renderProject(id)) }, icon('check', 12), 'Finish'),
+    isAdmin()
+      ? (finished
+        ? el('button', { className: 'btn', onclick: () => setProjectStatus(p, 'active', () => renderProject(id)) }, 'Reopen')
+        : el('button', { className: 'btn', onclick: () => setProjectStatus(p, 'finished', () => renderProject(id)) }, icon('check', 12), 'Finish'))
+      : null,
     el('button', { className: 'btn danger', onclick: () => delProject(p, p.assets.length, () => location.hash = '') }, 'Delete'));
 
   const total = p.assets.reduce((a, x) => a + x.total, 0);

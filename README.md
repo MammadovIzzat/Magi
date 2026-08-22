@@ -150,21 +150,21 @@ magi server                                        # subsequent runs
 ```
 
 - **Encrypted transport.** It serves HTTPS with a **self-signed certificate generated
-  once and reused on every restart** — clients trust it by *pinning its fingerprint*
-  (printed on start), not via a public CA. Restarting **never re-runs setup**: the
-  identity and database are durable, so a server that goes down and comes back keeps every
-  client enrolled and every token valid.
-- **Joining is a single-use code.** An admin mints one; a client redeems it *once*:
+  once and reused on every restart** — clients trust it on first use, not via a public CA.
+  Restarting **never re-runs setup**: the identity and database are durable, so a server
+  that goes down and comes back keeps every client enrolled and every token valid.
+- **Joining is a single-use code, then an admin approves.** An admin mints one:
 
   ```bash
   magi enroll-code                       # a worker code
   magi enroll-code --admin --note "Ana laptop" --expires 48
   ```
 
-  The client sends a device id (a UUID it generates and keeps) and a human **display
-  name**, and receives a **device-bound token** — the only credential it uses afterwards.
-  The same token replayed from a different device is refused, and only code *hashes* are
-  ever stored.
+  A client redeems it *once* to raise a **join request** carrying a device id (a UUID it
+  generates and keeps) and a human **display name**. An admin approves it from the Admin
+  screen; only then is a **device-bound token** issued — the only credential the client uses
+  afterwards. The same token replayed from a different device is refused, and only code
+  *hashes* are ever stored.
 - **Roles.** `worker` works engagements; `admin` also manages users, devices and codes.
   A lost laptop or a departure is one call to revoke: the device's token dies instantly.
 - **Attribution.** Every change is logged with who made it (the display name), so a lead
@@ -194,13 +194,39 @@ by with `MAGI_SERVER_SAN` in `.env`.
 ### Joining from a client
 
 In the app, **account bar → the `local` badge → Team server → Connect**. Paste the server
-address, its fingerprint, your one-time code, a username and a **display name** (what your
-teammates see on your changes). The app generates a device id, enrols, and stores the
-device-bound token **encrypted in the OS keychain** (Keychain / DPAPI / libsecret; it falls
-back to a `0600` file and says so if no keychain is present). On a tiling WM (i3 / sway /
-Hyprland) — where Electron doesn't auto-detect the keyring — Magi points it at the Secret
-Service so gnome-keyring or KWallet still encrypts the token; force a backend with
-`MAGI_PASSWORD_STORE` (`gnome-libsecret`, `kwallet6`, or `basic` to opt out).
+address, your one-time code, a username and a **display name** (what your teammates see on
+your changes). The app generates a device id and sends a **join request**; the badge turns
+**pending** and the app polls until an admin approves it (see below). The server is trusted on
+first use — no fingerprint to copy. Once approved, the device-bound token is stored
+**encrypted in the OS keychain** (Keychain / DPAPI / libsecret; it falls back to a `0600` file
+and says so if no keychain is present). On a tiling WM (i3 / sway / Hyprland) — where Electron
+doesn't auto-detect the keyring — Magi points it at the Secret Service so gnome-keyring or
+KWallet still encrypts the token; force a backend with `MAGI_PASSWORD_STORE`
+(`gnome-libsecret`, `kwallet6`, or `basic` to opt out).
+
+### Admin panel
+
+Admins get an **Admin** screen (in the app *and* the web UI) that auto-refreshes:
+
+- **Join requests** — each pending client shows its requested username, display name and role;
+  approve or reject. A code alone no longer lets anyone in — an admin confirms the person.
+- **Devices** — see every enrolled device and *revoke* it, or *remove* it entirely (which also
+  clears the orphaned user and their redeemed code).
+- **Codes** — the live, unused/active one-time codes (whether minted on the web or the
+  terminal), each with a *kill* button, plus *clear used/expired* to tidy history.
+- **Recent activity** — the last ten audit events. The full audit trail is also written to
+  `magi-audit.log` in the data dir.
+
+### Backups
+
+Admins can back the whole team database up from the Admin screen — **encrypted with a password
+you choose** (AES-256-GCM, scrypt-derived key). Backups are **incremental**: the first is a
+full snapshot, each later one carries only what changed since the previous (adds *and*
+deletes), and **screenshots attached to findings are included**. Turn on a schedule (every N
+hours) or hit **Back up now**; **Restore** merges every backup file back in — last-writer-wins,
+so it converges with whatever is already there — after you re-enter the password. Files live in
+`backups/` in the data dir (`0600`); keep the set together, since a restore replays them in
+order.
 
 ### Local-first sync
 
@@ -220,7 +246,7 @@ must match.
 Headless, no fixtures, no network mocks — real servers and a real headless browser:
 
 ```bash
-npm test        # migrate + UI + server + link + sync smokes
+npm test        # migrate + stash + UI + server + link + sync + backup smokes
 ```
 
 - **migrate** — a pre-sync database upgrades cleanly on first boot (the `uid`/clock columns backfill).
@@ -228,6 +254,7 @@ npm test        # migrate + UI + server + link + sync smokes
 - **server** — pinned TLS, single-use codes, device-bound tokens, role gating, restart durability.
 - **link** — client enrolment, fingerprint/MITM refusal, token encrypted at rest.
 - **sync** — bidirectional replication, last-writer-wins both ways, tombstones, offline-then-reconnect, the stash, and rejection of a crafted (SQL-injection) tombstone.
+- **backup** — incremental deltas, encryption round-trip, a rejected wrong password, image bytes preserved, and a full restore that honours deletes.
 
 ## Install
 

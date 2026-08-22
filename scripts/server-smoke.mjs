@@ -106,11 +106,28 @@ const mk = await req('POST', '/api/admin/enroll-codes', { cookie, body: { role: 
 check('admin mints a worker code', mk.status === 201 && typeof mk.json?.code === 'string');
 const workerCode = mk.json?.code;
 
-// enroll a worker device
+// request -> admin approves -> client polls the token
+async function enrollApprove(code, username, display_name, device_id) {
+  const rq = await req('POST', '/api/enroll', { body: { code, username, display_name, device_id } });
+  if (rq.status !== 202 || !rq.json?.request_id) return { ok: false, rq };
+  const appr = await req('POST', `/api/admin/requests/${rq.json.request_id}/approve`, { cookie });
+  const poll = await req('GET', `/api/enroll/poll?request_id=${rq.json.request_id}&device_id=${device_id}`);
+  return { ok: appr.status === 200 && poll.json?.status === 'approved' && !!poll.json.token, token: poll.json?.token, role: poll.json?.role, rq };
+}
+
+// a join request first lands as PENDING (no token) and shows up for the admin
 const dev1 = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
-const enroll = await req('POST', '/api/enroll', { body: { code: workerCode, username: 'ana', display_name: 'Ana R.', device_id: dev1 } });
-check('worker enrolls and gets a token', enroll.status === 201 && typeof enroll.json?.token === 'string' && enroll.json?.role === 'worker');
-const workerToken = enroll.json?.token;
+const wreq = await req('POST', '/api/enroll', { body: { code: workerCode, username: 'ana', display_name: 'Ana R.', device_id: dev1 } });
+check('a join request is pending, not an immediate token', wreq.status === 202 && wreq.json?.request_id && !wreq.json?.token);
+const pend = await req('GET', '/api/admin/requests', { cookie });
+check('admin sees the pending request', pend.status === 200 && pend.json.some(r => r.device_id === dev1 && r.display_name === 'Ana R.'));
+const appr = await req('POST', `/api/admin/requests/${wreq.json.request_id}/approve`, { cookie });
+check('admin approves the request', appr.status === 200);
+const poll = await req('GET', `/api/enroll/poll?request_id=${wreq.json.request_id}&device_id=${dev1}`);
+check('approved client polls and receives its token', poll.json?.status === 'approved' && typeof poll.json?.token === 'string' && poll.json?.role === 'worker');
+const workerToken = poll.json?.token;
+const poll2 = await req('GET', `/api/enroll/poll?request_id=${wreq.json.request_id}&device_id=${dev1}`);
+check('the token is delivered only once', poll2.json?.status === 'approved' && !poll2.json?.token);
 
 // the token authorizes API use...
 const list = await req('GET', '/api/projects', { token: workerToken, device: dev1 });
@@ -118,9 +135,17 @@ check('device token authorizes API', list.status === 200 && Array.isArray(list.j
 const made = await req('POST', '/api/projects', { token: workerToken, device: dev1, body: { name: 'Acme Q3' } });
 check('worker can create a project', made.status === 201 && made.json?.id);
 
-// ...and the negatives
+// the code was consumed on approval — a new request with it is refused
 const reuse = await req('POST', '/api/enroll', { body: { code: workerCode, username: 'eve', display_name: 'Eve', device_id: 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb' } });
-check('a reused enrollment code is refused', reuse.status === 403);
+check('the code is single-use (consumed on approval)', reuse.status === 403);
+
+// a rejected request yields no token
+const rc = (await req('POST', '/api/admin/enroll-codes', { cookie, body: { role: 'worker' } })).json.code;
+const rdev = 'eeeeeeee-5555-4555-8555-eeeeeeeeeeee';
+const rreq = await req('POST', '/api/enroll', { body: { code: rc, username: 'mallory', display_name: 'Mallory', device_id: rdev } });
+await req('POST', `/api/admin/requests/${rreq.json.request_id}/reject`, { cookie });
+const rpoll = await req('GET', `/api/enroll/poll?request_id=${rreq.json.request_id}&device_id=${rdev}`);
+check('a rejected request yields no token', rpoll.json?.status === 'rejected' && !rpoll.json?.token);
 
 const wrongDev = await req('GET', '/api/projects', { token: workerToken, device: 'cccccccc-3333-4333-8333-cccccccccccc' });
 check('token replayed from another device is refused', wrongDev.status === 401);
@@ -141,14 +166,45 @@ check('worker is blocked from the admin surface', climb.status === 403);
 // an admin-role enrollee CAN reach the admin surface
 const mkA = await req('POST', '/api/admin/enroll-codes', { cookie, body: { role: 'admin' } });
 const dev2 = 'dddddddd-4444-4444-8444-dddddddddddd';
-const enrollA = await req('POST', '/api/enroll', { body: { code: mkA.json?.code, username: 'lead', display_name: 'Team Lead', device_id: dev2 } });
-const adminUsers = await req('GET', '/api/admin/users', { token: enrollA.json?.token, device: dev2 });
+const enrollA = await enrollApprove(mkA.json?.code, 'lead', 'Team Lead', dev2);
+check('admin-role device enrolls via approval', enrollA.ok && enrollA.role === 'admin');
+const adminUsers = await req('GET', '/api/admin/users', { token: enrollA.token, device: dev2 });
 check('admin-role device reaches the admin surface', adminUsers.status === 200 && adminUsers.json?.length >= 3);
 
 // attribution: the worker's project creation is in the audit log under their display name
-const audit = await req('GET', '/api/admin/audit', { token: enrollA.json?.token, device: dev2 });
+const audit = await req('GET', '/api/admin/audit', { token: enrollA.token, device: dev2 });
 check('audit log attributes the write to the worker', audit.status === 200
   && audit.json?.some(r => r.display_name === 'Ana R.' && r.path === '/api/projects'));
+
+// hard-delete removes a device, its orphaned account, AND that account's redeemed codes
+const tdev = 'ffffffff-6666-4666-8666-ffffffffffff';
+const tcode = (await req('POST', '/api/admin/enroll-codes', { cookie, body: { role: 'worker', note: 'temp code' } })).json.code;
+await enrollApprove(tcode, 'temp', 'Temp User', tdev);
+await req('DELETE', `/api/admin/devices/${tdev}`, { cookie });           // soft revoke
+const purge = await req('DELETE', `/api/admin/devices/${tdev}?hard=1`, { cookie }); // hard delete
+const devs = await req('GET', '/api/admin/devices', { cookie });
+const users = await req('GET', '/api/admin/users', { cookie });
+const codesPostPurge = await req('GET', '/api/admin/enroll-codes', { cookie });
+check('hard-delete removes the device, its account and its redeemed code', purge.json?.deleted === true
+  && !devs.json.some(d => d.id === tdev) && !users.json.some(u => u.username === 'temp')
+  && !codesPostPurge.json.some(c => c.note === 'temp code'));
+
+// killing an unused code removes it and makes it unredeemable
+const kc = await req('POST', '/api/admin/enroll-codes', { cookie, body: { role: 'worker', note: 'to kill' } });
+const kid = (await req('GET', '/api/admin/enroll-codes', { cookie })).json.find(c => c.note === 'to kill')?.id;
+await req('DELETE', `/api/admin/enroll-codes/${kid}`, { cookie });
+const codesAfter = await req('GET', '/api/admin/enroll-codes', { cookie });
+const useKilled = await req('POST', '/api/enroll', { body: { code: kc.json.code, username: 'ghost', display_name: 'Ghost', device_id: '99999999-7777-4777-8777-999999999999' } });
+check('a killed code is removed and cannot be redeemed', !codesAfter.json.some(c => c.id === kid) && useKilled.status === 403);
+
+// clear-used drops redeemed/expired codes but keeps active ones
+const keep = (await req('POST', '/api/admin/enroll-codes', { cookie, body: { role: 'worker', note: 'keep me' } })).json.code;
+const before = (await req('GET', '/api/admin/enroll-codes', { cookie })).json;
+const usedBefore = before.filter(c => c.used_at).length;
+const cl = await req('DELETE', '/api/admin/enroll-codes?used=1', { cookie });
+const codesLeft = (await req('GET', '/api/admin/enroll-codes', { cookie })).json;
+check('clear-used drops redeemed codes but keeps active ones', usedBefore > 0 && cl.json?.cleared === usedBefore
+  && !codesLeft.some(c => c.used_at) && codesLeft.some(c => c.note === 'keep me'));
 
 // ---- durability: restart must reuse identity + keep tokens valid ----
 const fp1 = new (await import('node:crypto')).X509Certificate(cert1).fingerprint256;

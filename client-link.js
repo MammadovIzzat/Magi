@@ -63,8 +63,12 @@ export function loadLink() {
   return raw;
 }
 
-/** Open TLS to the server, verify its certificate matches the pasted fingerprint, return the PEM. */
-export function fetchAndPinCert(serverUrl, expectedFingerprint) {
+/**
+ * Open TLS to the server and return its certificate. If a fingerprint is supplied it is
+ * verified (pinning); otherwise the cert is trusted on first connect (TOFU) and then pinned
+ * for every later request. Either way the connection is encrypted and pinned after this.
+ */
+export function fetchCert(serverUrl, expectedFingerprint) {
   const u = new URL(serverUrl);
   const port = Number(u.port) || 8443;
   // SNI may not be an IP literal; send it only for real hostnames.
@@ -75,7 +79,7 @@ export function fetchAndPinCert(serverUrl, expectedFingerprint) {
       const cert = socket.getPeerCertificate(true);
       socket.end();
       if (!cert || !cert.raw) return reject(new Error('server presented no certificate'));
-      if (normFp(cert.fingerprint256) !== normFp(expectedFingerprint))
+      if (expectedFingerprint && normFp(cert.fingerprint256) !== normFp(expectedFingerprint))
         return reject(new Error('certificate fingerprint does not match — refusing to connect (possible man-in-the-middle)'));
       resolve({ pem: derToPem(cert.raw), fingerprint: cert.fingerprint256 });
     });
@@ -83,16 +87,21 @@ export function fetchAndPinCert(serverUrl, expectedFingerprint) {
     socket.setTimeout(TIMEOUT, () => socket.destroy(new Error('connection timed out')));
   });
 }
+export const fetchAndPinCert = fetchCert; // back-compat alias
 
 function agentFor(link) {
-  // Pin: trust exactly the server's own certificate; the fingerprint was checked on connect.
+  // Pin: trust exactly the server's own certificate (fetched/verified on connect).
   return new https.Agent({ ca: link.cert_pem, checkServerIdentity: () => undefined, keepAlive: false });
 }
 
-/** One authenticated request to the linked server. Rejects only on transport failure. */
+/**
+ * One request to the linked server over the pinned cert. The bearer token + device header are
+ * sent only when we have a token — so the pre-token handshake calls (enroll, poll) work too.
+ * Rejects only on transport failure.
+ */
 export function remoteFetch(path, { method = 'GET', body, headers = {}, link } = {}) {
   link = link || loadLink();
-  if (!link || !link.token) return Promise.reject(new Error('not linked'));
+  if (!link || !link.server_url || !link.cert_pem) return Promise.reject(new Error('not linked'));
   const u = new URL(link.server_url);
   const data = body != null ? (typeof body === 'string' ? body : JSON.stringify(body)) : null;
   return new Promise((resolve, reject) => {
@@ -100,8 +109,7 @@ export function remoteFetch(path, { method = 'GET', body, headers = {}, link } =
       host: u.hostname, port: Number(u.port) || 8443, path, method, agent: agentFor(link),
       headers: {
         'content-type': 'application/json',
-        authorization: `Bearer ${link.token}`,
-        'x-magi-device': link.device_id,
+        ...(link.token ? { authorization: `Bearer ${link.token}`, 'x-magi-device': link.device_id } : {}),
         ...headers, ...(data ? { 'content-length': Buffer.byteLength(data) } : {}),
       },
     }, res => {
@@ -116,40 +124,85 @@ export function remoteFetch(path, { method = 'GET', body, headers = {}, link } =
 }
 
 /**
- * Enroll this client with a server. Verifies the fingerprint, redeems the one-time code,
- * stores the device-bound token encrypted. Returns { ok, error?, link? }.
+ * Ask a server to join it. The certificate is pinned (verified against `fingerprint` if one
+ * is given, otherwise trusted on first connect), the one-time code + name are submitted, and
+ * the server records a PENDING request an admin must approve. Returns { ok, pending, link } and
+ * starts a background poll that finalizes the link once approved. Local data is only set aside
+ * on approval, not now — so a request that is never approved changes nothing.
  */
 export async function connect({ server_url, fingerprint, code, username, display_name }) {
-  if (!server_url || !fingerprint || !code || !username || !display_name)
-    return { ok: false, error: 'server URL, fingerprint, code, username and display name are all required' };
+  if (!server_url || !code || !username || !display_name)
+    return { ok: false, error: 'server address, code, username and display name are all required' };
   linkGen++; // invalidate any in-flight sync from a previous link state
-  let pin;
-  try { pin = await fetchAndPinCert(server_url, fingerprint); }
+  stopSyncLoop();
+  let cert;
+  try { cert = await fetchCert(server_url, fingerprint); }
   catch (e) { return { ok: false, error: e.message }; }
 
   const device_id = randomUUID();
-  const link = { server_url, fingerprint: pin.fingerprint, cert_pem: pin.pem, device_id };
+  const pending = {
+    server_url, fingerprint: cert.fingerprint, cert_pem: cert.pem, device_id,
+    req_username: username, display_name, pending: true,
+  };
+  let res;
+  try { res = await remoteFetch('/api/enroll', { method: 'POST', link: pending, body: { code, username, display_name, device_id } }); }
+  catch (e) { return { ok: false, error: `could not reach the server: ${e.message}` }; }
+  // A server without the approval flow would hand back a token directly — support both.
+  if (res.status === 201 && res.json?.token) return finalizeApproval(pending, res.json);
+  if (res.status !== 202 || res.json?.status !== 'pending')
+    return { ok: false, error: res.json?.error || `could not request access (${res.status})` };
 
-  // Set local engagements aside BEFORE the irreversible enrollment, so a failure can undo it.
+  pending.request_id = res.json.request_id;
+  pending.requested_at = new Date().toISOString();
+  saveLink(pending); // stored without a token; the poll upgrades it when approved
+  startApprovalPoll();
+  return { ok: true, pending: true, link: publicLink(pending) };
+}
+
+// Once an admin approves, actually become linked: set local engagements aside (atomic db
+// stash), start from a clean mirror, store the device-bound token, and begin syncing.
+function finalizeApproval(pending, approved) {
   let stash_id = null;
   try { stash_id = stashLocalProjects(); }
   catch (e) { return { ok: false, error: `could not set local data aside: ${e.message}` }; }
-
-  let res;
-  try { res = await remoteFetch('/api/enroll', { method: 'POST', link: { ...link, token: '-' }, body: { code, username, display_name, device_id } }); }
-  catch (e) { restoreStash(stash_id); return { ok: false, error: `could not reach the server: ${e.message}` }; }
-  if (res.status !== 201) { restoreStash(stash_id); return { ok: false, error: res.json?.error || `enrollment failed (${res.status})` }; }
-
-  sync.setWatermarks(db, { pull: '', push: '' }); // fresh mirror — pull the whole server
+  sync.setWatermarks(db, { pull: '', push: '' });
   const full = {
-    ...link, token: res.json.token, username: res.json.username,
-    display_name: res.json.display_name, role: res.json.role,
+    server_url: pending.server_url, fingerprint: pending.fingerprint, cert_pem: pending.cert_pem,
+    device_id: pending.device_id, token: approved.token, username: approved.username,
+    display_name: approved.display_name || pending.display_name, role: approved.role,
     connected_at: new Date().toISOString(), stash_id,
   };
+  linkGen++;
+  stopApprovalPoll();
   saveLink(full);
   startSyncLoop();
   return { ok: true, link: publicLink(full) };
 }
+
+// One poll of a pending request. Approves -> finalizes; rejected -> clears the pending link.
+export async function pollApproval() {
+  const link = loadLink();
+  if (!link || !link.pending || !link.request_id) return { pending: false };
+  let r;
+  try { r = await remoteFetch(`/api/enroll/poll?request_id=${encodeURIComponent(link.request_id)}&device_id=${encodeURIComponent(link.device_id)}`, { link }); }
+  catch { return { pending: true, waiting: true }; } // server unreachable — keep waiting
+  if (r.status === 404) { stopApprovalPoll(); try { rmSync(LINK_FILE, { force: true }); } catch {} return { pending: false, gone: true }; }
+  const st = r.json?.status;
+  if (st === 'approved' && r.json.token) { finalizeApproval(link, r.json); return { pending: false, approved: true }; }
+  if (st === 'rejected') { stopApprovalPoll(); try { rmSync(LINK_FILE, { force: true }); } catch {} return { pending: false, rejected: true }; }
+  return { pending: true };
+}
+
+let approvalTimer = null;
+export function startApprovalPoll(intervalMs = 3000) {
+  stopApprovalPoll();
+  if (!loadLink()?.pending) return;
+  const tick = () => { pollApproval().catch(() => {}); };
+  tick();
+  approvalTimer = setInterval(tick, intervalMs);
+  if (approvalTimer.unref) approvalTimer.unref();
+}
+export function stopApprovalPoll() { if (approvalTimer) { clearInterval(approvalTimer); approvalTimer = null; } }
 
 // ---- replication ----
 const payloadMax = (p) => {
@@ -288,16 +341,17 @@ export async function heartbeat() {
     if (gen !== linkGen || !loadLink()?.token) return { online: false, error: 'link changed' };
     const online = r.status === 200;
     if (online) { link.last_ok = new Date().toISOString(); saveLink(link); }
-    return { online, status: r.status, who: r.json || null };
+    return { online, status: r.status, who: r.json || null, revoked: r.status === 401 };
   } catch (e) { return { online: false, error: e.message }; }
 }
 
-/** Unlink: stop syncing, drop the cached server data, restore the stashed local engagements. */
+/** Unlink (or cancel a pending request): stop syncing/polling, restore the stashed data. */
 export function disconnect() {
   const link = loadLink();
   linkGen++;        // invalidate any in-flight syncOnce/heartbeat so it can't write after us
   stopSyncLoop();
-  if (link) {
+  stopApprovalPoll();
+  if (link && !link.pending) { // only a fully-linked client cleared a mirror and holds a stash
     try { clearMirror(); } catch {}                 // drop our cached copy of the server's data
     try { restoreStash(link.stash_id); } catch {} // bring personal engagements back
     try { sync.setWatermarks(db, { pull: '', push: '' }); } catch {}
@@ -310,7 +364,8 @@ function publicLink(link) {
   if (!link) return null;
   return {
     server_url: link.server_url, fingerprint: link.fingerprint, device_id: link.device_id,
-    username: link.username, display_name: link.display_name, role: link.role,
+    username: link.username || link.req_username, display_name: link.display_name, role: link.role || null,
+    pending: !!link.pending, request_id: link.request_id || null,
     connected_at: link.connected_at || null, last_ok: link.last_ok || null, last_sync: link.last_sync || null,
     // How the token is (or will be) stored: keyed off the actual encryptor, so this is right
     // both for a freshly-connected link and one just loaded from disk.
@@ -318,10 +373,12 @@ function publicLink(link) {
   };
 }
 
-/** Non-secret link status for the UI. */
+/** Non-secret link status for the UI: linked | pending | (neither). */
 export function status() {
   const link = loadLink();
-  return { linked: !!link, ...(link ? { link: publicLink(link) } : {}) };
+  if (!link) return { linked: false };
+  if (link.pending) return { linked: false, pending: true, link: publicLink(link) };
+  return { linked: true, link: publicLink(link) };
 }
 
 export const LINK_PATH = LINK_FILE;

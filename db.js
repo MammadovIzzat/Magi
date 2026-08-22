@@ -196,6 +196,24 @@ CREATE TABLE IF NOT EXISTS devices (
 CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);
 CREATE INDEX IF NOT EXISTS idx_devices_token ON devices(token_hash);
 
+-- A client redeeming a code creates a PENDING request here; an admin approves or rejects it
+-- from the Admin panel. Only on approval is the code consumed, the user/device created, and a
+-- token issued (delivered once to the polling client via the token column, then cleared).
+CREATE TABLE IF NOT EXISTS enroll_requests (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  code_hash    TEXT NOT NULL,
+  role         TEXT NOT NULL DEFAULT 'worker',
+  username     TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  device_id    TEXT NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'pending',   -- pending | approved | rejected
+  token        TEXT,                              -- raw token, handed to the client once then cleared
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  decided_at   TEXT,
+  decided_by   TEXT                               -- admin display name / username
+);
+CREATE INDEX IF NOT EXISTS idx_enroll_requests_status ON enroll_requests(status);
+
 -- Append-only attribution log: who changed what, when. Drives the "current position" view.
 CREATE TABLE IF NOT EXISTS audit (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,

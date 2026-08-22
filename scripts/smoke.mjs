@@ -109,7 +109,7 @@ checks.push(['settings screen paints (local)', await ev(`
   return !!document.querySelector(".setcard .linkbadge") && /local/i.test(document.querySelector(".linkbadge")?.textContent || "")`)]);
 checks.push(['connect-to-server dialog opens', await ev(`
   document.querySelector(".setcard-actions .btn.gold")?.click(); await new Promise(r => setTimeout(r, 400));
-  return ["server_url","fingerprint","code","username","display_name"].every(n => document.querySelector(".modal input[name="+n+"]"))`)]);
+  return ["server_url","code","username","display_name"].every(n => document.querySelector(".modal input[name="+n+"]"))`)]);
 
 ws.close();
 

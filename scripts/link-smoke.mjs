@@ -82,15 +82,23 @@ const link = await import('../client-link.js');
 const bad = await link.connect({ server_url: serverUrl, fingerprint: 'AA:BB:CC', code: code1, username: 'x', display_name: 'X' });
 check('wrong fingerprint is refused as MITM', bad.ok === false && /fingerprint/i.test(bad.error || ''));
 
-// 2) with a keychain present, the token is encrypted at rest and never stored in plaintext
+// 2) request access -> pending; an admin approves -> the client links. Token is encrypted at
+// rest and never written in plaintext. (No fingerprint needed: trusted on first connect.)
 const secret = [];
 link.setEncryptor({ available: true,
   encrypt: (s) => { secret.push(s); return 'ENC(' + Buffer.from(s).toString('base64') + ')'; },
   decrypt: (b) => Buffer.from(String(b).replace(/^ENC\(|\)$/g, ''), 'base64').toString() });
-const ok = await link.connect({ server_url: serverUrl, fingerprint, code: code1, username: 'ana', display_name: 'Ana R.' });
-if (!ok.ok) die('connect() failed: ' + ok.error);
-check('client enrolls and links', ok.ok === true && ok.link?.username === 'ana');
-check('link reports token encrypted at rest', ok.link?.token_at_rest === 'encrypted');
+const reqres = await link.connect({ server_url: serverUrl, code: code1, username: 'ana', display_name: 'Ana R.' });
+if (!reqres.ok) die('connect() failed: ' + reqres.error);
+check('request is pending until an admin approves', reqres.ok === true && reqres.pending === true && link.status().pending === true);
+const pending = (await req('GET', '/api/admin/requests', { cookie })).json;
+const rid = pending.find(r => r.display_name === 'Ana R.')?.id;
+check('the request is visible to the admin', !!rid);
+await req('POST', `/api/admin/requests/${rid}/approve`, { cookie });
+await link.pollApproval();
+link.stopSyncLoop(); // finalize started the sync loop; stop it so the test drives things
+check('client links once approved', link.status().linked === true && link.status().link?.username === 'ana');
+check('link reports token encrypted at rest', link.status().link?.token_at_rest === 'encrypted');
 const rawFile = readFileSync(link.LINK_PATH, 'utf8');
 const token = secret[0];
 check('raw token is NOT written to disk', token && !rawFile.includes(token));
@@ -102,8 +110,8 @@ check('authenticated request via link works', created.status === 201);
 const hb = await link.heartbeat();
 check('heartbeat reports online', hb.online === true && hb.who?.display_name === 'Ana R.');
 
-// 4) a reused code is refused (server single-use), proving the wrong-fingerprint attempt above did NOT burn it
-const reuse = await link.connect({ server_url: serverUrl, fingerprint, code: code1, username: 'zzz', display_name: 'Z' });
+// 4) the code was consumed on approval — requesting again with it is refused
+const reuse = await link.connect({ server_url: serverUrl, code: code1, username: 'zzz', display_name: 'Z' });
 check('the code was single-use (reuse refused)', reuse.ok === false);
 
 // 5) disconnect clears the local link

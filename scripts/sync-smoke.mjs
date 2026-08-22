@@ -79,9 +79,21 @@ const syncNow = async () => { let r; for (let i = 0; i < 40; i++) { r = await li
 const serverDb = new DatabaseSync(join(serverDir, 'magi.db')); // read-only-ish verification handle
 const sName = (uid) => serverDb.prepare('SELECT name FROM projects WHERE uid=?').get(uid)?.name;
 
-const c1 = await link.connect({ server_url: `https://127.0.0.1:${PORT}`, fingerprint, code: await mkCode(), username: 'ana', display_name: 'Ana R.' });
-link.stopSyncLoop(); // drive sync deterministically in the test
-check('client links to server', c1.ok === true);
+// connect (a pending request), admin-approve it, poll to finalize the link — then drive sync
+// deterministically for the test.
+async function connectApprove(username, display_name) {
+  const r = await link.connect({ server_url: `https://127.0.0.1:${PORT}`, code: await mkCode(), username, display_name });
+  if (!r.ok) return { ok: false, error: r.error };
+  const pending = (await req('GET', '/api/admin/requests', { cookie })).json;
+  const rid = (pending || []).find(x => x.display_name === display_name)?.id;
+  if (rid) await req('POST', `/api/admin/requests/${rid}/approve`, { cookie });
+  await link.pollApproval();
+  link.stopSyncLoop();
+  return { ok: link.status().linked === true };
+}
+
+const c1 = await connectApprove('ana', 'Ana R.');
+check('client links to server (after approval)', c1.ok === true);
 
 // ---- 1) client -> server ----
 const pid = db.prepare('INSERT INTO projects (name,client) VALUES (?,?)').run('Client Made', 'Acme').lastInsertRowid;
@@ -155,8 +167,7 @@ link.disconnect(); // restores (empty) stash, clears the mirror
 check('disconnect cleared the server mirror', db.prepare('SELECT COUNT(*) c FROM projects').get().c === 0);
 const personal = db.prepare('INSERT INTO projects (name) VALUES (?)').run('My Personal Notes').lastInsertRowid;
 const personalUid = db.prepare('SELECT uid FROM projects WHERE id=?').get(personal).uid;
-const c2 = await link.connect({ server_url: `https://127.0.0.1:${PORT}`, fingerprint, code: await mkCode(), username: 'bob', display_name: 'Bob' });
-link.stopSyncLoop();
+const c2 = await connectApprove('bob', 'Bob');
 check('reconnect (new user) ok', c2.ok === true);
 check('personal project was stashed out of the active db', !db.prepare("SELECT 1 FROM projects WHERE name='My Personal Notes'").get());
 check('personal data held as an atomic db stash blob', db.prepare('SELECT COUNT(*) c FROM stash_blobs').get().c === 1);

@@ -56,7 +56,10 @@ async function api(path, opts) {
     headers: { 'content-type': 'application/json' },
     ...opts, body: opts?.body ? JSON.stringify(opts.body) : undefined,
   });
-  if (r.status === 401 && path !== '/me' && path !== '/auth/login') { showLogin(); throw new Error('Session expired'); }
+  // A 401 from a /link/* call is the remote SERVER rejecting our device token (e.g. it was
+  // revoked) — NOT our local session expiring. Only a genuine local 401 sends us to login,
+  // otherwise a revoked device would trap the app in a login loop.
+  if (r.status === 401 && path !== '/me' && path !== '/auth/login' && !path.startsWith('/link')) { showLogin(); throw new Error('Session expired'); }
   if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error || r.statusText); }
   return r.headers.get('content-type')?.includes('json') ? r.json() : r.text();
 }
@@ -103,7 +106,18 @@ function substMap(a) {
 }
 const subst = (text) => String(text ?? '').replace(/\{([a-z_]+)\}/gi, (full, k) => (k in SUBST_MAP ? SUBST_MAP[k] : full));
 let CURRENT_USER = null;
+let ME = null;                // { username, role, display_name } from /api/me
 let LINK = { linked: false }; // team-server link status, refreshed from /api/link
+let ADMIN_PENDING = 0;        // number of pending join requests (for the Admin badge)
+
+// Where the admin API lives for the signed-in identity, or null if not an admin:
+//  - on the server's own web UI: /api/admin directly (session admin)
+//  - on a client linked as an admin device: proxied through /api/link/admin
+function adminCtx() {
+  if (LINK?.linked && LINK.link?.role === 'admin') return { base: '/link/admin' };
+  if (LINK?.unavailable && ME?.role === 'admin') return { base: '/admin' };
+  return null;
+}
 
 // ---------- modal ----------
 // kicker + title + optional note, fields, optional danger box, gold/red CTA
@@ -113,18 +127,22 @@ function modal(opts) {
   const form = el('form', { className: 'modal' + (danger ? ' danger' : '') });
   const body = el('div', { className: 'modal-body' }, el('h3', {}, title), note ? el('p', { className: 'modal-note' }, note) : null);
   if (build) build(body);
+  const errEl = el('div', { className: 'modal-err' });
+  body.append(errEl);
   const close = () => root.replaceChildren();
   const x = el('button', { type: 'button', className: 'modal-x', title: 'Close', onclick: close }, icon('x'));
+  const submit = el('button', { type: 'submit', className: 'btn ' + (danger ? 'dangerfill' : 'gold') }, cta);
   form.append(
     el('div', { className: 'modal-head' }, el('span', { className: 'modal-kicker' }, kicker), x),
     body,
     el('div', { className: 'actions' },
-      el('button', { type: 'button', className: 'btn', onclick: close }, 'Cancel'),
-      el('button', { type: 'submit', className: 'btn ' + (danger ? 'dangerfill' : 'gold') }, cta)));
+      el('button', { type: 'button', className: 'btn', onclick: close }, 'Cancel'), submit));
   form.onsubmit = async (e) => {
     e.preventDefault();
+    errEl.textContent = ''; submit.disabled = true;   // inline error, not a focus-stealing alert()
     try { await onSubmit(new FormData(form)); close(); }
-    catch (err) { alert(err.message); }
+    catch (err) { errEl.textContent = err.message || String(err); form.querySelector('input,textarea,select')?.focus(); }
+    finally { submit.disabled = false; }
   };
   root.replaceChildren(el('div', { className: 'overlay', onclick: (e) => { if (e.target.classList.contains('overlay')) close(); } }, form));
   form.querySelector('input,textarea,select')?.focus();
@@ -149,14 +167,22 @@ function setCrumbs(parts) {
   });
 }
 function renderAccount() {
-  const badge = LINK?.linked
-    ? el('button', { className: 'linkbadge on', title: `Linked to ${LINK.link?.server_url} — open settings`, onclick: () => location.hash = '/settings' },
-        el('span', { className: 'dot' }), LINK.link?.display_name || 'linked')
-    : LINK?.unavailable ? null
-      : el('button', { className: 'linkbadge', title: 'Working locally — click to connect to a team server', onclick: () => location.hash = '/settings' },
-          el('span', { className: 'dot' }), 'local');
+  const lbl = (t) => el('span', { className: 'lbl' }, t);
+  const badge = LINK?.pending
+    ? el('button', { className: 'linkbadge pending', title: 'Join request awaiting approval — open settings', onclick: () => location.hash = '/settings' },
+        el('span', { className: 'dot' }), lbl('pending'))
+    : LINK?.linked
+      ? el('button', { className: 'linkbadge on', title: `Linked to ${LINK.link?.server_url} — open settings`, onclick: () => location.hash = '/settings' },
+          el('span', { className: 'dot' }), lbl(LINK.link?.display_name || 'linked'))
+      : LINK?.unavailable ? null
+        : el('button', { className: 'linkbadge', title: 'Working locally — click to connect to a team server', onclick: () => location.hash = '/settings' },
+            el('span', { className: 'dot' }), lbl('local'));
+  const adminBtn = adminCtx()
+    ? el('button', { className: 'btn admin' + (ADMIN_PENDING ? ' hot' : ''), title: 'Admin panel', onclick: () => location.hash = '/admin' },
+        icon('server'), lbl('Admin'), ADMIN_PENDING ? el('span', { className: 'count' }, String(ADMIN_PENDING)) : null)
+    : null;
   $('#account').replaceChildren(el('div', { className: 'acct' },
-    badge,
+    badge, adminBtn,
     el('div', { className: 'avatar' }, (CURRENT_USER || '?')[0].toUpperCase()),
     el('span', { className: 'who' }, CURRENT_USER || ''),
     el('button', { className: 'iconbtn', title: 'Change password', onclick: changePassword }, icon('key')),
@@ -164,6 +190,9 @@ function renderAccount() {
 }
 async function refreshLink() {
   try { LINK = await api('/link'); } catch { LINK = { linked: false, unavailable: true }; }
+  const ctx = adminCtx();
+  if (ctx) { try { ADMIN_PENDING = (await api(ctx.base + '/requests')).length; } catch { ADMIN_PENDING = 0; } }
+  else ADMIN_PENDING = 0;
   if (CURRENT_USER) renderAccount();
 }
 function topActions(...btns) { $('#topActions').replaceChildren(...btns.filter(Boolean)); }
@@ -181,6 +210,7 @@ async function route() {
   if (!CURRENT_USER) return;
   try {
     if (h === '/settings') return renderSettings();
+    if (h === '/admin') return renderAdmin();
     if (h === '/editor') return renderEditor();
     const gm = h.match(/^\/group\/(\d+)/); if (gm) return renderGroup(gm[1]);
     const em = h.match(/^\/editor\/([a-z0-9_]+)/); if (em) return renderEditor(em[1]);
@@ -683,7 +713,7 @@ async function renderTarget(id) {
     }
     dbody.append(el('div', { className: 'finding sev-' + (f.severity || 'info') },
       el('div', { className: 'f-top' },
-        el('span', { className: 'f-sev' }, f.severity || 'note'),
+        f.severity ? el('span', { className: 'f-sev' }, f.severity) : null,
         el('span', { className: 'f-kind' }, f.kind), tools),
       el('div', { className: 'f-title' }, f.title),
       f.body ? el('pre', {}, f.body) : null,
@@ -826,28 +856,81 @@ function itemModal(assetId, item = null, parentId = null) {
   });
 }
 
-const FINDING_KINDS = [{ value: 'note', label: 'Note' }, { value: 'request', label: 'HTTP request' },
-{ value: 'credential', label: 'Credential' }, { value: 'vuln', label: 'Vulnerability' }];
+const FINDING_KINDS = [{ value: 'note', label: 'Note' }, { value: 'credential', label: 'Credential' },
+{ value: 'vuln', label: 'Vulnerability' }];
 const SEVERITIES = [{ value: '', label: '—' }, { value: 'info', label: 'Info' }, { value: 'low', label: 'Low' },
 { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }, { value: 'critical', label: 'Critical' }];
 
-// Add (finding=null) or edit an existing finding.
+// A multi-image picker that collects files into `bucket` (handled outside FormData).
+function fileField(parent, label, bucket) {
+  parent.append(el('label', {}, label));
+  const inp = el('input', { type: 'file', accept: 'image/*', multiple: true });
+  const info = el('div', { className: 'muted small' });
+  inp.onchange = () => { bucket.length = 0; bucket.push(...inp.files); info.textContent = bucket.length ? `${bucket.length} image(s) selected` : ''; };
+  parent.append(inp, info);
+}
+
+// Add (finding=null) or edit a finding. The fields shown depend on the kind:
+//   note        → title + details (no severity, no images)
+//   credential  → title + username / password / server
+//   vuln        → title + severity + location + explanation + images
 function findingModal(assetId, finding = null) {
   const editing = !!finding;
+  const startKind = finding?.kind === 'request' ? 'note' : (finding?.kind || 'note');
+  const images = []; // selected images for a new vuln
   modal({
-    kicker: 'Evidence', title: editing ? 'Edit finding' : 'Capture evidence', cta: editing ? 'Save' : 'Save',
-    note: editing ? 'Update the note or vulnerability. Attached images stay put.'
-      : 'Raw requests, credentials and confirmed issues. These become the findings in the report.',
+    kicker: 'Evidence', title: editing ? 'Edit finding' : 'Capture evidence', cta: 'Save',
+    note: editing ? 'Update the finding. Attached images stay put.'
+      : 'Notes, credentials and confirmed vulnerabilities — these become the findings in the report.',
     build: (b) => {
-      field(b, 'Title', 'title', { value: finding?.title || '', ph: 'Login endpoint captured' });
-      field(b, 'Type', 'kind', { value: finding?.kind || 'note', options: FINDING_KINDS });
-      field(b, 'Severity', 'severity', { value: finding?.severity || '', options: SEVERITIES });
-      field(b, 'Body', 'body', { value: finding?.body || '', textarea: true, ph: 'POST /login HTTP/1.1\nHost: ...' });
+      const kindSel = field(b, 'Type', 'kind', { value: startKind, options: FINDING_KINDS });
+      const fields = el('div', { className: 'kindfields' });
+      b.append(fields);
+      const rebuild = () => {
+        fields.replaceChildren();
+        const k = kindSel.value;
+        if (k === 'note') {
+          field(fields, 'Title', 'title', { value: finding?.title || '', ph: 'What you found' });
+          field(fields, 'Details', 'body', { value: finding?.body || '', textarea: true, ph: 'notes…' });
+        } else if (k === 'credential') {
+          field(fields, 'Title', 'title', { value: finding?.title || '', ph: 'e.g. admin panel login' });
+          field(fields, 'Username', 'cred_user', { ph: 'user' });
+          field(fields, 'Password', 'cred_pass', { ph: 'pass' });
+          field(fields, 'Server / URL', 'cred_server', { ph: 'https://…  or  host' });
+        } else {
+          field(fields, 'Title', 'title', { value: finding?.title || '', ph: 'e.g. SQL injection in /search' });
+          field(fields, 'Severity', 'severity', { value: finding?.severity || 'medium', options: SEVERITIES.filter(s => s.value) });
+          field(fields, 'Location (URL / domain)', 'location', { ph: 'https://app/search?q=' });
+          field(fields, 'Explanation', 'body', { value: finding?.body || '', textarea: true, ph: 'how it was found / impact' });
+          if (!editing) fileField(fields, 'Images (screenshots)', images);
+        }
+      };
+      kindSel.onchange = rebuild;
+      rebuild();
     },
     onSubmit: async (fd) => {
-      const body = Object.fromEntries(fd);
-      if (editing) await api('/findings/' + finding.id, { method: 'PATCH', body });
-      else await api(`/assets/${assetId}/findings`, { method: 'POST', body });
+      const raw = Object.fromEntries(fd);
+      const kind = raw.kind;
+      let body = raw.body || '', severity = null;
+      if (kind === 'credential') {
+        body = `Username: ${raw.cred_user || ''}\nPassword: ${raw.cred_pass || ''}\nServer: ${raw.cred_server || ''}`;
+      } else if (kind === 'vuln') {
+        severity = raw.severity || null;
+        body = (raw.location ? `Location: ${raw.location}\n\n` : '') + (raw.body || '');
+      }
+      const title = raw.title || (kind === 'credential' ? 'Credentials' : kind === 'vuln' ? 'Vulnerability' : 'Note');
+      const payload = { title, kind, severity, body };
+      if (editing) { await api('/findings/' + finding.id, { method: 'PATCH', body: payload }); }
+      else {
+        const f = await api(`/assets/${assetId}/findings`, { method: 'POST', body: payload });
+        for (const file of images) {
+          if (!file.type.startsWith('image/')) continue;
+          try {
+            await fetch(`/api/findings/${f.id}/attachments`, { method: 'POST',
+              headers: { 'content-type': file.type, 'x-filename': encodeURIComponent(file.name) }, body: await file.arrayBuffer() });
+          } catch { /* one bad image shouldn't lose the finding */ }
+        }
+      }
       renderTarget(assetId);
     },
   });
@@ -1312,10 +1395,22 @@ async function renderSettings() {
   }
   const kv = (k, v) => el('div', { className: 'kv' }, el('span', { className: 'k' }, k), el('span', { className: 'v' }, v));
 
-  if (!LINK.linked) {
+  if (LINK.pending) {
+    const L = LINK.link || {};
+    page.append(el('div', { className: 'setcard' },
+      el('div', { className: 'setcard-hd' }, el('span', { className: 'linkbadge pending' }, el('span', { className: 'dot' }), 'Waiting for approval')),
+      el('p', { className: 'muted' }, 'Your request to join was sent. An admin on the server has to approve it before you are connected — this screen updates on its own when they do.'),
+      kv('Server', L.server_url),
+      kv('Requested as', `${L.display_name} · ${L.username}`),
+      el('div', { className: 'setcard-actions' },
+        el('button', { className: 'btn', onclick: checkApproval }, 'Check now'),
+        el('button', { className: 'btn danger', onclick: cancelPending }, icon('x'), 'Cancel request'))));
+    clearTimeout(window.__pendPoll);
+    window.__pendPoll = setTimeout(() => { if (location.hash.startsWith('#/settings')) renderSettings(); }, 3000);
+  } else if (!LINK.linked) {
     page.append(el('div', { className: 'setcard' },
       el('div', { className: 'setcard-hd' }, el('span', { className: 'linkbadge' }, el('span', { className: 'dot' }), 'Working locally')),
-      el('p', { className: 'muted' }, 'Everything you create stays in this install. Connect to a team server to share engagements — you will need the server address, its certificate fingerprint, and a one-time enrollment code from an admin.'),
+      el('p', { className: 'muted' }, 'Everything you create stays in this install. Connect to a team server to share engagements — you will need the server address, a one-time code from an admin, and a name. The admin then approves your request.'),
       el('div', { className: 'setcard-actions' },
         el('button', { className: 'btn gold', onclick: connectDialog }, icon('server'), 'Connect to a server'))));
   } else {
@@ -1342,27 +1437,39 @@ async function renderSettings() {
 }
 function connectDialog() {
   modal({
-    kicker: 'Team server', title: 'Connect to a server', cta: 'Connect',
-    note: 'Get these from an admin. The connection is refused if the certificate fingerprint does not match. Your current local engagements are set aside and restored if you disconnect.',
+    kicker: 'Team server', title: 'Request to join a server', cta: 'Send request',
+    note: 'Get the address and a one-time code from an admin; they approve your request before you are connected. Your local engagements are set aside on approval and restored if you disconnect.',
     build: (b) => {
       field(b, 'Server address', 'server_url', { ph: 'https://magi.corp.local:8443' });
-      field(b, 'Certificate fingerprint', 'fingerprint', { ph: 'AB:CD:… (SHA-256)' });
       field(b, 'One-time code', 'code', { ph: 'from your admin' });
       field(b, 'Username', 'username', { ph: 'a new login name' });
       field(b, 'Your display name', 'display_name', { ph: 'shown on your changes, e.g. Ana R.' });
     },
     onSubmit: async (fd) => {
       const link = await api('/link/connect', { method: 'POST', body: Object.fromEntries(fd) });
-      LINK = { linked: true, link };
-      toast('Linked to ' + link.server_url);
+      LINK = link.pending ? { linked: false, pending: true, link } : { linked: true, link };
+      toast(link.pending ? 'Request sent — waiting for an admin to approve' : ('Linked to ' + link.server_url));
       renderSettings();
     },
+  });
+}
+async function checkApproval() {
+  try { await api('/link/approval'); } catch {}
+  renderSettings();
+}
+function cancelPending() {
+  modal({
+    kicker: 'Team server', title: 'Cancel the join request?', cta: 'Yes, cancel', danger: true,
+    note: 'Removes the pending request from this device. You can request again later.',
+    onSubmit: async () => { await api('/link/disconnect', { method: 'POST' }); LINK = { linked: false }; toast('Request cancelled'); renderSettings(); },
   });
 }
 async function pingLink() {
   try {
     const r = await api('/link/ping');
-    toast(r.online ? 'Server reachable' : ('Server not reachable' + (r.error ? ` — ${r.error}` : '')));
+    toast(r.online ? 'Server reachable'
+      : r.revoked ? 'This device was revoked by the server — use Disconnect to return to local mode'
+        : ('Server not reachable' + (r.error ? ` — ${r.error}` : '')));
     renderSettings();
   } catch (e) { toast('Ping failed: ' + e.message); }
 }
@@ -1383,6 +1490,189 @@ function disconnectDialog() {
       toast('Disconnected');
       renderSettings();
     },
+  });
+}
+
+// ---------- admin panel (server web + linked admin clients) ----------
+let LAST_CODE = null; // a just-minted code to show once at the top of the panel
+async function renderAdmin() {
+  const ctx = adminCtx();
+  if (!ctx) { location.hash = '/settings'; return; } // not an admin here
+  setRail(null);
+  setCrumbs([{ label: 'engagements', go: () => location.hash = '' }, { label: 'admin' }]);
+  topActions(
+    el('button', { className: 'btn', onclick: renderAdmin }, icon('down', 12), el('span', { className: 'lbl' }, 'Refresh')),
+    el('button', { className: 'btn gold', onclick: () => mintCodeDialog(ctx) }, icon('plus', 12), el('span', { className: 'lbl' }, 'New code')));
+  const view = $('#view');
+  const page = el('div', { className: 'page' });
+  page.append(el('div', { className: 'page-head' }, el('div', {}, el('div', { className: 'kicker' }, 'Team server'), el('h1', {}, 'Admin'))));
+  const A = (p, o) => api(ctx.base + p, o);
+
+  let requests = [], devices = [], codes = [], audit = [];
+  try { [requests, devices, codes, audit] = await Promise.all([A('/requests'), A('/devices'), A('/enroll-codes'), A('/audit?limit=10')]); }
+  catch (e) { page.append(el('div', { className: 'empty' }, 'Could not load admin data: ' + e.message)); return view.replaceChildren(page); }
+  ADMIN_PENDING = requests.length; renderAccount();
+
+  const card = (title) => el('div', { className: 'setcard' }, el('div', { className: 'setcard-hd' }, el('h3', {}, title)));
+  const row = (info, ...actions) => el('div', { className: 'reqrow' }, el('div', { className: 'reqinfo' }, ...info), el('div', { className: 'reqactions' }, ...actions.filter(Boolean)));
+
+  // Join requests
+  const reqCard = card(`Join requests (${requests.length})`);
+  if (!requests.length) reqCard.append(el('p', { className: 'muted' }, 'No pending requests.'));
+  for (const r of requests) reqCard.append(row(
+    [el('strong', {}, r.display_name), el('span', { className: 'muted' }, ' wants to join as '), el('span', { className: 'pill' }, r.role),
+      el('div', { className: 'muted small' }, `username ${r.username} · device ${String(r.device_id).slice(0, 8)}… · ${new Date(r.created_at).toLocaleString()}`)],
+    el('button', { className: 'btn gold', onclick: () => decide(ctx, r.id, 'approve', r.display_name) }, icon('check', 12), 'Approve'),
+    el('button', { className: 'btn danger', onclick: () => decide(ctx, r.id, 'reject', r.display_name) }, icon('x', 12), 'Reject')));
+  page.append(reqCard);
+
+  // Devices
+  const devCard = card(`Devices (${devices.filter(d => !d.revoked).length})`);
+  if (!devices.length) devCard.append(el('p', { className: 'muted' }, 'No devices enrolled yet.'));
+  for (const d of devices) devCard.append(row(
+    [el('strong', { style: d.revoked ? 'text-decoration:line-through;opacity:.55' : '' }, d.display_name),
+      el('span', { className: 'muted' }, ` · ${d.username} · `), el('span', { className: 'pill' }, d.role),
+      el('div', { className: 'muted small' }, `last seen ${d.last_seen ? new Date(d.last_seen).toLocaleString() : 'never'}`)],
+    ...(d.revoked
+      ? [el('span', { className: 'pill warn' }, 'revoked'), el('button', { className: 'btn danger', onclick: () => removeDevice(ctx, d.id, d.display_name) }, icon('trash', 12), 'Remove')]
+      : [el('button', { className: 'btn danger', onclick: () => revokeDevice(ctx, d.id, d.display_name) }, 'Revoke')])));
+  page.append(devCard);
+
+  // Codes
+  const codeCard = card('Enrollment codes');
+  if (LAST_CODE) {
+    codeCard.append(el('div', { className: 'codebanner' },
+      el('div', {}, el('div', { className: 'muted small' }, `New ${LAST_CODE.role} code — copy it now, it is not shown again`), el('code', { className: 'codebox' }, LAST_CODE.code)),
+      el('button', { className: 'btn', onclick: () => { navigator.clipboard?.writeText(LAST_CODE.code); toast('Code copied'); } }, 'Copy')));
+  }
+  const now = Date.now();
+  const active = codes.filter(c => !c.used_at && !(c.expires_at && new Date(c.expires_at).getTime() < now));
+  const usedCount = codes.length - active.length;
+  codeCard.append(el('p', { className: 'muted' }, `${active.length} active code${active.length === 1 ? '' : 's'}. Codes are stored hashed — a value shows once when minted (above, or in the terminal). Mint with “New code”, then approve the request here.`));
+  for (const c of active) codeCard.append(row(
+    [el('strong', {}, c.role), c.note ? el('span', { className: 'muted' }, ` · ${c.note}`) : null,
+      el('div', { className: 'muted small' }, `minted ${new Date(c.created_at).toLocaleString()}${c.expires_at ? ' · expires ' + new Date(c.expires_at).toLocaleString() : ''}`)],
+    el('button', { className: 'btn danger', onclick: () => killCode(ctx, c.id) }, icon('trash', 12), 'Kill')));
+  if (!active.length) codeCard.append(el('p', { className: 'muted small' }, 'No active codes right now.'));
+  if (usedCount) codeCard.append(el('div', { className: 'setcard-actions', style: 'margin-top:10px' },
+    el('button', { className: 'btn', onclick: () => clearUsedCodes(ctx, usedCount) }, icon('trash', 12), `Clear ${usedCount} used/expired`)));
+  page.append(codeCard);
+
+  // Backups (server feature — absent on a purely local install)
+  try {
+    const bk = await A('/backup');
+    const bc = bk.config || {};
+    const bcard = card('Backups');
+    bcard.append(el('p', { className: 'muted' },
+      `${bc.enabled ? `Automatic every ${bc.interval_hours}h` : 'Automatic backups are off'} · ${bk.backups.length} file(s)${bc.last_backup_at ? ' · last ' + new Date(bc.last_backup_at).toLocaleString() : ''}. Incremental and encrypted with your backup password; screenshots in findings are included. Keep the files together — a restore needs the whole set.`));
+    if (!bc.has_password) bcard.append(el('p', { className: 'muted small' }, 'No backup password set yet — set one under “Schedule…”.'));
+    bcard.append(el('div', { className: 'setcard-actions' },
+      el('button', { className: 'btn gold', onclick: () => backupNow(ctx, bc.has_password) }, icon('down', 12), 'Back up now'),
+      el('button', { className: 'btn', onclick: () => backupConfigDialog(ctx, bc) }, 'Schedule…'),
+      el('button', { className: 'btn', onclick: () => restoreDialog(ctx) }, icon('up', 12), 'Restore…')));
+    page.append(bcard);
+  } catch { /* backups only exist on a server */ }
+
+  // Recent activity (last 10; the full history is in magi-audit.log on the server)
+  const auditCard = card('Recent activity');
+  if (!audit.length) auditCard.append(el('p', { className: 'muted' }, 'Nothing yet.'));
+  for (const a of audit.slice(0, 10)) auditCard.append(el('div', { className: 'auditrow' },
+    el('span', { className: 'muted small' }, new Date(a.at).toLocaleTimeString()),
+    el('span', { className: 'aud-who' }, ` ${a.display_name || a.username || '—'} `),
+    el('span', { className: 'muted' }, a.action || `${a.method} ${a.path}`)));
+  if (audit.length) auditCard.append(el('p', { className: 'muted small', style: 'margin-top:8px' }, 'Showing the last 10 — the full log is saved to magi-audit.log on the server.'));
+  page.append(auditCard);
+
+  view.replaceChildren(page);
+  // Live-refresh while the panel is open (so new requests appear without a manual reload),
+  // but don't yank the view out from under an open dialog.
+  clearTimeout(window.__adminPoll);
+  window.__adminPoll = setTimeout(() => { if (location.hash.startsWith('#/admin') && !$('#modalRoot').hasChildNodes()) renderAdmin(); }, 5000);
+}
+async function decide(ctx, id, action, name) {
+  try {
+    await api(`${ctx.base}/requests/${id}/${action}`, { method: 'POST' });
+    toast(`${action === 'approve' ? 'Approved' : 'Rejected'} ${name}`);
+    renderAdmin();
+  } catch (e) { toast('Failed: ' + e.message); }
+}
+function revokeDevice(ctx, id, name) {
+  modal({
+    kicker: 'Admin', title: `Revoke ${name}?`, cta: 'Revoke', danger: true,
+    note: 'Their token stops working immediately. They keep whatever is on their device but can no longer sync. The entry stays in the list; use Remove to delete it.',
+    onSubmit: async () => { await api(`${ctx.base}/devices/${encodeURIComponent(id)}`, { method: 'DELETE' }); toast('Revoked'); renderAdmin(); },
+  });
+}
+function removeDevice(ctx, id, name) {
+  modal({
+    kicker: 'Admin', title: `Remove ${name}?`, cta: 'Remove', danger: true,
+    note: 'Deletes this device (and its account, if it has no other devices) from the server. Already revoked, so no active access is affected. Their synced work stays on the server; this only tidies the list.',
+    onSubmit: async () => { await api(`${ctx.base}/devices/${encodeURIComponent(id)}?hard=1`, { method: 'DELETE' }); toast('Removed'); renderAdmin(); },
+  });
+}
+function mintCodeDialog(ctx) {
+  modal({
+    kicker: 'Admin', title: 'New enrollment code', cta: 'Create',
+    note: 'Single-use. Share it with the person joining; you approve their request afterwards.',
+    build: (b) => {
+      field(b, 'Role', 'role', { options: [{ value: 'worker', label: 'Worker' }, { value: 'admin', label: 'Admin' }] });
+      field(b, 'Note (optional)', 'note', { ph: 'e.g. Ana laptop' });
+    },
+    onSubmit: async (fd) => {
+      const r = await api(`${ctx.base}/enroll-codes`, { method: 'POST', body: Object.fromEntries(fd) });
+      LAST_CODE = { code: r.code, role: r.role };
+      renderAdmin();
+    },
+  });
+}
+function killCode(ctx, id) {
+  modal({
+    kicker: 'Admin', title: 'Kill this code?', cta: 'Kill', danger: true,
+    note: 'Invalidates this unused code so it can no longer be redeemed. Any pending request riding on it is dropped.',
+    onSubmit: async () => { await api(`${ctx.base}/enroll-codes/${id}`, { method: 'DELETE' }); toast('Code killed'); renderAdmin(); },
+  });
+}
+function clearUsedCodes(ctx, n) {
+  modal({
+    kicker: 'Admin', title: `Clear ${n} used/expired code${n === 1 ? '' : 's'}?`, cta: 'Clear', danger: true,
+    note: 'Removes already-redeemed and expired codes from the history. Active codes and enrolled devices are unaffected.',
+    onSubmit: async () => { await api(`${ctx.base}/enroll-codes?used=1`, { method: 'DELETE' }); toast('Cleared'); renderAdmin(); },
+  });
+}
+function backupNow(ctx, hasPassword) {
+  if (!hasPassword) { backupConfigDialog(ctx, {}, true); return; } // need a password first
+  modal({
+    kicker: 'Backups', title: 'Back up now?', cta: 'Back up',
+    note: 'Captures everything changed since the last backup, encrypted with your backup password.',
+    onSubmit: async () => { const r = await api(`${ctx.base}/backup/now`, { method: 'POST' }); toast(`Backed up (${r.rows} change${r.rows === 1 ? '' : 's'})`); renderAdmin(); },
+  });
+}
+function backupConfigDialog(ctx, bc, needPassword) {
+  bc = bc || {};
+  modal({
+    kicker: 'Backups', title: 'Backup schedule', cta: 'Save',
+    note: 'Backups are incremental and encrypted with this password. Keep it safe — a restore needs it and it cannot be recovered.',
+    build: (b) => {
+      field(b, 'Automatic backups', 'enabled', { options: [{ value: '', label: 'Off' }, { value: '1', label: 'On' }], value: bc.enabled ? '1' : '' });
+      field(b, 'Every (hours)', 'interval_hours', { type: 'number', value: String(bc.interval_hours || 24) });
+      field(b, bc.has_password ? 'Change password (optional)' : 'Backup password', 'password', { type: 'password', ph: bc.has_password ? 'leave blank to keep current' : 'choose a strong one' });
+    },
+    onSubmit: async (fd) => {
+      const raw = Object.fromEntries(fd);
+      if (!bc.has_password && !raw.password && (raw.enabled || needPassword)) throw new Error('set a backup password first');
+      const body = { enabled: !!raw.enabled, interval_hours: raw.interval_hours };
+      if (raw.password) body.password = raw.password;
+      await api(`${ctx.base}/backup/config`, { method: 'POST', body });
+      toast('Backup settings saved'); renderAdmin();
+    },
+  });
+}
+function restoreDialog(ctx) {
+  modal({
+    kicker: 'Backups', title: 'Restore from backup', cta: 'Restore', danger: true,
+    note: 'Decrypts every backup file and merges it back in (newest wins on any conflict). Enter the backup password.',
+    build: (b) => { field(b, 'Backup password', 'password', { type: 'password' }); },
+    onSubmit: async (fd) => { const r = await api(`${ctx.base}/backup/restore`, { method: 'POST', body: { password: Object.fromEntries(fd).password } }); toast(`Restored ${r.applied} record(s) from ${r.files} file(s)`); renderAdmin(); },
   });
 }
 
@@ -1429,11 +1719,38 @@ function showLogin() {
   $('#view').replaceChildren(el('div', { className: 'login-wrap' }, form));
   u.focus();
 }
+let LINK_POLL = null, DATA_POLL = null, LAST_REV = null;
+// Live-refresh: re-render the current engagement view when background sync brings a
+// teammate's changes in. Guarded so it never interrupts a dialog or something you're typing,
+// and it restores scroll so the redraw is barely noticeable.
+async function pollData() {
+  if (!CURRENT_USER) return;
+  if ($('#modalRoot').hasChildNodes()) return;                       // a dialog is open
+  const ae = document.activeElement;
+  if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && $('#view').contains(ae)) return; // user is typing here
+  const h = location.hash.slice(1);
+  if (!(h === '' || /^\/(project|asset|target)\/\d+/.test(h))) return; // only the engagement views
+  let rev;
+  try { rev = (await api('/rev')).rev; } catch { return; }
+  if (LAST_REV !== null && rev !== LAST_REV) {
+    const y = $('#view')?.scrollTop || 0;
+    await route();
+    if ($('#view')) $('#view').scrollTop = y;
+  }
+  LAST_REV = rev;
+}
 function onAuthed(me) {
   CURRENT_USER = me.username;
+  ME = me;
   $('#topbar').hidden = false;
   renderAccount();
   (async () => { TYPES = await api('/asset-types'); route(); refreshLink(); })();
+  // Keep the link/admin state (pending badge, incoming requests) reasonably fresh…
+  clearInterval(LINK_POLL);
+  LINK_POLL = setInterval(() => { if (CURRENT_USER) refreshLink(); }, 12000);
+  // …and live-refresh the engagement view as changes sync in.
+  clearInterval(DATA_POLL);
+  DATA_POLL = setInterval(() => { pollData().catch(() => {}); }, 4000);
 }
 async function logout() { await api('/auth/logout', { method: 'POST' }); showLogin(); }
 function changePassword() {
@@ -1454,7 +1771,7 @@ function changePassword() {
 // The templates button lives in the header, next to the account block.
 $('#topbar').insertBefore(
   el('button', { className: 'btn', onclick: () => location.hash = '/editor', title: 'Checklist templates' },
-    icon('lines'), 'Templates'),
+    icon('lines'), el('span', { className: 'lbl' }, 'Templates')),
   $('#account'));
 
 // ---------- boot ----------

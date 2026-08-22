@@ -1,8 +1,9 @@
 import express from 'express';
 import { randomBytes, createHash } from 'node:crypto';
+import { appendFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { db, hashPassword, verifyPassword, resetType, SESSION_TTL_DAYS, env, usingDefaultPassword } from './db.js';
+import { db, hashPassword, verifyPassword, resetType, SESSION_TTL_DAYS, env, usingDefaultPassword, DATA_DIR } from './db.js';
 import { exportBundle, importBundle, validateBundle } from './templates-io.js';
 import { exportProject as exportProjectBundle, importProject, validateProjectBundle } from './projects-io.js';
 import { projectReportHTML } from './report-html.js';
@@ -122,7 +123,7 @@ app.use('/api', (req, res, next) => {
 
 // gate every /api route except the auth / enrollment handshakes
 app.use('/api', (req, res, next) => {
-  if (req.path === '/auth/login' || req.path === '/me' || req.path === '/enroll') return next();
+  if (req.path === '/auth/login' || req.path === '/me' || req.path === '/enroll' || req.path === '/enroll/poll') return next();
   if (!currentUser(req)) return res.status(401).json({ error: 'unauthorized' });
   next();
 });
@@ -131,12 +132,18 @@ app.use('/api', (req, res, next) => {
 // enrolled device's display name). Reads are not logged. This is what lets a lead see the
 // "current position" — who touched what, when — and it is the audit trail a security firm
 // needs. Logged only after a <400 response so refused calls leave no trace.
+const AUDIT_LOG = join(DATA_DIR, 'magi-audit.log');
 function writeAudit(req, u, action) {
   try {
     q(`INSERT INTO audit (user_id, username, display_name, device_id, method, path, action)
        VALUES (?,?,?,?,?,?,?)`).run(u?.id ?? null, u?.username ?? null, u?.display_name ?? null,
       u?.device_id ?? null, req.method, req.path, action || null);
   } catch { /* auditing must never break a request */ }
+  // The UI only keeps the last few entries; the full history lives in this append-only file.
+  try {
+    const who = u?.display_name || u?.username || '-';
+    appendFileSync(AUDIT_LOG, `${new Date().toISOString()}\t${who}\t${action || `${req.method} ${req.path}`}\n`);
+  } catch { /* best effort */ }
 }
 app.use('/api', (req, res, next) => {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
@@ -200,6 +207,9 @@ app.get('/api/me', (req, res) => {
   }
   res.json({ username: u.username, role: u.role, display_name: u.display_name, device: u.device_id ? true : false });
 });
+// A cheap "has anything changed" marker: the highest row clock. The SPA polls it and
+// live-refreshes the current view when background sync brings a teammate's changes in.
+app.get('/api/rev', (req, res) => res.json({ rev: maxHlc(db) }));
 app.post('/api/change-password', (req, res) => {
   const u = currentUser(req);
   const { current, next } = req.body || {};
@@ -214,10 +224,9 @@ app.post('/api/change-password', (req, res) => {
   res.json({ ok: true });
 });
 
-// ---- team server: enrollment & admin ----
-// A client joins by redeeming a single-use code an admin minted. It sends a device id (a
-// UUID it generated and keeps) and a human display name for attribution, and receives a
-// device-bound token — the only credential it uses from then on. Available in server mode.
+// ---- team server: enrollment (admin-approved) & admin ----
+// A client redeeming a code does NOT get a token straight away: it creates a PENDING request
+// that an admin approves or rejects from the Admin panel. The client then polls until decided.
 app.post('/api/enroll', (req, res) => {
   if (!SERVER_MODE) return res.status(404).json({ error: 'enrollment is only available on a Magi server' });
   const { code, username, display_name, device_id } = req.body || {};
@@ -227,28 +236,33 @@ app.post('/api/enroll', (req, res) => {
   if (!/^[a-z0-9-]{16,64}$/i.test(device_id)) return res.status(400).json({ error: 'device id must look like a UUID' });
   if (String(display_name).trim().length < 1 || String(display_name).length > 60) return res.status(400).json({ error: 'display name must be 1-60 characters' });
   if (q(`SELECT 1 FROM devices WHERE id=?`).get(device_id)) return res.status(409).json({ error: 'this device is already enrolled' });
+  if (q(`SELECT 1 FROM users WHERE username=?`).get(username)) return res.status(409).json({ error: 'that username is taken — choose another' });
 
-  // Consume atomically: the UPDATE only touches an unused, unexpired code, so two clients
-  // racing on the same code cannot both win.
-  const consumed = q(`UPDATE enroll_codes SET used_at=datetime('now')
-     WHERE code_hash=? AND used_at IS NULL AND (expires_at IS NULL OR expires_at > datetime('now'))`).run(sha256(code));
-  if (!consumed.changes) return res.status(403).json({ error: 'invalid, expired, or already-used enrollment code' });
-  const ec = q(`SELECT * FROM enroll_codes WHERE code_hash=?`).get(sha256(code));
+  // Validate the code now, but do NOT consume it — that happens only if an admin approves.
+  const ec = q(`SELECT * FROM enroll_codes WHERE code_hash=? AND used_at IS NULL
+                AND (expires_at IS NULL OR expires_at > datetime('now'))`).get(sha256(code));
+  if (!ec) return res.status(403).json({ error: 'invalid, expired, or already-used enrollment code' });
   const role = ec.role === 'admin' ? 'admin' : 'worker';
 
-  if (q(`SELECT 1 FROM users WHERE username=?`).get(username)) {
-    q(`UPDATE enroll_codes SET used_at=NULL WHERE id=?`).run(ec.id); // don't burn the code on a fixable clash
-    return res.status(409).json({ error: 'that username is taken — choose another' });
+  q(`DELETE FROM enroll_requests WHERE device_id=? AND status='pending'`).run(device_id); // one live request per device
+  const rid = q(`INSERT INTO enroll_requests (code_hash, role, username, display_name, device_id)
+                 VALUES (?,?,?,?,?)`).run(sha256(code), role, username, String(display_name).trim(), device_id).lastInsertRowid;
+  writeAudit(req, { username, display_name: String(display_name).trim(), device_id }, `requested to join as ${role}`);
+  res.status(202).json({ status: 'pending', request_id: Number(rid) });
+});
+
+// The client polls this (pre-auth, gated by request_id + its own device id) until an admin
+// decides. On approval the token is handed over exactly once, then cleared.
+app.get('/api/enroll/poll', (req, res) => {
+  if (!SERVER_MODE) return res.status(404).json({ error: 'not a server' });
+  const rq = q(`SELECT * FROM enroll_requests WHERE id=? AND device_id=?`).get(req.query.request_id, req.query.device_id || '');
+  if (!rq) return res.status(404).json({ error: 'no such request' });
+  if (rq.status !== 'approved') return res.json({ status: rq.status }); // pending | rejected
+  if (rq.token) {
+    q(`UPDATE enroll_requests SET token=NULL WHERE id=?`).run(rq.id); // deliver once
+    return res.json({ status: 'approved', token: rq.token, username: rq.username, role: rq.role, display_name: rq.display_name });
   }
-  // Token-auth accounts do not need a password; store a random one so no default is guessable.
-  const uid = q(`INSERT INTO users (username, pass_hash, role) VALUES (?,?,?)`)
-    .run(username, hashPassword(randomBytes(24).toString('hex')), role).lastInsertRowid;
-  q(`UPDATE enroll_codes SET used_by=? WHERE id=?`).run(uid, ec.id);
-  const token = randomBytes(32).toString('hex');
-  q(`INSERT INTO devices (id, user_id, display_name, token_hash) VALUES (?,?,?,?)`)
-    .run(device_id, uid, String(display_name).trim(), sha256(token));
-  writeAudit(req, { id: uid, username, display_name: String(display_name).trim(), device_id }, `enrolled as ${role}`);
-  res.status(201).json({ token, username, role, display_name: String(display_name).trim() });
+  res.json({ status: 'approved' }); // already delivered
 });
 
 function requireAdmin(req, res, next) {
@@ -258,6 +272,47 @@ function requireAdmin(req, res, next) {
   req.user = u;
   next();
 }
+// Pending join requests awaiting an admin decision.
+app.get('/api/admin/requests', requireAdmin, (req, res) => {
+  res.json(q(`SELECT id, username, display_name, device_id, role, created_at
+    FROM enroll_requests WHERE status='pending' ORDER BY created_at`).all());
+});
+// Approve: consume the code, create the user + device, issue the token (delivered on the
+// client's next poll). Guarded against a code that expired, or a username/device that appeared
+// while the request was pending.
+app.post('/api/admin/requests/:id/approve', requireAdmin, (req, res) => {
+  const rq = q(`SELECT * FROM enroll_requests WHERE id=? AND status='pending'`).get(req.params.id);
+  if (!rq) return res.status(404).json({ error: 'no such pending request' });
+  const decidedBy = req.user.display_name || req.user.username;
+  const consumed = q(`UPDATE enroll_codes SET used_at=datetime('now')
+     WHERE code_hash=? AND used_at IS NULL AND (expires_at IS NULL OR expires_at > datetime('now'))`).run(rq.code_hash);
+  if (!consumed.changes) {
+    q(`UPDATE enroll_requests SET status='rejected', decided_at=datetime('now'), decided_by=? WHERE id=?`).run(decidedBy, rq.id);
+    return res.status(409).json({ error: 'the enrollment code is no longer valid — reject and re-issue' });
+  }
+  if (q(`SELECT 1 FROM users WHERE username=?`).get(rq.username) || q(`SELECT 1 FROM devices WHERE id=?`).get(rq.device_id)) {
+    q(`UPDATE enroll_codes SET used_at=NULL WHERE code_hash=?`).run(rq.code_hash);
+    q(`UPDATE enroll_requests SET status='rejected', decided_at=datetime('now'), decided_by=? WHERE id=?`).run(decidedBy, rq.id);
+    return res.status(409).json({ error: 'that username or device already exists' });
+  }
+  const ec = q(`SELECT id FROM enroll_codes WHERE code_hash=?`).get(rq.code_hash);
+  const uid = q(`INSERT INTO users (username, pass_hash, role) VALUES (?,?,?)`)
+    .run(rq.username, hashPassword(randomBytes(24).toString('hex')), rq.role).lastInsertRowid;
+  q(`UPDATE enroll_codes SET used_by=? WHERE id=?`).run(uid, ec.id);
+  const token = randomBytes(32).toString('hex');
+  q(`INSERT INTO devices (id, user_id, display_name, token_hash) VALUES (?,?,?,?)`).run(rq.device_id, uid, rq.display_name, sha256(token));
+  q(`UPDATE enroll_requests SET status='approved', token=?, decided_at=datetime('now'), decided_by=? WHERE id=?`).run(token, decidedBy, rq.id);
+  writeAudit(req, req.user, `approved ${rq.display_name} (${rq.username}) as ${rq.role}`);
+  res.json({ ok: true, username: rq.username, role: rq.role });
+});
+app.post('/api/admin/requests/:id/reject', requireAdmin, (req, res) => {
+  const rq = q(`SELECT * FROM enroll_requests WHERE id=? AND status='pending'`).get(req.params.id);
+  if (!rq) return res.status(404).json({ error: 'no such pending request' });
+  q(`UPDATE enroll_requests SET status='rejected', decided_at=datetime('now'), decided_by=? WHERE id=?`)
+    .run(req.user.display_name || req.user.username, rq.id);
+  writeAudit(req, req.user, `rejected join request from ${rq.display_name} (${rq.username})`);
+  res.json({ ok: true });
+});
 // Mint a single-use code. The raw code is returned exactly once; only its hash is stored.
 app.post('/api/admin/enroll-codes', requireAdmin, (req, res) => {
   const b = req.body || {};
@@ -272,7 +327,23 @@ app.post('/api/admin/enroll-codes', requireAdmin, (req, res) => {
 app.get('/api/admin/enroll-codes', requireAdmin, (req, res) => {
   res.json(q(`SELECT id, role, note, created_at, expires_at, used_at,
     (SELECT username FROM users u WHERE u.id=enroll_codes.used_by) AS used_by
-    FROM enroll_codes ORDER BY created_at DESC, id DESC`).all());
+    FROM enroll_codes ORDER BY used_at IS NOT NULL, created_at DESC, id DESC`).all());
+});
+// Clear the history: delete every already-redeemed or expired code at once. Active codes
+// and enrolled devices are untouched.
+app.delete('/api/admin/enroll-codes', requireAdmin, (req, res) => {
+  const r = q(`DELETE FROM enroll_codes WHERE used_at IS NOT NULL
+    OR (expires_at IS NOT NULL AND expires_at <= datetime('now'))`).run();
+  res.json({ ok: true, cleared: r.changes });
+});
+// Kill a code so it can no longer be redeemed. Also drops any pending request that was
+// riding on it (it can never be approved now).
+app.delete('/api/admin/enroll-codes/:id', requireAdmin, (req, res) => {
+  const c = q(`SELECT code_hash FROM enroll_codes WHERE id=?`).get(req.params.id);
+  if (!c) return res.status(404).json({ error: 'no such code' });
+  q(`DELETE FROM enroll_requests WHERE code_hash=? AND status='pending'`).run(c.code_hash);
+  q(`DELETE FROM enroll_codes WHERE id=?`).run(req.params.id);
+  res.json({ ok: true });
 });
 app.get('/api/admin/users', requireAdmin, (req, res) => {
   res.json(q(`SELECT id, username, role, created_at,
@@ -283,8 +354,19 @@ app.get('/api/admin/devices', requireAdmin, (req, res) => {
   res.json(q(`SELECT d.id, d.display_name, d.created_at, d.last_seen, d.revoked, u.username, u.role
     FROM devices d JOIN users u ON u.id=d.user_id ORDER BY d.created_at DESC`).all());
 });
-// Revoking a device kills its token immediately (someone left, or a laptop was lost).
+// Revoking a device kills its token immediately (someone left, or a laptop was lost); the
+// record is kept for the list/audit. ?hard=1 deletes it outright — and its account too if that
+// was its last device — to tidy the list. Synced data stays on the server; audit keeps names.
 app.delete('/api/admin/devices/:id', requireAdmin, (req, res) => {
+  if (req.query.hard) {
+    const dev = q(`SELECT user_id FROM devices WHERE id=?`).get(req.params.id);
+    q(`DELETE FROM devices WHERE id=?`).run(req.params.id);
+    if (dev && dev.user_id !== req.user.id && !q(`SELECT 1 FROM devices WHERE user_id=?`).get(dev.user_id)) {
+      q(`DELETE FROM enroll_codes WHERE used_by=?`).run(dev.user_id); // drop their now-orphaned redeemed codes
+      q(`DELETE FROM users WHERE id=?`).run(dev.user_id);
+    }
+    return res.json({ ok: true, deleted: !!dev });
+  }
   const r = q(`UPDATE devices SET revoked=1 WHERE id=?`).run(req.params.id);
   res.json({ ok: true, revoked: r.changes });
 });
@@ -309,6 +391,15 @@ if (SERVER_MODE) {
       res.json({ ok: true, ...r, server_hlc: maxHlc(db) });
     } catch (e) { res.status(400).json({ error: e.message }); }
   });
+
+  // ---- backups (admin) ----
+  const backupMod = () => import('./backup.js');
+  app.get('/api/admin/backup', requireAdmin, async (req, res) => { const m = await backupMod(); res.json({ config: m.config(), backups: m.listBackups() }); });
+  app.post('/api/admin/backup/config', requireAdmin, async (req, res) => { const m = await backupMod(); res.json(m.setConfig(db, req.body || {})); });
+  app.post('/api/admin/backup/now', requireAdmin, async (req, res) => { const m = await backupMod(); try { res.json(m.runBackup(db, req.body || {})); } catch (e) { res.status(400).json({ error: e.message }); } });
+  app.post('/api/admin/backup/restore', requireAdmin, async (req, res) => { const m = await backupMod(); try { res.json(m.restoreAll(db, (req.body || {}).password)); } catch (e) { res.status(400).json({ error: e.message }); } });
+  // resume the backup schedule on boot
+  backupMod().then(m => { try { m.reschedule(db); } catch { /* no config yet */ } }).catch(() => {});
 }
 
 // ---- client link: this Magi acting as a client of a team server ----
@@ -327,10 +418,21 @@ if (!SERVER_MODE) {
   });
   app.post('/api/link/disconnect', async (req, res) => { const m = await linkMod(); res.json(m.disconnect()); });
   app.post('/api/link/sync', async (req, res) => { const m = await linkMod(); res.json(await m.syncOnce()); });
+  app.get('/api/link/approval', async (req, res) => { const m = await linkMod(); res.json(await m.pollApproval()); });
+  // Proxy the admin API to the linked server, so an admin-role client can drive the Admin
+  // panel from its local app. The remote server enforces admin on the device token; a
+  // non-admin device just gets 403 relayed back. Requires the local session (auth gate).
+  app.use('/api/link/admin', async (req, res) => {
+    const m = await linkMod();
+    try {
+      const r = await m.remoteFetch('/api/admin' + req.url, { method: req.method, body: ['GET', 'HEAD', 'DELETE'].includes(req.method) ? undefined : req.body });
+      res.status(r.status || 502).json(r.json ?? {});
+    } catch (e) { res.status(502).json({ error: e.message }); }
+  });
   // At boot: recover any stash orphaned by an interrupted connect, then (if linked) start
   // replicating in the background — covers the desktop app (dispatched, never calls listen)
   // and `magi serve` alike.
-  import('./client-link.js').then(m => { try { m.reconcileStash(); m.startSyncLoop(); } catch { /* not linked / no creds */ } }).catch(() => {});
+  import('./client-link.js').then(m => { try { m.reconcileStash(); m.startSyncLoop(); m.startApprovalPoll(); } catch { /* not linked / no creds */ } }).catch(() => {});
 }
 
 const insertItem = q(`INSERT INTO items

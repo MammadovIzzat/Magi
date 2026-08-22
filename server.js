@@ -205,7 +205,7 @@ app.get('/api/me', (req, res) => {
     const hint = process.env.MAGI_EMBED === '1' && usingDefaultPassword() ? 'admin / admin' : undefined;
     return res.status(401).json({ error: 'unauthorized', hint });
   }
-  res.json({ username: u.username, role: u.role, display_name: u.display_name, device: u.device_id ? true : false });
+  res.json({ username: u.username, role: u.role, display_name: u.display_name, device: u.device_id ? true : false, server: SERVER_MODE });
 });
 // A cheap "has anything changed" marker: the highest row clock. The SPA polls it and
 // live-refreshes the current view when background sync brings a teammate's changes in.
@@ -319,10 +319,10 @@ app.post('/api/admin/enroll-codes', requireAdmin, (req, res) => {
   const role = b.role === 'admin' ? 'admin' : 'worker';
   const hours = Math.min(24 * 30, Math.max(0, Math.floor(Number(b.expires_in_hours) || 0)));
   const code = randomBytes(9).toString('base64url'); // 12 high-entropy chars — generated, never user-chosen
-  q(`INSERT INTO enroll_codes (code_hash, role, note, created_by, expires_at)
+  const info = q(`INSERT INTO enroll_codes (code_hash, role, note, created_by, expires_at)
      VALUES (?,?,?,?, ${hours ? `datetime('now','+${hours} hours')` : 'NULL'})`)
     .run(sha256(code), role, b.note || null, req.user.id);
-  res.status(201).json({ code, role, note: b.note || null, expires_in_hours: hours || null });
+  res.status(201).json({ id: Number(info.lastInsertRowid), code, role, note: b.note || null, expires_in_hours: hours || null });
 });
 app.get('/api/admin/enroll-codes', requireAdmin, (req, res) => {
   res.json(q(`SELECT id, role, note, created_at, expires_at, used_at,
@@ -381,6 +381,9 @@ app.get('/api/admin/audit', requireAdmin, (req, res) => {
 // Any enrolled device may sync. Each row carries its own clock and author, so this is not
 // separately audited. Only offered when this instance is a server.
 if (SERVER_MODE) {
+  // A server does not itself link to another server. Answer the SPA's link probe cleanly so
+  // the web UI doesn't log a 404 and doesn't offer client-only "connect" controls.
+  app.get('/api/link', (req, res) => res.json({ linked: false, server: true, unavailable: true }));
   app.get('/api/sync/pull', (req, res) => {
     res.json(collectChanges(db, String(req.query.since || '')));
   });
@@ -398,8 +401,8 @@ if (SERVER_MODE) {
   app.post('/api/admin/backup/config', requireAdmin, async (req, res) => { const m = await backupMod(); res.json(m.setConfig(db, req.body || {})); });
   app.post('/api/admin/backup/now', requireAdmin, async (req, res) => { const m = await backupMod(); try { res.json(m.runBackup(db, req.body || {})); } catch (e) { res.status(400).json({ error: e.message }); } });
   app.post('/api/admin/backup/restore', requireAdmin, async (req, res) => { const m = await backupMod(); try { res.json(m.restoreAll(db, (req.body || {}).password)); } catch (e) { res.status(400).json({ error: e.message }); } });
-  // resume the backup schedule on boot
-  backupMod().then(m => { try { m.reschedule(db); } catch { /* no config yet */ } }).catch(() => {});
+  app.post('/api/admin/backup/restore-upload', requireAdmin, async (req, res) => { const m = await backupMod(); try { res.json(m.restoreFromFiles(db, (req.body || {}).files, (req.body || {}).password)); } catch (e) { res.status(400).json({ error: e.message }); } });
+  app.get('/api/admin/backup/file/:name', requireAdmin, async (req, res) => { const m = await backupMod(); const text = m.readBackup(req.params.name); if (text == null) return res.status(404).json({ error: 'no such backup' }); res.json({ name: req.params.name, text }); });
 }
 
 // ---- client link: this Magi acting as a client of a team server ----
@@ -680,12 +683,36 @@ app.get('/api/projects', (req, res) => {
       FROM projects p ORDER BY p.created_at DESC`).all());
 });
 
+// Accepts yyyy-mm-dd or empty; anything else is stored as null rather than trusted verbatim.
+const cleanDate = (v) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
+
 app.post('/api/projects', (req, res) => {
-  const { name, client, scope, notes } = req.body || {};
+  const { name, client, scope, notes, start_date, end_date } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name required' });
-  const info = q(`INSERT INTO projects (name, client, scope, notes) VALUES (?,?,?,?)`)
-    .run(name, client || null, scope || null, notes || null);
+  const info = q(`INSERT INTO projects (name, client, scope, notes, start_date, end_date) VALUES (?,?,?,?,?,?)`)
+    .run(name, client || null, scope || null, notes || null, cleanDate(start_date), cleanDate(end_date));
   res.status(201).json(q(`SELECT * FROM projects WHERE id=?`).get(info.lastInsertRowid));
+});
+
+// Edit an engagement's details, dates, or lifecycle (active <-> finished).
+app.patch('/api/projects/:id', (req, res) => {
+  const p = q(`SELECT * FROM projects WHERE id=?`).get(req.params.id);
+  if (!p) return res.status(404).json({ error: 'not found' });
+  const b = req.body || {};
+  const sets = {};
+  if ('name' in b) { if (!b.name) return res.status(400).json({ error: 'name cannot be empty' }); sets.name = b.name; }
+  for (const k of ['client', 'scope', 'notes']) if (k in b) sets[k] = b[k] || null;
+  for (const k of ['start_date', 'end_date']) if (k in b) sets[k] = cleanDate(b[k]);
+  if ('status' in b) {
+    if (b.status !== 'active' && b.status !== 'finished') return res.status(400).json({ error: 'status must be active or finished' });
+    sets.status = b.status;
+    // Marking finished with no end date on file stamps today, so it lands on the timeline.
+    if (b.status === 'finished' && !('end_date' in b) && !p.end_date) sets.end_date = new Date().toISOString().slice(0, 10);
+  }
+  const keys = Object.keys(sets);
+  if (!keys.length) return res.json(p);
+  q(`UPDATE projects SET ${keys.map(k => `${k}=?`).join(', ')} WHERE id=?`).run(...keys.map(k => sets[k]), p.id);
+  res.json(q(`SELECT * FROM projects WHERE id=?`).get(p.id));
 });
 
 // ---- move a whole engagement between installs (contains client-confidential data) ----

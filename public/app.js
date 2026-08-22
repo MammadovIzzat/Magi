@@ -69,6 +69,8 @@ function toast(msg) {
   document.body.append(t); setTimeout(() => t.remove(), 1800);
 }
 const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+const fmtDate = (d) => { if (!d) return ''; const t = new Date(d + 'T00:00:00'); return isNaN(t) ? d : t.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }); };
+const fmtDateRange = (s, e) => (s && e ? `${fmtDate(s)} → ${fmtDate(e)}` : s ? `from ${fmtDate(s)}` : e ? `until ${fmtDate(e)}` : '');
 const pad = (n) => String(n).padStart(2, '0');
 const HANDLED = ['done', 'na', 'yes', 'no'];
 const ACTIONABLE = (i) => !['select', 'group'].includes(i.kind);
@@ -109,6 +111,7 @@ let CURRENT_USER = null;
 let ME = null;                // { username, role, display_name } from /api/me
 let LINK = { linked: false }; // team-server link status, refreshed from /api/link
 let ADMIN_PENDING = 0;        // number of pending join requests (for the Admin badge)
+let BACKUP_DUE = false;       // a scheduled backup is due — also lights the Admin badge
 
 // Where the admin API lives for the signed-in identity, or null if not an admin:
 //  - on the server's own web UI: /api/admin directly (session admin)
@@ -178,8 +181,8 @@ function renderAccount() {
         : el('button', { className: 'linkbadge', title: 'Working locally — click to connect to a team server', onclick: () => location.hash = '/settings' },
             el('span', { className: 'dot' }), lbl('local'));
   const adminBtn = adminCtx()
-    ? el('button', { className: 'btn admin' + (ADMIN_PENDING ? ' hot' : ''), title: 'Admin panel', onclick: () => location.hash = '/admin' },
-        icon('server'), lbl('Admin'), ADMIN_PENDING ? el('span', { className: 'count' }, String(ADMIN_PENDING)) : null)
+    ? el('button', { className: 'btn admin' + (ADMIN_PENDING || BACKUP_DUE ? ' hot' : ''), title: BACKUP_DUE ? 'Admin panel — a backup is due' : 'Admin panel', onclick: () => location.hash = '/admin' },
+        icon('server'), lbl('Admin'), ADMIN_PENDING ? el('span', { className: 'count' }, String(ADMIN_PENDING)) : (BACKUP_DUE ? el('span', { className: 'count' }, '!') : null))
     : null;
   $('#account').replaceChildren(el('div', { className: 'acct' },
     badge, adminBtn,
@@ -191,8 +194,16 @@ function renderAccount() {
 async function refreshLink() {
   try { LINK = await api('/link'); } catch { LINK = { linked: false, unavailable: true }; }
   const ctx = adminCtx();
-  if (ctx) { try { ADMIN_PENDING = (await api(ctx.base + '/requests')).length; } catch { ADMIN_PENDING = 0; } }
-  else ADMIN_PENDING = 0;
+  if (ctx) {
+    try { ADMIN_PENDING = (await api(ctx.base + '/requests')).length; } catch { ADMIN_PENDING = 0; }
+    // Scheduled-backup reminder: a backup is never taken unattended (we don't store the
+    // password), so when one comes due we light the Admin badge and toast admins once.
+    try {
+      const wasDue = BACKUP_DUE;
+      BACKUP_DUE = !!(await api(ctx.base + '/backup')).config?.due;
+      if (BACKUP_DUE && !wasDue) toast('A scheduled backup is due — open Admin to run it');
+    } catch { /* backups are a server feature; ignore if absent */ }
+  } else { ADMIN_PENDING = 0; BACKUP_DUE = false; }
   if (CURRENT_USER) renderAccount();
 }
 function topActions(...btns) { $('#topActions').replaceChildren(...btns.filter(Boolean)); }
@@ -207,9 +218,12 @@ async function route() {
   const h = location.hash.slice(1);
   $('#modalRoot').replaceChildren();
   topActions();
+  $('#backBtn').hidden = !h; // nothing to go back to from the engagements home
   if (!CURRENT_USER) return;
   try {
-    if (h === '/settings') return renderSettings();
+    // A server instance can't link anywhere, so its settings page has nothing to show —
+    // send it (and any stale #/settings hash left after a refresh) back to engagements.
+    if (h === '/settings') { if (ME?.server) { location.hash = ''; return; } return renderSettings(); }
     if (h === '/admin') return renderAdmin();
     if (h === '/editor') return renderEditor();
     const gm = h.match(/^\/group\/(\d+)/); if (gm) return renderGroup(gm[1]);
@@ -226,6 +240,8 @@ async function route() {
 }
 window.addEventListener('hashchange', route);
 $('#homeBtn').onclick = () => location.hash = '';
+// Universal back: walk the hash history, or fall home if this is the first screen.
+$('#backBtn').onclick = () => { if (history.length > 1) history.back(); else location.hash = ''; };
 
 // ---------- engagements (home) ----------
 async function renderHome() {
@@ -246,17 +262,12 @@ async function renderHome() {
         el('button', { className: 'btn gold', onclick: newProject }, icon('plus', 12), 'Create the first'))));
   }
 
-  const table = el('div', { className: 'ptable' },
-    el('div', { className: 'ptable-head kicker' },
-      el('span', {}, 'Engagement'), el('span', { className: 'hide-sm' }, 'Client'),
-      el('span', { className: 'hide-sm' }, 'Coverage'), el('span', { className: 'hide-sm' }, 'Opened'), el('span', {})));
-
-  for (const p of projects) {
+  const projectRow = (p) => {
     const cov = pct(p.handled, p.total);
     const del = el('button', { className: 'ibtn del', title: 'Delete engagement' }, icon('trash'));
     del.onclick = (e) => { e.stopPropagation(); delProject(p, p.asset_count, renderHome); };
     const dot = el('span', { className: 'pdot' + (!p.total ? ' idle' : cov > 70 ? '' : ' part') });
-    table.append(el('button', { className: 'prow', onclick: () => location.hash = `/project/${p.id}` },
+    return el('button', { className: 'prow', onclick: () => location.hash = `/project/${p.id}` },
       el('span', { style: 'display:flex;align-items:center;gap:12px;min-width:0' }, dot,
         el('span', { style: 'display:flex;flex-direction:column;gap:3px;min-width:0' },
           el('span', { className: 'pname' }, p.name),
@@ -265,11 +276,41 @@ async function renderHome() {
       el('span', { className: 'hide-sm', style: 'display:flex;align-items:center;gap:10px' },
         el('span', { className: 'bar' + (cov > 70 ? ' good' : !cov ? ' idle' : '') }, el('span', { style: `width:${cov}%` })),
         el('span', { className: 'pct' + (cov > 70 ? ' good' : cov ? ' some' : '') }, cov + '%')),
-      el('span', { className: 'pcell hide-sm' }, new Date(p.created_at).toLocaleDateString(undefined, { day: '2-digit', month: 'short' })),
-      del));
-  }
+      el('span', { className: 'pcell hide-sm' }, fmtDateRange(p.start_date, p.end_date) || new Date(p.created_at).toLocaleDateString(undefined, { day: '2-digit', month: 'short' })),
+      del);
+  };
+
+  const active = projects.filter(p => p.status !== 'finished');
+  const finished = projects.filter(p => p.status === 'finished');
+
+  const table = el('div', { className: 'ptable' },
+    el('div', { className: 'ptable-head kicker' },
+      el('span', {}, 'Engagement'), el('span', { className: 'hide-sm' }, 'Client'),
+      el('span', { className: 'hide-sm' }, 'Coverage'), el('span', { className: 'hide-sm' }, 'Dates'), el('span', {})));
+  if (active.length) active.forEach(p => table.append(projectRow(p)));
+  else table.append(el('div', { className: 'empty', style: 'border:0' }, 'No active engagements. Finished ones are below.'));
   table.append(el('div', { className: 'end' }));
-  view.replaceChildren(el('div', { className: 'page' }, head, table));
+
+  const page = el('div', { className: 'page' }, head, table);
+
+  // Finished engagements — collapsed history, searchable by name or client.
+  if (finished.length) {
+    const ftable = el('div', { className: 'ptable' });
+    const paint = (term) => {
+      ftable.replaceChildren();
+      const t = term.trim().toLowerCase();
+      const hits = finished.filter(p => !t || `${p.name} ${p.client || ''}`.toLowerCase().includes(t));
+      if (!hits.length) ftable.append(el('div', { className: 'empty', style: 'border:0' }, 'No finished engagements match.'));
+      else hits.forEach(p => ftable.append(projectRow(p)));
+    };
+    const search = el('input', { className: 'searchbox', type: 'search', placeholder: `Search ${finished.length} finished engagement${finished.length === 1 ? '' : 's'}…` });
+    search.oninput = () => paint(search.value);
+    paint('');
+    page.append(el('div', { className: 'srule', style: 'margin-top:30px' },
+      el('span', { className: 'kicker' }, `Finished (${finished.length})`), el('span', { className: 'rule' })));
+    page.append(search, ftable);
+  }
+  view.replaceChildren(page);
 }
 
 function newProject() {
@@ -279,12 +320,42 @@ function newProject() {
       field(b, 'Engagement name', 'name', { ph: 'Acme Corp — Q4 External' });
       field(b, 'Client', 'client', { ph: 'Acme Corp' });
       field(b, 'Scope', 'scope', { ph: '*.acme.com, 10.0.0.0/16' });
+      const c1 = el('div'), c2 = el('div');
+      field(c1, 'Start date', 'start_date', { type: 'date' });
+      field(c2, 'End date', 'end_date', { type: 'date' });
+      b.append(el('div', { className: 'field-row' }, c1, c2));
       field(b, 'Notes', 'notes', { textarea: true });
     },
     onSubmit: async (fd) => {
       const p = await api('/projects', { method: 'POST', body: Object.fromEntries(fd) });
       location.hash = `/project/${p.id}`;
     },
+  });
+}
+function editProject(p, done) {
+  modal({
+    kicker: 'Edit', title: 'Engagement details', cta: 'Save',
+    build: (b) => {
+      field(b, 'Engagement name', 'name', { value: p.name });
+      field(b, 'Client', 'client', { value: p.client || '' });
+      field(b, 'Scope', 'scope', { value: p.scope || '' });
+      const c1 = el('div'), c2 = el('div');
+      field(c1, 'Start date', 'start_date', { type: 'date', value: p.start_date || '' });
+      field(c2, 'End date', 'end_date', { type: 'date', value: p.end_date || '' });
+      b.append(el('div', { className: 'field-row' }, c1, c2));
+      field(b, 'Notes', 'notes', { textarea: true, value: p.notes || '' });
+    },
+    onSubmit: async (fd) => { await api('/projects/' + p.id, { method: 'PATCH', body: Object.fromEntries(fd) }); toast('Saved'); done?.(); },
+  });
+}
+function setProjectStatus(p, status, done) {
+  const finishing = status === 'finished';
+  modal({
+    kicker: 'Engagement', title: finishing ? 'Mark as finished?' : 'Reopen engagement?', cta: finishing ? 'Finish' : 'Reopen',
+    note: finishing
+      ? 'It moves to Finished engagements — still fully readable and searchable, just out of the active list. You can reopen it any time.'
+      : 'It returns to your active engagements.',
+    onSubmit: async () => { await api('/projects/' + p.id, { method: 'PATCH', body: { status } }); toast(finishing ? 'Marked finished' : 'Reopened'); done?.(); },
   });
 }
 
@@ -351,8 +422,13 @@ async function renderProject(id) {
   const p = await api('/projects/' + id);
   setRail(null);
   setCrumbs([{ label: 'engagements', go: () => location.hash = '' }, { label: p.name }]);
+  const finished = p.status === 'finished';
   topActions(
     el('button', { className: 'btn', onclick: () => exportProjectMenu(id, p.name) }, icon('down', 12), 'Export'),
+    el('button', { className: 'btn', onclick: () => editProject(p, () => renderProject(id)) }, icon('edit', 12), 'Edit'),
+    finished
+      ? el('button', { className: 'btn', onclick: () => setProjectStatus(p, 'active', () => renderProject(id)) }, 'Reopen')
+      : el('button', { className: 'btn', onclick: () => setProjectStatus(p, 'finished', () => renderProject(id)) }, icon('check', 12), 'Finish'),
     el('button', { className: 'btn danger', onclick: () => delProject(p, p.assets.length, () => location.hash = '') }, 'Delete'));
 
   const total = p.assets.reduce((a, x) => a + x.total, 0);
@@ -386,8 +462,12 @@ async function renderProject(id) {
       del));
   }
 
+  const dateRange = fmtDateRange(p.start_date, p.end_date);
   $('#view').replaceChildren(el('div', { className: 'page narrow' },
-    el('div', { className: 'kicker' }, 'Engagement'),
+    el('div', { style: 'display:flex;align-items:center;gap:10px' },
+      el('div', { className: 'kicker' }, 'Engagement'),
+      finished ? el('span', { className: 'pill done' }, 'Finished') : null,
+      dateRange ? el('span', { className: 'muted small' }, '· ' + dateRange) : null),
     el('h1', {}, p.name),
     p.client || p.scope ? el('div', { className: 'lede' }, [p.client, p.scope].filter(Boolean).join(' · ')) : null,
     el('div', { className: 'stats' },
@@ -1540,14 +1620,19 @@ async function renderAdmin() {
 
   // Codes
   const codeCard = card('Enrollment codes');
-  if (LAST_CODE) {
-    codeCard.append(el('div', { className: 'codebanner' },
-      el('div', {}, el('div', { className: 'muted small' }, `New ${LAST_CODE.role} code — copy it now, it is not shown again`), el('code', { className: 'codebox' }, LAST_CODE.code)),
-      el('button', { className: 'btn', onclick: () => { navigator.clipboard?.writeText(LAST_CODE.code); toast('Code copied'); } }, 'Copy')));
-  }
   const now = Date.now();
   const active = codes.filter(c => !c.used_at && !(c.expires_at && new Date(c.expires_at).getTime() < now));
   const usedCount = codes.length - active.length;
+  // The "copy it now" banner is only relevant while the code is still active — once it has been
+  // redeemed, killed or expired, drop it so a stale, already-used code stops showing.
+  if (LAST_CODE && !active.some(c => c.id === LAST_CODE.id)) LAST_CODE = null;
+  if (LAST_CODE) {
+    codeCard.append(el('div', { className: 'codebanner' },
+      el('div', {}, el('div', { className: 'muted small' }, `New ${LAST_CODE.role} code — copy it now, it is not shown again`), el('code', { className: 'codebox' }, LAST_CODE.code)),
+      el('div', { style: 'display:flex;gap:7px' },
+        el('button', { className: 'btn', onclick: () => { navigator.clipboard?.writeText(LAST_CODE.code); toast('Code copied'); } }, 'Copy'),
+        el('button', { className: 'btn', title: 'Dismiss', onclick: () => { LAST_CODE = null; renderAdmin(); } }, icon('x', 12)))));
+  }
   codeCard.append(el('p', { className: 'muted' }, `${active.length} active code${active.length === 1 ? '' : 's'}. Codes are stored hashed — a value shows once when minted (above, or in the terminal). Mint with “New code”, then approve the request here.`));
   for (const c of active) codeCard.append(row(
     [el('strong', {}, c.role), c.note ? el('span', { className: 'muted' }, ` · ${c.note}`) : null,
@@ -1563,14 +1648,21 @@ async function renderAdmin() {
     const bk = await A('/backup');
     const bc = bk.config || {};
     const bcard = card('Backups');
+    if (bc.due) bcard.append(el('div', { className: 'duebanner' },
+      el('div', {}, el('strong', {}, '⏰ Scheduled backup is due'), el('div', { className: 'muted small' }, 'Enter your backup password to run it now — the password is never stored, so a backup only happens when you do this.')),
+      el('button', { className: 'btn gold', onclick: () => backupNow(ctx) }, 'Back up now')));
     bcard.append(el('p', { className: 'muted' },
-      `${bc.enabled ? `Automatic every ${bc.interval_hours}h` : 'Automatic backups are off'} · ${bk.backups.length} file(s)${bc.last_backup_at ? ' · last ' + new Date(bc.last_backup_at).toLocaleString() : ''}. Incremental and encrypted with your backup password; screenshots in findings are included. Keep the files together — a restore needs the whole set.`));
-    if (!bc.has_password) bcard.append(el('p', { className: 'muted small' }, 'No backup password set yet — set one under “Schedule…”.'));
+      `${bc.enabled ? `Reminds you every ${bc.interval_hours}h` : 'No schedule set'}${bc.last_backup_at ? ' · last backup ' + new Date(bc.last_backup_at).toLocaleString() : ' · never backed up'}. Each backup is a full, self-contained snapshot (findings’ screenshots included), encrypted with a password you type each time — nothing is stored. Only the newest ${bc.retain || 5} are kept.`));
     bcard.append(el('div', { className: 'setcard-actions' },
-      el('button', { className: 'btn gold', onclick: () => backupNow(ctx, bc.has_password) }, icon('down', 12), 'Back up now'),
-      el('button', { className: 'btn', onclick: () => backupConfigDialog(ctx, bc) }, 'Schedule…'),
+      el('button', { className: 'btn gold', onclick: () => backupNow(ctx) }, icon('down', 12), 'Back up now'),
+      el('button', { className: 'btn', onclick: () => backupConfigDialog(ctx, bc) }, bc.enabled ? 'Schedule…' : 'Set reminder…'),
       el('button', { className: 'btn', onclick: () => restoreDialog(ctx) }, icon('up', 12), 'Restore…')));
+    // Per-file download, so an admin can keep a snapshot off-box and upload it back later.
+    for (const f of bk.backups) bcard.append(row(
+      [el('strong', {}, f.file), el('div', { className: 'muted small' }, `${(f.size / 1024).toFixed(1)} KB · ${new Date(f.at).toLocaleString()}`)],
+      el('button', { className: 'btn', onclick: () => downloadBackup(ctx, f.file) }, icon('down', 12), 'Download')));
     page.append(bcard);
+    BACKUP_DUE = !!bc.due; // keep the top-bar Admin badge in sync while the panel is open
   } catch { /* backups only exist on a server */ }
 
   // Recent activity (last 10; the full history is in magi-audit.log on the server)
@@ -1620,7 +1712,7 @@ function mintCodeDialog(ctx) {
     },
     onSubmit: async (fd) => {
       const r = await api(`${ctx.base}/enroll-codes`, { method: 'POST', body: Object.fromEntries(fd) });
-      LAST_CODE = { code: r.code, role: r.role };
+      LAST_CODE = { id: r.id, code: r.code, role: r.role };
       renderAdmin();
     },
   });
@@ -1639,40 +1731,56 @@ function clearUsedCodes(ctx, n) {
     onSubmit: async () => { await api(`${ctx.base}/enroll-codes?used=1`, { method: 'DELETE' }); toast('Cleared'); renderAdmin(); },
   });
 }
-function backupNow(ctx, hasPassword) {
-  if (!hasPassword) { backupConfigDialog(ctx, {}, true); return; } // need a password first
+function backupNow(ctx) {
   modal({
-    kicker: 'Backups', title: 'Back up now?', cta: 'Back up',
-    note: 'Captures everything changed since the last backup, encrypted with your backup password.',
-    onSubmit: async () => { const r = await api(`${ctx.base}/backup/now`, { method: 'POST' }); toast(`Backed up (${r.rows} change${r.rows === 1 ? '' : 's'})`); renderAdmin(); },
+    kicker: 'Backups', title: 'Back up now', cta: 'Back up',
+    note: 'A full, encrypted snapshot. Enter your backup password — it is used to encrypt this file and is never stored. Use the SAME password every time so all your backups open with it.',
+    build: (b) => { field(b, 'Backup password', 'password', { type: 'password' }); },
+    onSubmit: async (fd) => { const r = await api(`${ctx.base}/backup/now`, { method: 'POST', body: { password: Object.fromEntries(fd).password } }); toast(`Backed up ${r.rows} record(s) · keeping ${r.kept}`); renderAdmin(); },
   });
 }
-function backupConfigDialog(ctx, bc, needPassword) {
+function backupConfigDialog(ctx, bc) {
   bc = bc || {};
   modal({
-    kicker: 'Backups', title: 'Backup schedule', cta: 'Save',
-    note: 'Backups are incremental and encrypted with this password. Keep it safe — a restore needs it and it cannot be recovered.',
+    kicker: 'Backups', title: 'Backup reminder', cta: 'Save',
+    note: 'Sets a reminder only — Magi never stores your backup password, so it cannot back up unattended. When one is due, admins are prompted here to enter the password and run it.',
     build: (b) => {
-      field(b, 'Automatic backups', 'enabled', { options: [{ value: '', label: 'Off' }, { value: '1', label: 'On' }], value: bc.enabled ? '1' : '' });
+      field(b, 'Remind to back up', 'enabled', { options: [{ value: '', label: 'Off' }, { value: '1', label: 'On' }], value: bc.enabled ? '1' : '' });
       field(b, 'Every (hours)', 'interval_hours', { type: 'number', value: String(bc.interval_hours || 24) });
-      field(b, bc.has_password ? 'Change password (optional)' : 'Backup password', 'password', { type: 'password', ph: bc.has_password ? 'leave blank to keep current' : 'choose a strong one' });
     },
     onSubmit: async (fd) => {
       const raw = Object.fromEntries(fd);
-      if (!bc.has_password && !raw.password && (raw.enabled || needPassword)) throw new Error('set a backup password first');
-      const body = { enabled: !!raw.enabled, interval_hours: raw.interval_hours };
-      if (raw.password) body.password = raw.password;
-      await api(`${ctx.base}/backup/config`, { method: 'POST', body });
-      toast('Backup settings saved'); renderAdmin();
+      await api(`${ctx.base}/backup/config`, { method: 'POST', body: { enabled: !!raw.enabled, interval_hours: raw.interval_hours } });
+      toast('Reminder saved'); renderAdmin();
     },
   });
 }
+async function downloadBackup(ctx, name) {
+  const r = await api(`${ctx.base}/backup/file/${encodeURIComponent(name)}`);
+  const a = el('a', { href: URL.createObjectURL(new Blob([r.text], { type: 'application/octet-stream' })), download: name });
+  document.body.append(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
+}
 function restoreDialog(ctx) {
+  let fi; // the file input, read at submit time
   modal({
     kicker: 'Backups', title: 'Restore from backup', cta: 'Restore', danger: true,
-    note: 'Decrypts every backup file and merges it back in (newest wins on any conflict). Enter the backup password.',
-    build: (b) => { field(b, 'Backup password', 'password', { type: 'password' }); },
-    onSubmit: async (fd) => { const r = await api(`${ctx.base}/backup/restore`, { method: 'POST', body: { password: Object.fromEntries(fd).password } }); toast(`Restored ${r.applied} record(s) from ${r.files} file(s)`); renderAdmin(); },
+    note: 'Upload a backup file you saved — one full snapshot is enough — or leave empty to use the server’s own latest backup. It merges back in, newest-wins on any conflict.',
+    build: (b) => {
+      b.append(el('label', {}, 'Backup file(s) — optional'));
+      fi = el('input', { type: 'file', multiple: true, accept: '.enc,.magi,application/octet-stream' });
+      b.append(fi);
+      field(b, 'Backup password', 'password', { type: 'password' });
+    },
+    onSubmit: async (fd) => {
+      const password = Object.fromEntries(fd).password;
+      const files = fi.files && fi.files.length
+        ? await Promise.all([...fi.files].map(f => f.text().then(text => ({ name: f.name, text }))))
+        : null;
+      const r = files
+        ? await api(`${ctx.base}/backup/restore-upload`, { method: 'POST', body: { password, files } })
+        : await api(`${ctx.base}/backup/restore`, { method: 'POST', body: { password } });
+      toast(`Restored ${r.applied} record(s) from ${r.files} file(s)`); renderAdmin();
+    },
   });
 }
 

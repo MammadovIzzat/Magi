@@ -15,8 +15,16 @@ services:
     ports:
       - "8443:8443"
     volumes:
-      # Durable: database + certificate + identity survive restarts and rebuilds.
-      - magi-data:/data
+      # Durable, and visible ON THE HOST: the database, certificate, identity, the audit
+      # log (magi-audit.log) and all backups (backups/) live in ./magi-data next to this
+      # file — so deleting or rebuilding the container never loses them, and you can grab a
+      # backup straight off the host.
+      #
+      # First time / migrating off the old named volume:
+      #   mkdir -p magi-data                      # owned by you (uid 1000 = the node user)
+      #   # if you previously used the `magi-data:` named volume, copy it out once:
+      #   docker run --rm -v magi-data:/from -v "$PWD/magi-data":/to alpine cp -a /from/. /to/
+      - ./magi-data:/data
     environment:
       # REQUIRED — the server refuses to start on the default password.
       MAGI_PASS: ${MAGI_PASS:?set a strong admin password in .env}
@@ -29,6 +37,3 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-
-volumes:
-  magi-data:

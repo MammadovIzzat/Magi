@@ -77,6 +77,9 @@ CREATE TABLE IF NOT EXISTS projects (
   client      TEXT,
   scope       TEXT,
   notes       TEXT,
+  status      TEXT DEFAULT 'active',   -- active | finished (null treated as active)
+  start_date  TEXT,                             -- engagement window, ISO yyyy-mm-dd
+  end_date    TEXT,
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -308,6 +311,12 @@ if (!userCols.has('role')) {
   db.exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'worker'`);
   db.exec(`UPDATE users SET role='admin'`);
 }
+
+// engagements gained a lifecycle (active/finished) and a start/end window.
+const projCols = new Set(db.prepare(`PRAGMA table_info(projects)`).all().map(r => r.name));
+if (!projCols.has('status')) db.exec(`ALTER TABLE projects ADD COLUMN status TEXT DEFAULT 'active'`);
+if (!projCols.has('start_date')) db.exec(`ALTER TABLE projects ADD COLUMN start_date TEXT`);
+if (!projCols.has('end_date')) db.exec(`ALTER TABLE projects ADD COLUMN end_date TEXT`);
 
 // --- seed the first user ---
 // admin/admin by default. A generated password is lost the moment you launch from a

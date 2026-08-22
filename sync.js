@@ -18,7 +18,7 @@
 // table -> { parents: { fkColumn: parentTable }, cols: [...plain columns...], blobs: [...] }
 // Order matters: parents are applied before children.
 export const SPEC = {
-  projects: { parents: {}, cols: ['name', 'client', 'scope', 'notes', 'created_at'] },
+  projects: { parents: {}, cols: ['name', 'client', 'scope', 'notes', 'status', 'start_date', 'end_date', 'created_at'] },
   folders: { parents: { project_id: 'projects' }, cols: ['grp', 'label', 'created_at'] },
   assets: { parents: { project_id: 'projects', folder_id: 'folders' }, cols: ['type', 'label', 'metadata', 'created_at'] },
   items: {

@@ -108,6 +108,13 @@ check('server received the whole target tree', sName(projUid) === 'Client Made'
   && serverDb.prepare('SELECT COUNT(*) c FROM items WHERE uid IN (SELECT uid FROM items)').get().c >= 1
   && serverDb.prepare("SELECT COUNT(*) c FROM findings WHERE title='Open redirect'").get().c === 1);
 
+// ---- 1b) engagement lifecycle (status + dates) replicates ----
+db.prepare(`UPDATE projects SET start_date='2026-08-01', end_date='2026-08-15', status='finished' WHERE id=?`).run(pid);
+await syncNow();
+const sProj = serverDb.prepare('SELECT status,start_date,end_date FROM projects WHERE uid=?').get(projUid);
+check('engagement status + dates replicate to the server',
+  sProj && sProj.status === 'finished' && sProj.start_date === '2026-08-01' && sProj.end_date === '2026-08-15');
+
 // ---- 2) server -> client ----
 const sp = await req('POST', '/api/projects', { cookie, body: { name: 'Server Made' } });
 const sAsset = await req('POST', `/api/projects/${sp.json.id}/assets`, { cookie, body: { grp: 'external', label: 'Ext' } });

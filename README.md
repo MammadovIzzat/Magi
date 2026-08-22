@@ -186,10 +186,28 @@ docker compose logs magi | grep -A1 fingerprint    # the value clients pin
 docker compose exec magi magi enroll-code          # a one-time code per client
 ```
 
-The database, certificate and identity all live on the `magi-data` volume, so restarts and
-rebuilds **never re-run setup or re-mint the certificate**. Clients connect to
-`https://<this-host>:8443` with that fingerprint and code; add other names/IPs they reach it
-by with `MAGI_SERVER_SAN` in `.env`.
+The database, certificate, identity, the audit log and all backups live in **`./magi-data`
+next to the compose file** (a host bind-mount), so restarts, rebuilds and even `docker compose
+down` **never re-run setup, re-mint the certificate, or lose your logs and backups** — and you
+can grab a backup straight off the host. Just bring it up — the container fixes the directory's
+ownership itself (it starts as root, hands `/data` to its unprivileged `node` user, then drops
+to it), so a plain `docker compose up` works even though Docker first creates the folder as
+root:
+
+```bash
+docker compose up -d --build
+```
+
+Migrating from the older `magi-data:` *named* volume? Copy it out once, then bring it up:
+
+```bash
+docker compose down
+docker run --rm -v magi-data:/from -v "$PWD/magi-data":/to alpine cp -a /from/. /to/
+docker compose up -d --build
+```
+
+Clients connect to `https://<this-host>:8443` with that fingerprint and code; add other
+names/IPs they reach it by with `MAGI_SERVER_SAN` in `.env`.
 
 ### Joining from a client
 
@@ -220,13 +238,22 @@ Admins get an **Admin** screen (in the app *and* the web UI) that auto-refreshes
 ### Backups
 
 Admins can back the whole team database up from the Admin screen — **encrypted with a password
-you choose** (AES-256-GCM, scrypt-derived key). Backups are **incremental**: the first is a
-full snapshot, each later one carries only what changed since the previous (adds *and*
-deletes), and **screenshots attached to findings are included**. Turn on a schedule (every N
-hours) or hit **Back up now**; **Restore** merges every backup file back in — last-writer-wins,
-so it converges with whatever is already there — after you re-enter the password. Files live in
-`backups/` in the data dir (`0600`); keep the set together, since a restore replays them in
-order.
+you choose** (AES-256-GCM, scrypt-derived key). Every backup is a **full, self-contained
+snapshot** (all rows plus tombstones, so **screenshots attached to findings are included**);
+any single file restores everything on its own. Only the **newest 5** are kept — each new one
+prunes the oldest.
+
+The **password is never stored.** You type it for each **Back up now**, and Magi keeps only a
+scrypt *verifier* so a typo can't produce a file no one can open. Because nothing runs
+unattended, the schedule is a **reminder**: set "remind me every N hours", and when one comes
+due the **Admin badge lights up**, admins get a toast, and the panel shows a prompt to enter
+the password and run it. (This is the deliberate trade-off for not keeping your password on the
+box next to the backups.)
+
+Each backup file has a **Download** button, so you can keep a snapshot off-box. **Restore**
+either replays the server's own latest `backups/` or the file(s) you **upload** — so you can
+rebuild a server whose data directory is gone — merging them back last-writer-wins after you
+re-enter the password. Files live in `backups/` in the data dir (`0600`).
 
 ### Local-first sync
 
@@ -264,7 +291,7 @@ Uses the system Electron, so the package stays around **750 KB**.
 
 ```bash
 npm run pkg                                   # or: cd packaging && makepkg -f
-sudo pacman -U packaging/magi-0.1.0-1-any.pkg.tar.zst
+sudo pacman -U packaging/magi-0.2.0-1-any.pkg.tar.zst
 ```
 
 ### Debian / Ubuntu
@@ -273,15 +300,15 @@ Debian has no Electron package, so the `.deb` bundles its own copy — **~100 MB
 
 ```bash
 npm run build && npm run pkg:deb
-sudo apt install ./dist/installers/magi_0.1.0_amd64.deb
+sudo apt install ./dist/installers/magi_0.2.0_amd64.deb
 ```
 
 ### Any Linux — portable AppImage
 
 ```bash
 npm run build && npm run pkg:appimage
-chmod +x dist/installers/Magi-0.1.0.AppImage
-./dist/installers/Magi-0.1.0.AppImage
+chmod +x dist/installers/Magi-0.2.0.AppImage
+./dist/installers/Magi-0.2.0.AppImage
 ```
 
 ### macOS
@@ -290,8 +317,8 @@ Cross-built from Linux, both architectures:
 
 ```bash
 npm run build && npm run pkg:mac
-# dist/installers/Magi-0.1.0-mac.zip         Intel
-# dist/installers/Magi-0.1.0-arm64-mac.zip   Apple Silicon
+# dist/installers/Magi-0.2.0-mac.zip         Intel
+# dist/installers/Magi-0.2.0-arm64-mac.zip   Apple Silicon
 ```
 
 These are **unsigned and unnotarised**, and were built on Linux — I have no Mac to

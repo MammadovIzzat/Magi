@@ -108,12 +108,14 @@ check('server received the whole target tree', sName(projUid) === 'Client Made'
   && serverDb.prepare('SELECT COUNT(*) c FROM items WHERE uid IN (SELECT uid FROM items)').get().c >= 1
   && serverDb.prepare("SELECT COUNT(*) c FROM findings WHERE title='Open redirect'").get().c === 1);
 
-// ---- 1b) engagement lifecycle (status + dates) replicates ----
+// ---- 1b) engagement dates replicate, but a WORKER cannot finish via sync ----
+// This client is enrolled as a worker; even a crafted push that sets status='finished' must be
+// neutralized server-side (only a team admin finishes an engagement), while detail/date edits sync.
 db.prepare(`UPDATE projects SET start_date='2026-08-01', end_date='2026-08-15', status='finished' WHERE id=?`).run(pid);
 await syncNow();
 const sProj = serverDb.prepare('SELECT status,start_date,end_date FROM projects WHERE uid=?').get(projUid);
-check('engagement status + dates replicate to the server',
-  sProj && sProj.status === 'finished' && sProj.start_date === '2026-08-01' && sProj.end_date === '2026-08-15');
+check('engagement dates replicate to the server', sProj && sProj.start_date === '2026-08-01' && sProj.end_date === '2026-08-15');
+check('a worker cannot finish an engagement through sync', sProj && sProj.status !== 'finished');
 
 // ---- 2) server -> client ----
 const sp = await req('POST', '/api/projects', { cookie, body: { name: 'Server Made' } });

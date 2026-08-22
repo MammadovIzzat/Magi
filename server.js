@@ -388,8 +388,21 @@ if (SERVER_MODE) {
     res.json(collectChanges(db, String(req.query.since || '')));
   });
   app.post('/api/sync/push', (req, res) => {
-    const { rows, tombstones } = req.body || {};
+    let { rows, tombstones } = req.body || {};
     try {
+      // Only a team admin may change an engagement's lifecycle. For any other device, neutralize
+      // an incoming project 'status' change (keep the server's current value) before merging — so
+      // a worker cannot finish/reopen an engagement even by crafting a raw sync push.
+      const actor = currentUser(req);
+      if (actor && actor.role !== 'admin' && Array.isArray(rows)) {
+        rows = rows.map(r => {
+          if (r?.table !== 'projects' || !r.fields || !('status' in r.fields)) return r;
+          const cur = q(`SELECT status FROM projects WHERE uid=?`).get(r.uid);
+          const serverStatus = cur ? cur.status : 'active'; // a brand-new project starts active
+          return (r.fields.status ?? 'active') === (serverStatus ?? 'active')
+            ? r : { ...r, fields: { ...r.fields, status: serverStatus } };
+        });
+      }
       const r = applyChanges(db, { rows: rows || [], tombstones: tombstones || [] });
       res.json({ ok: true, ...r, server_hlc: maxHlc(db) });
     } catch (e) { res.status(400).json({ error: e.message }); }
@@ -694,8 +707,17 @@ app.post('/api/projects', (req, res) => {
   res.status(201).json(q(`SELECT * FROM projects WHERE id=?`).get(info.lastInsertRowid));
 });
 
+// Finishing/reopening an engagement is an admin-only, team-level decision. On the server the
+// session/device role decides; on a linked client the TEAM role does (a linked worker is
+// refused, so it never even reaches the sync channel); a standalone owner administers freely.
+async function canSetEngagementStatus(req) {
+  if (SERVER_MODE) { const u = currentUser(req); return !!u && u.role === 'admin'; }
+  try { const link = (await import('./client-link.js')).status(); if (link?.linked) return link.link?.role === 'admin'; } catch {}
+  return true;
+}
+
 // Edit an engagement's details, dates, or lifecycle (active <-> finished).
-app.patch('/api/projects/:id', (req, res) => {
+app.patch('/api/projects/:id', async (req, res) => {
   const p = q(`SELECT * FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'not found' });
   const b = req.body || {};
@@ -704,8 +726,7 @@ app.patch('/api/projects/:id', (req, res) => {
   for (const k of ['client', 'scope', 'notes']) if (k in b) sets[k] = b[k] || null;
   for (const k of ['start_date', 'end_date']) if (k in b) sets[k] = cleanDate(b[k]);
   if ('status' in b) {
-    const u = currentUser(req);
-    if (!u || u.role !== 'admin') return res.status(403).json({ error: 'only an admin can finish or reopen an engagement' });
+    if (!(await canSetEngagementStatus(req))) return res.status(403).json({ error: 'only a team admin can finish or reopen an engagement' });
     if (b.status !== 'active' && b.status !== 'finished') return res.status(400).json({ error: 'status must be active or finished' });
     sets.status = b.status;
     // Marking finished with no end date on file stamps today, so it lands on the timeline.

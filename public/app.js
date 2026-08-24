@@ -1594,8 +1594,8 @@ async function renderAdmin() {
   page.append(el('div', { className: 'page-head' }, el('div', {}, el('div', { className: 'kicker' }, 'Team server'), el('h1', {}, 'Admin'))));
   const A = (p, o) => api(ctx.base + p, o);
 
-  let requests = [], devices = [], codes = [], audit = [];
-  try { [requests, devices, codes, audit] = await Promise.all([A('/requests'), A('/devices'), A('/enroll-codes'), A('/audit?limit=10')]); }
+  let requests = [], devices = [], codes = [], audit = [], users = [];
+  try { [requests, devices, codes, audit, users] = await Promise.all([A('/requests'), A('/devices'), A('/enroll-codes'), A('/audit?limit=10'), A('/users')]); }
   catch (e) { page.append(el('div', { className: 'empty' }, 'Could not load admin data: ' + e.message)); return view.replaceChildren(page); }
   ADMIN_PENDING = requests.length; renderAccount();
 
@@ -1623,6 +1623,14 @@ async function renderAdmin() {
       ? [el('span', { className: 'pill warn' }, 'revoked'), el('button', { className: 'btn danger', onclick: () => removeDevice(ctx, d.id, d.display_name) }, icon('trash', 12), 'Remove')]
       : [el('button', { className: 'btn danger', onclick: () => revokeDevice(ctx, d.id, d.display_name) }, 'Revoke')])));
   page.append(devCard);
+
+  // Members — accounts, roles, and MFA status (with lost-phone reset)
+  const memCard = card(`Members (${users.length})`);
+  for (const m of users) memCard.append(row(
+    [el('strong', {}, m.username), el('span', { className: 'muted' }, ' · '), el('span', { className: 'pill' }, m.role),
+      el('div', { className: 'muted small' }, m.mfa_enabled ? '🔒 two-factor on' : 'two-factor not set up yet')],
+    m.mfa_enabled ? el('button', { className: 'btn', onclick: () => resetMfaDialog(ctx, m) }, 'Reset MFA') : null));
+  page.append(memCard);
 
   // Codes
   const codeCard = card('Enrollment codes');
@@ -1737,6 +1745,13 @@ function clearUsedCodes(ctx, n) {
     onSubmit: async () => { await api(`${ctx.base}/enroll-codes?used=1`, { method: 'DELETE' }); toast('Cleared'); renderAdmin(); },
   });
 }
+function resetMfaDialog(ctx, m) {
+  modal({
+    kicker: 'Admin', title: `Reset two-factor for ${m.username}?`, cta: 'Reset', danger: true,
+    note: 'Clears their authenticator and recovery codes so they enrol fresh at next sign-in, and signs them out everywhere. Use this for a lost or wiped phone.',
+    onSubmit: async () => { await api(`${ctx.base}/users/${m.id}/reset-mfa`, { method: 'POST' }); toast('Two-factor reset'); renderAdmin(); },
+  });
+}
 function backupNow(ctx) {
   modal({
     kicker: 'Backups', title: 'Back up now', cta: 'Back up',
@@ -1796,42 +1811,112 @@ function showLogin() {
   $('#topbar').hidden = true;
   setRail(null);
   $('#account').replaceChildren(); $('#topActions').replaceChildren(); $('#modalRoot').replaceChildren();
-
-  const u = el('input', { name: 'username', placeholder: 'admin', autocomplete: 'username' });
-  const p = el('input', { name: 'password', type: 'password', autocomplete: 'current-password' });
-  const err = el('div', { className: 'loginerr' });
-  const hintLine = el('div', { className: 'login-hint' });
-  // /api/me returns this only inside the desktop app, where nothing is on the network.
-  fetch('/api/me').then(r => r.json()).then(d => {
-    if (d?.hint) hintLine.textContent = `default login — ${d.hint}`;
-  }).catch(() => {});
-
-  const card = el('div', { className: 'login-card' },
-    el('label', {}, 'Operator'), u,
-    el('label', {}, 'Passphrase'), p,
-    err,
-    el('button', { className: 'btn gold', type: 'submit' }, 'Authenticate'),
-    hintLine);
-
-  const form = el('form', { className: 'login-box' },
+  loginPasswordStep();
+}
+// One card, wrapped in the MAGI mark. Each login step swaps the card in this same shell.
+function loginShell(card) {
+  const box = el('form', { className: 'login-box' },
     el('div', { className: 'login-mark' }, magiMark(72),
       el('div', {}, el('div', { className: 'login-name' }, 'MAGI'),
         el('div', { className: 'login-tag' }, "The pentester's familiar"))),
     card);
-  form.onsubmit = async (e) => {
-    e.preventDefault();
-    err.textContent = '';
-    p.style.borderColor = '';
-    try { onAuthed(await api('/auth/login', { method: 'POST', body: { username: u.value, password: p.value } })); }
-    catch (ex) {
-      err.textContent = ex.message.toUpperCase().startsWith('TOO MANY')
-        ? ex.message.toUpperCase()
-        : `AUTH REJECTED — ${ex.message}.`;
-      p.style.borderColor = 'var(--red)';
-    }
+  $('#view').replaceChildren(el('div', { className: 'login-wrap' }, box));
+  return box;
+}
+const showLoginErr = (node, msg) => { node.textContent = String(msg).toUpperCase().startsWith('TOO MANY') ? String(msg).toUpperCase() : msg; };
+async function afterAuth() { onAuthed(await api('/me')); } // fetch the full profile (role, server, …)
+function copyField(display, value, mono) {
+  return el('div', { className: 'mfa-copy' },
+    el('input', { readOnly: true, value: display, className: 'mfa-field' + (mono ? ' mono' : '') }),
+    el('button', { type: 'button', className: 'btn sm', onclick: () => { navigator.clipboard?.writeText(value); toast('Copied'); } }, 'Copy'));
+}
+function downloadText(name, text) {
+  const a = el('a', { href: URL.createObjectURL(new Blob([text], { type: 'text/plain' })), download: name });
+  document.body.append(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
+}
+
+function loginPasswordStep() {
+  const u = el('input', { name: 'username', placeholder: 'admin', autocomplete: 'username' });
+  const p = el('input', { name: 'password', type: 'password', autocomplete: 'current-password' });
+  const err = el('div', { className: 'loginerr' });
+  const hint = el('div', { className: 'login-hint' });
+  fetch('/api/me').then(r => r.json()).then(d => { if (d?.hint) hint.textContent = `default login — ${d.hint}`; }).catch(() => {});
+  const box = loginShell(el('div', { className: 'login-card' },
+    el('label', {}, 'Operator'), u,
+    el('label', {}, 'Passphrase'), p,
+    err, el('button', { className: 'btn gold', type: 'submit' }, 'Authenticate'), hint));
+  box.onsubmit = async (e) => {
+    e.preventDefault(); err.textContent = ''; p.style.borderColor = '';
+    try {
+      const r = await api('/auth/login', { method: 'POST', body: { username: u.value, password: p.value } });
+      if (r.mfa === 'setup') return loginSetupStep(r);
+      if (r.mfa === 'required') return loginCodeStep();
+      await afterAuth();
+    } catch (ex) { showLoginErr(err, ex.message.toUpperCase().startsWith('TOO MANY') ? ex.message : `AUTH REJECTED — ${ex.message}.`); p.style.borderColor = 'var(--red)'; }
   };
-  $('#view').replaceChildren(el('div', { className: 'login-wrap' }, form));
   u.focus();
+}
+
+// Enrolled account: enter the rolling code (or a one-time recovery code).
+function loginCodeStep() {
+  let recovery = false;
+  const label = el('label', {}, 'Authenticator code');
+  const code = el('input', { inputMode: 'numeric', autocomplete: 'one-time-code', placeholder: '000000', maxLength: 9, className: 'mfa-code' });
+  const err = el('div', { className: 'loginerr' });
+  const toggle = el('button', { type: 'button', className: 'linklike' }, 'Use a recovery code');
+  toggle.onclick = () => {
+    recovery = !recovery;
+    label.textContent = recovery ? 'Recovery code' : 'Authenticator code';
+    code.placeholder = recovery ? 'xxxx-xxxx' : '000000';
+    code.maxLength = recovery ? 9 : 9; code.className = recovery ? '' : 'mfa-code';
+    toggle.textContent = recovery ? 'Use an authenticator code' : 'Use a recovery code';
+    code.value = ''; code.focus();
+  };
+  const box = loginShell(el('div', { className: 'login-card' },
+    el('div', { className: 'login-hd' }, 'Two-factor'),
+    el('p', { className: 'login-note' }, 'Enter the 6-digit code from your authenticator app.'),
+    label, code, err,
+    el('button', { className: 'btn gold', type: 'submit' }, 'Verify'),
+    el('div', { className: 'login-row' }, toggle, el('button', { type: 'button', className: 'linklike', onclick: showLogin }, 'Back'))));
+  box.onsubmit = async (e) => {
+    e.preventDefault(); err.textContent = '';
+    try { await api('/auth/mfa', { method: 'POST', body: { code: code.value } }); await afterAuth(); }
+    catch (ex) { showLoginErr(err, ex.message); code.select(); }
+  };
+  code.focus();
+}
+
+// First-time enrolment: scan/enter the key, confirm a code, then save recovery codes.
+function loginSetupStep(r) {
+  const grouped = r.secret.replace(/(.{4})/g, '$1 ').trim();
+  const code = el('input', { inputMode: 'numeric', autocomplete: 'one-time-code', placeholder: '000000', maxLength: 6, className: 'mfa-code' });
+  const err = el('div', { className: 'loginerr' });
+  const box = loginShell(el('div', { className: 'login-card' },
+    el('div', { className: 'login-hd' }, 'Set up two-factor'),
+    el('p', { className: 'login-note' }, 'Your team requires an authenticator app (Google Authenticator, Authy, 1Password…). Add an account with a setup key, then enter the code it shows.'),
+    el('label', {}, 'Setup key'), copyField(grouped, r.secret),
+    el('label', {}, 'Or paste this link into the app'), copyField(r.otpauth_uri, r.otpauth_uri, true),
+    el('label', { style: 'margin-top:8px' }, 'Code from the app'), code, err,
+    el('button', { className: 'btn gold', type: 'submit' }, 'Confirm & continue'),
+    el('div', { className: 'login-row' }, el('button', { type: 'button', className: 'linklike', onclick: showLogin }, 'Back'))));
+  box.onsubmit = async (e) => {
+    e.preventDefault(); err.textContent = '';
+    try { const res = await api('/auth/mfa/enable', { method: 'POST', body: { code: code.value } }); loginRecoveryStep(res.recovery_codes); }
+    catch (ex) { showLoginErr(err, ex.message); code.select(); }
+  };
+  code.focus();
+}
+
+function loginRecoveryStep(codes) {
+  const box = loginShell(el('div', { className: 'login-card' },
+    el('div', { className: 'login-hd' }, 'Save your recovery codes'),
+    el('p', { className: 'login-note' }, 'Each works once if you lose your phone. Store them somewhere safe — they are shown only now.'),
+    el('div', { className: 'recovery-grid' }, ...codes.map(c => el('code', {}, c))),
+    el('div', { className: 'login-row', style: 'margin:12px 0' },
+      el('button', { type: 'button', className: 'btn', onclick: () => { navigator.clipboard?.writeText(codes.join('\n')); toast('Copied'); } }, icon('down', 12), 'Copy all'),
+      el('button', { type: 'button', className: 'btn', onclick: () => downloadText('magi-recovery-codes.txt', codes.join('\n')) }, 'Download')),
+    el('button', { className: 'btn gold', type: 'submit' }, 'I saved them — continue')));
+  box.onsubmit = async (e) => { e.preventDefault(); await afterAuth(); };
 }
 let LINK_POLL = null, DATA_POLL = null, LAST_REV = null;
 // Live-refresh: re-render the current engagement view when background sync brings a

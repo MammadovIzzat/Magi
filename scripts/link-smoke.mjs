@@ -55,7 +55,7 @@ function req(method, path, { cookie, body } = {}) {
 // boot the server
 child = spawn(process.execPath, ['server.js'], {
   env: { ...process.env, MAGI_DATA_DIR: serverDir, MAGI_DB: join(serverDir, 'magi.db'),
-    MAGI_SERVER: '1', MAGI_HOST: '127.0.0.1', MAGI_PORT: String(PORT), MAGI_PASS: PASS, MAGI_USER: 'admin' },
+    MAGI_SERVER: '1', MAGI_MFA: 'off', MAGI_HOST: '127.0.0.1', MAGI_PORT: String(PORT), MAGI_PASS: PASS, MAGI_USER: 'admin' },
   stdio: ['ignore', 'ignore', 'pipe'],
 });
 child.stderr.on('data', d => { stderr += d; });

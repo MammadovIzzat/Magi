@@ -28,7 +28,7 @@ const check = (name, ok) => { checks.push([name, !!ok]); return !!ok; };
 let child, agent, stderr = '';
 function boot() {
   const c = spawn(process.execPath, ['server.js'], {
-    env: { ...process.env, MAGI_SERVER: '1', MAGI_HOST: '127.0.0.1', MAGI_PORT: String(PORT),
+    env: { ...process.env, MAGI_SERVER: '1', MAGI_MFA: 'off', MAGI_HOST: '127.0.0.1', MAGI_PORT: String(PORT),
       MAGI_DB: DB, MAGI_DATA_DIR: DIR, MAGI_PASS: PASS, MAGI_USER: 'admin' },
     stdio: ['ignore', 'ignore', 'pipe'],
   });

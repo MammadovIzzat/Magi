@@ -162,11 +162,15 @@ CREATE TABLE IF NOT EXISTS users (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   username    TEXT NOT NULL UNIQUE,
   pass_hash   TEXT NOT NULL,
+  mfa_secret      TEXT,                       -- base32 TOTP secret (candidate until enabled)
+  mfa_enabled     INTEGER NOT NULL DEFAULT 0, -- 1 once the user has confirmed a code
+  recovery_hashes TEXT,                       -- JSON array of sha256(one-time recovery code)
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS sessions (
   token       TEXT PRIMARY KEY,
   user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  pending     INTEGER NOT NULL DEFAULT 0,     -- 1 = password ok, second factor not yet satisfied
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -311,6 +315,14 @@ if (!userCols.has('role')) {
   db.exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'worker'`);
   db.exec(`UPDATE users SET role='admin'`);
 }
+
+// multi-factor auth (TOTP) added to accounts, and a two-step "pending" flag to sessions.
+const uCols = new Set(db.prepare(`PRAGMA table_info(users)`).all().map(r => r.name));
+if (!uCols.has('mfa_secret')) db.exec(`ALTER TABLE users ADD COLUMN mfa_secret TEXT`);
+if (!uCols.has('mfa_enabled')) db.exec(`ALTER TABLE users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0`);
+if (!uCols.has('recovery_hashes')) db.exec(`ALTER TABLE users ADD COLUMN recovery_hashes TEXT`);
+const sCols = new Set(db.prepare(`PRAGMA table_info(sessions)`).all().map(r => r.name));
+if (!sCols.has('pending')) db.exec(`ALTER TABLE sessions ADD COLUMN pending INTEGER NOT NULL DEFAULT 0`);
 
 // engagements gained a lifecycle (active/finished) and a start/end window.
 const projCols = new Set(db.prepare(`PRAGMA table_info(projects)`).all().map(r => r.name));

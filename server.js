@@ -8,6 +8,7 @@ import { exportBundle, importBundle, validateBundle } from './templates-io.js';
 import { exportProject as exportProjectBundle, importProject, validateProjectBundle } from './projects-io.js';
 import { projectReportHTML } from './report-html.js';
 import { collectChanges, applyChanges, maxHlc } from './sync.js';
+import * as totp from './totp.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -22,6 +23,10 @@ const HOST = env('HOST', '127.0.0.1');
 // clients. When off, enrollment and the admin surface stay dormant — the local app is
 // unchanged. See server-identity.js for the durable cert.
 const SERVER_MODE = env('SERVER') === '1';
+// Two-factor auth is required for everyone by default. Set MAGI_MFA=off to disable enforcement
+// (e.g. a low-stakes standalone install, or during initial rollout) — enrolled users then sign
+// in with just their password too.
+const MFA_ENFORCED = env('MFA', 'on') !== 'off';
 const sha256 = (s) => createHash('sha256').update(String(s)).digest('hex');
 
 app.use((req, res, next) => {
@@ -97,7 +102,7 @@ function currentUser(req) {
     const sid = parseCookies(req).sid;
     // expiry is enforced here, not just by the cookie's Max-Age (which the client controls)
     const row = sid ? q(`SELECT u.id, u.username, u.role FROM sessions s JOIN users u ON u.id=s.user_id
-              WHERE s.token=? AND s.created_at > datetime('now', '-${SESSION_TTL_DAYS} days')`).get(sid) : null;
+              WHERE s.token=? AND s.pending=0 AND s.created_at > datetime('now', '-${SESSION_TTL_DAYS} days')`).get(sid) : null;
     if (row) u = { ...row, display_name: row.username, device_id: null };
   }
   req._authUser = u || null;
@@ -123,7 +128,7 @@ app.use('/api', (req, res, next) => {
 
 // gate every /api route except the auth / enrollment handshakes
 app.use('/api', (req, res, next) => {
-  if (req.path === '/auth/login' || req.path === '/me' || req.path === '/enroll' || req.path === '/enroll/poll') return next();
+  if (['/auth/login', '/auth/mfa', '/auth/mfa/enable', '/me', '/enroll', '/enroll/poll'].includes(req.path)) return next();
   if (!currentUser(req)) return res.status(401).json({ error: 'unauthorized' });
   next();
 });
@@ -188,9 +193,76 @@ app.post('/api/auth/login', (req, res) => {
   }
   attempts.delete(key);
   const token = randomBytes(32).toString('hex');
-  q(`INSERT INTO sessions (token, user_id) VALUES (?,?)`).run(token, u.id);
+  // With MFA off (or an account that predates it and enforcement disabled), sign straight in.
+  if (!MFA_ENFORCED && !u.mfa_enabled) {
+    q(`INSERT INTO sessions (token, user_id) VALUES (?,?)`).run(token, u.id);
+    res.setHeader('Set-Cookie', sessionCookie(req, token, 60 * 60 * 24 * SESSION_TTL_DAYS));
+    return res.json({ username: u.username });
+  }
+  // Otherwise the session is PENDING until the second factor is satisfied. MFA is required for
+  // everyone: an enrolled user gets a code prompt; a new one is sent into first-time setup.
+  q(`INSERT INTO sessions (token, user_id, pending) VALUES (?,?,1)`).run(token, u.id);
   res.setHeader('Set-Cookie', sessionCookie(req, token, 60 * 60 * 24 * SESSION_TTL_DAYS));
-  res.json({ username: u.username });
+  if (u.mfa_enabled) return res.json({ mfa: 'required' });
+  const secret = totp.generateSecret();
+  q(`UPDATE users SET mfa_secret=? WHERE id=?`).run(secret, u.id); // candidate; inactive until confirmed
+  res.json({ mfa: 'setup', secret, otpauth_uri: totp.otpauthURI({ account: u.username, secret }) });
+});
+
+// The half-authenticated user behind a pending session cookie (password done, MFA not yet).
+function pendingSession(req) {
+  const sid = parseCookies(req).sid;
+  if (!sid) return null;
+  const row = q(`SELECT s.token, u.* FROM sessions s JOIN users u ON u.id=s.user_id
+    WHERE s.token=? AND s.pending=1 AND s.created_at > datetime('now','-1 hours')`).get(sid);
+  return row || null;
+}
+function consumeRecovery(userId, hashesJson, code) {
+  const norm = String(code || '').trim().toLowerCase();
+  if (!totp.RECOVERY_RE.test(norm)) return false;
+  let hashes; try { hashes = JSON.parse(hashesJson || '[]'); } catch { hashes = []; }
+  const i = hashes.indexOf(sha256(norm));
+  if (i < 0) return false;
+  hashes.splice(i, 1);
+  q(`UPDATE users SET recovery_hashes=? WHERE id=?`).run(JSON.stringify(hashes), userId);
+  return true;
+}
+const promoteSession = (req) => q(`UPDATE sessions SET pending=0 WHERE token=?`).run(parseCookies(req).sid);
+
+// Second factor for an already-enrolled account: a TOTP code, or a one-time recovery code.
+app.post('/api/auth/mfa', (req, res) => {
+  const s = pendingSession(req);
+  if (!s) return res.status(401).json({ error: 'no sign-in in progress — start over' });
+  const key = 'mfa|' + s.id;
+  const wait = lockedFor(key);
+  if (wait) return res.status(429).json({ error: `too many attempts — try again in ${Math.ceil(wait / 60)} min` });
+  if (!s.mfa_enabled || !s.mfa_secret) return res.status(400).json({ error: 'MFA is not set up on this account' });
+  const code = (req.body || {}).code;
+  const okTotp = totp.verifyTOTP(s.mfa_secret, code);
+  const okRecovery = !okTotp && consumeRecovery(s.id, s.recovery_hashes, code);
+  if (!okTotp && !okRecovery) { noteFailure(key); return res.status(401).json({ error: 'invalid code' }); }
+  attempts.delete(key); promoteSession(req);
+  const left = okRecovery ? (JSON.parse(q(`SELECT recovery_hashes FROM users WHERE id=?`).get(s.id).recovery_hashes || '[]')).length : null;
+  res.json({ username: s.username, ...(okRecovery ? { recovery_used: true, recovery_left: left } : {}) });
+});
+
+// First-time enrolment: confirm a code for the candidate secret, then hand back recovery codes.
+app.post('/api/auth/mfa/enable', (req, res) => {
+  const s = pendingSession(req);
+  if (!s) return res.status(401).json({ error: 'no sign-in in progress — start over' });
+  const key = 'mfa|' + s.id;
+  const wait = lockedFor(key);
+  if (wait) return res.status(429).json({ error: `too many attempts — try again in ${Math.ceil(wait / 60)} min` });
+  if (!s.mfa_secret) return res.status(400).json({ error: 'start sign-in again to get a fresh setup key' });
+  if (!totp.verifyTOTP(s.mfa_secret, (req.body || {}).code)) {
+    noteFailure(key);
+    return res.status(401).json({ error: 'that code did not match — check your phone’s clock is on automatic time' });
+  }
+  attempts.delete(key);
+  const codes = totp.recoveryCodes(10);
+  q(`UPDATE users SET mfa_enabled=1, recovery_hashes=? WHERE id=?`).run(JSON.stringify(codes.map(c => sha256(c))), s.id);
+  promoteSession(req);
+  res.json({ username: s.username, recovery_codes: codes });
 });
 app.post('/api/auth/logout', (req, res) => {
   const sid = parseCookies(req).sid;
@@ -346,9 +418,19 @@ app.delete('/api/admin/enroll-codes/:id', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 app.get('/api/admin/users', requireAdmin, (req, res) => {
-  res.json(q(`SELECT id, username, role, created_at,
+  res.json(q(`SELECT id, username, role, created_at, mfa_enabled,
     (SELECT COUNT(*) FROM devices d WHERE d.user_id=users.id AND d.revoked=0) AS devices
     FROM users ORDER BY id`).all());
+});
+// Lost-phone recovery: clear a user's MFA so they re-enrol at next sign-in. Their sessions are
+// dropped, so a device that was already signed in is booted too.
+app.post('/api/admin/users/:id/reset-mfa', requireAdmin, (req, res) => {
+  const u = q(`SELECT id, username FROM users WHERE id=?`).get(req.params.id);
+  if (!u) return res.status(404).json({ error: 'no such user' });
+  q(`UPDATE users SET mfa_enabled=0, mfa_secret=NULL, recovery_hashes=NULL WHERE id=?`).run(u.id);
+  q(`DELETE FROM sessions WHERE user_id=?`).run(u.id);
+  writeAudit(req, req.user, `reset MFA for ${u.username}`);
+  res.json({ ok: true });
 });
 app.get('/api/admin/devices', requireAdmin, (req, res) => {
   res.json(q(`SELECT d.id, d.display_name, d.created_at, d.last_seen, d.revoked, u.username, u.role

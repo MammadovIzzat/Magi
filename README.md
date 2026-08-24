@@ -235,6 +235,26 @@ Admins get an **Admin** screen (in the app *and* the web UI) that auto-refreshes
 - **Recent activity** — the last ten audit events. The full audit trail is also written to
   `magi-audit.log` in the data dir.
 
+### Two-factor auth (MFA)
+
+Every account uses an authenticator app (TOTP — Google Authenticator, Authy, 1Password, any
+RFC-6238 app), so a stolen or phished password alone can't sign in. On first sign-in the user
+scans/enters a setup key, confirms a code, and is handed **ten one-time recovery codes** for a
+lost phone. After that, sign-in is password → 6-digit code.
+
+- **Required for everyone** by default. Set `MAGI_MFA=off` to disable enforcement (a low-stakes
+  standalone install, or during initial rollout) — enrolled users then sign in with just a
+  password too.
+- **Lost phone:** use a recovery code, or an admin clears it from **Admin → Members → Reset MFA**
+  (which also signs that user out everywhere). Locked-out sole admin? Reset from the box itself:
+
+  ```bash
+  magi mfa-reset <username>      # clears their second factor; they re-enrol at next sign-in
+  ```
+
+Secrets and recovery-code hashes live in the database — so treat the data dir as confidential
+(and see the at-rest note below), and keep the box's clock roughly correct (TOTP is time-based).
+
 ### Backups
 
 Admins can back the whole team database up from the Admin screen — **encrypted with a password
@@ -291,7 +311,7 @@ Uses the system Electron, so the package stays around **750 KB**.
 
 ```bash
 npm run pkg                                   # or: cd packaging && makepkg -f
-sudo pacman -U packaging/magi-0.2.0-1-any.pkg.tar.zst
+sudo pacman -U packaging/magi-0.3.0-1-any.pkg.tar.zst
 ```
 
 ### Debian / Ubuntu
@@ -300,15 +320,15 @@ Debian has no Electron package, so the `.deb` bundles its own copy — **~100 MB
 
 ```bash
 npm run build && npm run pkg:deb
-sudo apt install ./dist/installers/magi_0.2.0_amd64.deb
+sudo apt install ./dist/installers/magi_0.3.0_amd64.deb
 ```
 
 ### Any Linux — portable AppImage
 
 ```bash
 npm run build && npm run pkg:appimage
-chmod +x dist/installers/Magi-0.2.0.AppImage
-./dist/installers/Magi-0.2.0.AppImage
+chmod +x dist/installers/Magi-0.3.0.AppImage
+./dist/installers/Magi-0.3.0.AppImage
 ```
 
 ### macOS
@@ -317,8 +337,8 @@ Cross-built from Linux, both architectures:
 
 ```bash
 npm run build && npm run pkg:mac
-# dist/installers/Magi-0.2.0-mac.zip         Intel
-# dist/installers/Magi-0.2.0-arm64-mac.zip   Apple Silicon
+# dist/installers/Magi-0.3.0-mac.zip         Intel
+# dist/installers/Magi-0.3.0-arm64-mac.zip   Apple Silicon
 ```
 
 These are **unsigned and unnotarised**, and were built on Linux — I have no Mac to

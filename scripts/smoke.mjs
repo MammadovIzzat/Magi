@@ -23,7 +23,7 @@ if (!browser) {
 let chrome;
 const db = `/tmp/magi-smoke-${process.pid}.db`;
 const server = spawn(process.execPath, ['server.js'], {
-  env: { ...process.env, MAGI_PORT: String(PORT), MAGI_DB: db, MAGI_PASS: 'smoketestpass' },
+  env: { ...process.env, MAGI_MFA: 'off', MAGI_PORT: String(PORT), MAGI_DB: db, MAGI_PASS: 'smoketestpass' },
   stdio: ['ignore', 'ignore', 'inherit'],
 });
 

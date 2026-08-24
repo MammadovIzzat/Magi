@@ -317,6 +317,19 @@ switch (cmd) {
     break;
   }
 
+  case 'mfa-reset': {
+    // Break-glass: clear a user's MFA from the box itself (a lost phone with no recovery codes,
+    // or a locked-out sole admin). They set it up again at next sign-in.
+    const username = args[0];
+    if (!username) { console.error('usage: magi mfa-reset <username>'); process.exit(1); }
+    const u = q(`SELECT id, username FROM users WHERE username=?`).get(username);
+    if (!u) { console.error(`no such user: ${username}`); process.exit(1); }
+    q(`UPDATE users SET mfa_enabled=0, mfa_secret=NULL, recovery_hashes=NULL WHERE id=?`).run(u.id);
+    q(`DELETE FROM sessions WHERE user_id=?`).run(u.id);
+    console.log(`\n  MFA reset for ${u.username} — they will enrol again at next sign-in.\n`);
+    break;
+  }
+
   case 'server-info': {
     // Print the durable identity without generating one (so it is safe to run anywhere).
     const meta = join(DATA_DIR, 'server', 'identity.json');

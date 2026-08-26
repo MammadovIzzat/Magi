@@ -262,6 +262,17 @@ check('restart reuses the SAME certificate identity', fp1 === fp2);
 const afterRestart = await req('GET', '/api/projects', { token: workerToken, device: dev1 });
 check('tokens still work after a restart', afterRestart.status === 200 && afterRestart.json?.some(p => p.name === 'Acme Q3'));
 
+// self-service username change (confirmed by password), then it becomes the login name
+const login2 = await req('POST', '/api/auth/login', { body: { username: 'admin', password: PASS } });
+const cookie2 = (login2.headers['set-cookie'] || []).map(c => c.split(';')[0]).join('; ');
+const badPw = await req('POST', '/api/change-username', { cookie: cookie2, body: { username: 'memo', password: 'wrong' } });
+check('change-username needs the right password', badPw.status === 400);
+const rename = await req('POST', '/api/change-username', { cookie: cookie2, body: { username: 'memo', password: PASS } });
+check('an account can change its own username', rename.status === 200 && rename.json?.username === 'memo');
+const oldName = await req('POST', '/api/auth/login', { body: { username: 'admin', password: PASS } });
+const newName = await req('POST', '/api/auth/login', { body: { username: 'memo', password: PASS } });
+check('the new username is now the login name (old one gone)', oldName.status === 401 && newName.status === 200);
+
 // ---- report ----
 let bad = 0;
 for (const [name, ok] of checks) { console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${name}`); if (!ok) bad++; }

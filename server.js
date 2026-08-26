@@ -312,6 +312,20 @@ app.post('/api/change-password', (req, res) => {
   q(`DELETE FROM sessions WHERE user_id=? AND token<>?`).run(u.id, sid);
   res.json({ ok: true });
 });
+// Change your own sign-in name (confirmed with your current password).
+app.post('/api/change-username', (req, res) => {
+  const u = currentUser(req);
+  const { username, password } = req.body || {};
+  const row = q(`SELECT * FROM users WHERE id=?`).get(u.id);
+  if (!verifyPassword(password || '', row.pass_hash)) return res.status(400).json({ error: 'your password is wrong' });
+  const name = String(username || '').trim();
+  if (!/^[a-z0-9_.-]{2,40}$/i.test(name)) return res.status(400).json({ error: 'username must be 2-40 chars: letters, numbers, . _ -' });
+  if (name === row.username) return res.status(400).json({ error: 'that is already your username' });
+  if (q(`SELECT 1 FROM users WHERE username=? AND id<>?`).get(name, u.id)) return res.status(409).json({ error: 'that username is taken' });
+  q(`UPDATE users SET username=? WHERE id=?`).run(name, u.id);
+  writeAudit(req, { id: u.id, username: name }, `changed username from ${row.username} to ${name}`);
+  res.json({ ok: true, username: name });
+});
 
 // ---- team server: enrollment (admin-approved) & admin ----
 // A client redeeming a code does NOT get a token straight away: it creates a PENDING request

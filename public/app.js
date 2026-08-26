@@ -203,6 +203,7 @@ function renderAccount() {
     badge, adminBtn,
     el('div', { className: 'avatar' }, (CURRENT_USER || '?')[0].toUpperCase()),
     el('span', { className: 'who' }, CURRENT_USER || ''),
+    el('button', { className: 'iconbtn', title: 'Change username', onclick: changeUsername }, icon('edit')),
     el('button', { className: 'iconbtn', title: 'Change password', onclick: changePassword }, icon('key')),
     el('button', { className: 'iconbtn danger', title: 'Sign out', onclick: logout }, icon('exit'))));
   const tb = $('#tplBtn'); if (tb) tb.hidden = !isAdmin(); // editing templates is admin-only
@@ -2110,6 +2111,22 @@ function changePassword() {
     onSubmit: async (fd) => {
       await api('/change-password', { method: 'POST', body: Object.fromEntries(fd) });
       toast('Passphrase changed — other sessions signed out');
+    },
+  });
+}
+function changeUsername() {
+  modal({
+    kicker: 'Account', title: 'Change username', cta: 'Change',
+    note: 'Your sign-in name. Confirm with your current password.',
+    build: (b) => {
+      field(b, 'New username', 'username', { value: CURRENT_USER || '', ph: 'e.g. memo' });
+      field(b, 'Current password', 'password', { type: 'password' });
+    },
+    onSubmit: async (fd) => {
+      const r = await api('/change-username', { method: 'POST', body: Object.fromEntries(fd) });
+      CURRENT_USER = r.username; if (ME) ME.username = r.username;
+      renderAccount();
+      toast('Username changed to ' + r.username);
     },
   });
 }

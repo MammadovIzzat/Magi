@@ -195,6 +195,7 @@ function renderAccount() {
     el('span', { className: 'who' }, CURRENT_USER || ''),
     el('button', { className: 'iconbtn', title: 'Change password', onclick: changePassword }, icon('key')),
     el('button', { className: 'iconbtn danger', title: 'Sign out', onclick: logout }, icon('exit'))));
+  const tb = $('#tplBtn'); if (tb) tb.hidden = !isAdmin(); // editing templates is admin-only
 }
 async function refreshLink() {
   try { LINK = await api('/link'); } catch { LINK = { linked: false, unavailable: true }; }
@@ -230,6 +231,10 @@ async function route() {
     // send it (and any stale #/settings hash left after a refresh) back to engagements.
     if (h === '/settings') { if (ME?.server) { location.hash = ''; return; } return renderSettings(); }
     if (h === '/admin') return renderAdmin();
+    // Template editing is admin-only; workers are bounced back to their engagements.
+    if (h === '/editor' || h.startsWith('/editor/') || h.startsWith('/group/')) {
+      if (!isAdmin()) { location.hash = ''; return; }
+    }
     if (h === '/editor') return renderEditor();
     const gm = h.match(/^\/group\/(\d+)/); if (gm) return renderGroup(gm[1]);
     const em = h.match(/^\/editor\/([a-z0-9_]+)/); if (em) return renderEditor(em[1]);
@@ -256,15 +261,15 @@ async function renderHome() {
   const view = $('#view');
   const head = el('div', { className: 'page-head' },
     el('div', {}, el('div', { className: 'kicker' }, 'Workspace'), el('h1', {}, 'Engagements')),
-    el('div', { style: 'display:flex;gap:7px' },
+    isAdmin() ? el('div', { style: 'display:flex;gap:7px' },
       el('button', { className: 'btn', onclick: importProjectFile, title: 'Import an engagement from a file' }, icon('up', 12), 'Import'),
-      el('button', { className: 'btn gold', onclick: newProject }, icon('plus', 12), 'New engagement')));
+      el('button', { className: 'btn gold', onclick: newProject }, icon('plus', 12), 'New engagement')) : null);
 
   if (!projects.length) {
     return view.replaceChildren(el('div', { className: 'page' }, head,
       el('div', { className: 'empty', style: 'margin-top:26px' },
-        el('div', {}, 'No engagements yet. Every target, checklist and finding lives inside one.'),
-        el('button', { className: 'btn gold', onclick: newProject }, icon('plus', 12), 'Create the first'))));
+        el('div', {}, isAdmin() ? 'No engagements yet. Every target, checklist and finding lives inside one.' : 'No engagements yet. An admin sets these up.'),
+        isAdmin() ? el('button', { className: 'btn gold', onclick: newProject }, icon('plus', 12), 'Create the first') : null)));
   }
 
   const projectRow = (p) => {
@@ -418,8 +423,8 @@ function railForFolder(folder, activeTargetId) {
   return [head,
     el('button', { className: 'railback', onclick: () => location.hash = `/project/${folder.project_id}` }, '‹ Back to engagement'),
     el('div', { className: 'rail-label kicker' }, 'Targets'), list,
-    el('div', { className: 'rail-foot' },
-      el('button', { className: 'dashbtn', onclick: () => addTarget(folder) }, icon('plus', 12), 'Add target'))];
+    isAdmin() ? el('div', { className: 'rail-foot' },
+      el('button', { className: 'dashbtn', onclick: () => addTarget(folder) }, icon('plus', 12), 'Add target')) : null];
 }
 
 // ---------- engagement (project) — lists Asset folders ----------
@@ -430,13 +435,13 @@ async function renderProject(id) {
   const finished = p.status === 'finished';
   topActions(
     el('button', { className: 'btn', onclick: () => exportProjectMenu(id, p.name) }, icon('down', 12), 'Export'),
-    el('button', { className: 'btn', onclick: () => editProject(p, () => renderProject(id)) }, icon('edit', 12), 'Edit'),
+    isAdmin() ? el('button', { className: 'btn', onclick: () => editProject(p, () => renderProject(id)) }, icon('edit', 12), 'Edit') : null,
     isAdmin()
       ? (finished
         ? el('button', { className: 'btn', onclick: () => setProjectStatus(p, 'active', () => renderProject(id)) }, 'Reopen')
         : el('button', { className: 'btn', onclick: () => setProjectStatus(p, 'finished', () => renderProject(id)) }, icon('check', 12), 'Finish'))
       : null,
-    el('button', { className: 'btn danger', onclick: () => delProject(p, p.assets.length, () => location.hash = '') }, 'Delete'));
+    isAdmin() ? el('button', { className: 'btn danger', onclick: () => delProject(p, p.assets.length, () => location.hash = '') }, 'Delete') : null);
 
   const total = p.assets.reduce((a, x) => a + x.total, 0);
   const handled = p.assets.reduce((a, x) => a + x.handled, 0);
@@ -450,13 +455,13 @@ async function renderProject(id) {
   const list = el('div', { className: 'tlist' });
   if (!p.assets.length) {
     list.append(el('div', { className: 'empty', style: 'border:0' },
-      el('div', {}, 'No assets yet. Create an Internal, External, Mobile, OT/IoT, Additional or Retest asset, then add targets inside it.'),
-      el('button', { className: 'btn gold', onclick: () => addAsset(id) }, icon('plus', 12), 'Add asset')));
+      el('div', {}, isAdmin() ? 'No assets yet. Create an Internal, External, Mobile, OT/IoT, Additional or Retest asset, then add targets inside it.' : 'No assets yet. An admin adds these.'),
+      isAdmin() ? el('button', { className: 'btn gold', onclick: () => addAsset(id) }, icon('plus', 12), 'Add asset') : null));
   }
   for (const a of p.assets) {
     const cov = pct(a.handled, a.total);
-    const del = el('button', { className: 'ibtn del', title: 'Delete asset' }, icon('trash'));
-    del.onclick = (e) => { e.stopPropagation(); delAsset(a, () => renderProject(id)); };
+    const del = isAdmin() ? el('button', { className: 'ibtn del', title: 'Delete asset' }, icon('trash')) : null;
+    if (del) del.onclick = (e) => { e.stopPropagation(); delAsset(a, () => renderProject(id)); };
     list.append(el('button', { className: 'trow', onclick: () => location.hash = `/asset/${a.id}` },
       el('span', { className: 'ticon' }, GROUP_ICON[a.grp] || '◇'),
       el('span', { className: 'tgrow' },
@@ -484,7 +489,7 @@ async function renderProject(id) {
       stat('Targets', String(targets))),
     el('div', { className: 'srule' },
       el('span', { className: 'kicker' }, 'Assets'), el('span', { className: 'rule' }),
-      el('button', { className: 'btn line sm', onclick: () => addAsset(id) }, '+ Add asset')),
+      isAdmin() ? el('button', { className: 'btn line sm', onclick: () => addAsset(id) }, '+ Add asset') : null),
     list));
 }
 
@@ -497,7 +502,7 @@ async function renderAssetFolder(id) {
     { label: f.project?.name || 'project', go: () => location.hash = `/project/${f.project_id}` },
     { label: f.label }]);
   topActions(
-    el('button', { className: 'btn danger', onclick: () => delAsset(f, () => location.hash = `/project/${f.project_id}`) }, 'Delete asset'));
+    isAdmin() ? el('button', { className: 'btn danger', onclick: () => delAsset(f, () => location.hash = `/project/${f.project_id}`) }, 'Delete asset') : null);
 
   const total = f.targets.reduce((a, x) => a + x.total, 0);
   const handled = f.targets.reduce((a, x) => a + x.handled, 0);
@@ -506,13 +511,13 @@ async function renderAssetFolder(id) {
   if (!f.targets.length) {
     list.append(el('div', { className: 'empty', style: 'border:0' },
       el('div', {}, `No targets in this ${groupLabel(f.grp)} asset yet.`),
-      el('button', { className: 'btn gold', onclick: () => addTarget(f) }, icon('plus', 12), 'Add target')));
+      isAdmin() ? el('button', { className: 'btn gold', onclick: () => addTarget(f) }, icon('plus', 12), 'Add target') : null));
   }
   for (const a of f.targets) {
     const t = TYPES.find(x => x.type === a.type) || {};
     const cov = pct(a.handled, a.total);
-    const del = el('button', { className: 'ibtn del', title: 'Delete target' }, icon('trash'));
-    del.onclick = (e) => { e.stopPropagation(); delTarget(a, () => renderAssetFolder(id)); };
+    const del = isAdmin() ? el('button', { className: 'ibtn del', title: 'Delete target' }, icon('trash')) : null;
+    if (del) del.onclick = (e) => { e.stopPropagation(); delTarget(a, () => renderAssetFolder(id)); };
     list.append(el('button', { className: 'trow', onclick: () => location.hash = `/target/${a.id}` },
       el('span', { className: 'ticon' }, t.icon || '◇'),
       el('span', { className: 'tgrow' },
@@ -534,7 +539,7 @@ async function renderAssetFolder(id) {
       stat3('Handled', `${handled}/${total}`)),
     el('div', { className: 'srule' },
       el('span', { className: 'kicker' }, 'Targets'), el('span', { className: 'rule' }),
-      el('button', { className: 'btn line sm', onclick: () => addTarget(f) }, '+ Add target')),
+      isAdmin() ? el('button', { className: 'btn line sm', onclick: () => addTarget(f) }, '+ Add target') : null),
     list));
 }
 function stat3(label, value, cls) {
@@ -679,7 +684,7 @@ async function renderTarget(id) {
   if (a.type === 'retest') {
     topActions(
       el('button', { className: 'btn gold', onclick: () => addFinding(id, true) }, icon('plus', 12), 'Add retest item'),
-      el('button', { className: 'btn danger', onclick: () => delTarget(a) }, 'Delete target'));
+      isAdmin() ? el('button', { className: 'btn danger', onclick: () => delTarget(a) }, 'Delete target') : null);
     const list = el('div', { className: 'tlist' });
     if (!a.findings.length) list.append(el('div', { className: 'empty', style: 'border:0' },
       el('div', {}, 'No retest items yet. Add one for each finding from the previous engagement you re-checked.'),
@@ -755,7 +760,7 @@ async function renderTarget(id) {
       el('div', { className: 'target-actions' },
         el('button', { className: 'btn', onclick: () => { groups.forEach(g => openGroups.add(g.key)); renderTarget(id); } }, 'Expand all'),
         el('button', { className: 'btn', onclick: () => { openGroups.clear(); renderTarget(id); } }, 'Collapse'),
-        el('button', { className: 'btn line', onclick: () => itemModal(id) }, '+ Item'))),
+        isAdmin() ? el('button', { className: 'btn line', onclick: () => itemModal(id) }, '+ Item') : null)),
     el('div', { className: 'seg' }, segbar,
       el('span', { className: 'count' }, String(handled), el('b', {}, '/' + actionable.length)),
       flagged ? el('span', { className: 'flagcount' }, icon('flag', 11), String(flagged)) : null),
@@ -897,7 +902,8 @@ function renderItem(it, assetId, num, depth, childrenBy = {}) {
     }
     actions.append(stBox);
   }
-  actions.append(el('div', { className: 'itools' },
+  // Editing the checklist itself (add sub-item / edit / delete) is admin-only; workers tick boxes.
+  if (isAdmin()) actions.append(el('div', { className: 'itools' },
     el('button', { className: 'ibtn', title: 'Add sub-item', onclick: () => itemModal(assetId, null, it.id) }, icon('plus', 12)),
     el('button', { className: 'ibtn', title: 'Edit', onclick: () => itemModal(assetId, it) }, icon('edit', 12)),
     el('button', {
@@ -1963,13 +1969,34 @@ function loginCodeStep() {
 }
 
 // First-time enrolment: scan/enter the key, confirm a code, then save recovery codes.
+// Render a QR matrix of `text` as a crisp SVG (white quiet zone + black modules). null if the
+// QR generator failed to load — the setup screen still works via the manual key.
+function qrEl(text) {
+  let m; try { m = qrMatrix(text); } catch { return null; }
+  const q = 4, dim = m.size + q * 2;
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${dim} ${dim}`);
+  svg.setAttribute('class', 'qrcode'); svg.setAttribute('shape-rendering', 'crispEdges');
+  const bg = document.createElementNS(NS, 'rect');
+  bg.setAttribute('width', dim); bg.setAttribute('height', dim); bg.setAttribute('fill', '#fff');
+  svg.append(bg);
+  let d = '';
+  for (let y = 0; y < m.size; y++) for (let x = 0; x < m.size; x++)
+    if (m.modules[y][x]) d += `M${x + q} ${y + q}h1v1h-1z`;
+  const path = document.createElementNS(NS, 'path');
+  path.setAttribute('d', d); path.setAttribute('fill', '#000');
+  svg.append(path);
+  return svg;
+}
 function loginSetupStep(r) {
   const grouped = r.secret.replace(/(.{4})/g, '$1 ').trim();
   const code = el('input', { inputMode: 'numeric', autocomplete: 'one-time-code', placeholder: '000000', maxLength: 6, className: 'mfa-code' });
   const err = el('div', { className: 'loginerr' });
+  const qr = typeof qrMatrix === 'function' ? qrEl(r.otpauth_uri) : null;
   const box = loginShell(el('div', { className: 'login-card' },
     el('div', { className: 'login-hd' }, 'Set up two-factor'),
-    el('p', { className: 'login-note' }, 'Your team requires an authenticator app (Google Authenticator, Authy, 1Password…). Add an account with a setup key, then enter the code it shows.'),
+    el('p', { className: 'login-note' }, 'Your team requires an authenticator app (Google Authenticator, Authy, 1Password…). Scan the QR — or add an account with the setup key — then enter the code it shows.'),
+    qr, qr ? el('div', { className: 'qr-hint' }, 'Scan with your authenticator app') : null,
     el('label', {}, 'Setup key'), copyField(grouped, r.secret),
     el('label', {}, 'Or paste this link into the app'), copyField(r.otpauth_uri, r.otpauth_uri, true),
     el('label', { style: 'margin-top:8px' }, 'Code from the app'), code, err,
@@ -2019,7 +2046,9 @@ function onAuthed(me) {
   ME = me;
   $('#topbar').hidden = false;
   renderAccount();
-  (async () => { TYPES = await api('/asset-types'); route(); refreshLink(); })();
+  // Resolve the team link (and thus the admin/worker role) BEFORE the first render, so a linked
+  // worker never briefly sees admin-only controls drawn from the local (owner) role.
+  (async () => { TYPES = await api('/asset-types'); await refreshLink().catch(() => {}); route(); })();
   // Keep the link/admin state (pending badge, incoming requests) reasonably fresh…
   clearInterval(LINK_POLL);
   LINK_POLL = setInterval(() => { if (CURRENT_USER) refreshLink(); }, 12000);
@@ -2043,9 +2072,10 @@ function changePassword() {
   });
 }
 
-// The templates button lives in the header, next to the account block.
+// The templates button lives in the header, next to the account block. Editing templates is
+// admin-only, so its visibility is toggled by renderAccount() as the link/role settles.
 $('#topbar').insertBefore(
-  el('button', { className: 'btn', onclick: () => location.hash = '/editor', title: 'Checklist templates' },
+  el('button', { id: 'tplBtn', className: 'btn', onclick: () => location.hash = '/editor', title: 'Checklist templates' },
     icon('lines'), el('span', { className: 'lbl' }, 'Templates')),
   $('#account'));
 

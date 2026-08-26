@@ -274,6 +274,19 @@ app.post('/api/auth/logout', (req, res) => {
   res.setHeader('Set-Cookie', sessionCookie(req, '', 0));
   res.json({ ok: true });
 });
+// Structural changes — engagements, their scope/dates, assets, targets, and checklist
+// *templates* — are an admin-only, team-level responsibility; workers work the checklists and
+// record findings. On the server the device/session role decides; on a linked client the TEAM
+// role does (so a linked worker is refused before it can sync up); a standalone owner manages
+// their own data freely.
+async function canManage(req) {
+  if (SERVER_MODE) { const u = currentUser(req); return !!u && u.role === 'admin'; }
+  try { const link = (await import('./client-link.js')).status(); if (link?.linked) return link.link?.role === 'admin'; } catch {}
+  return true;
+}
+const requireManage = (req, res, next) =>
+  canManage(req).then(ok => ok ? next() : res.status(403).json({ error: 'admins only — workers use the checklists and record findings' })).catch(next);
+
 app.get('/api/me', (req, res) => {
   const u = currentUser(req);
   if (!u) {
@@ -627,7 +640,7 @@ app.get('/api/tpl-groups/:id', (req, res) => {
     .map(i => ({ ...i, payloads: JSON.parse(i.payloads || '[]') }));
   res.json({ ...g, items });
 });
-app.post('/api/templates/:type/groups', (req, res) => {
+app.post('/api/templates/:type/groups', requireManage, (req, res) => {
   if (!q(`SELECT type FROM tpl_types WHERE type=?`).get(req.params.type)) return res.status(404).json({ error: 'type not found' });
   const b = req.body || {};
   const kind = b.kind === 'catalog' ? 'catalog' : 'spawn';
@@ -642,18 +655,18 @@ app.post('/api/templates/:type/groups', (req, res) => {
     .run(req.params.type, kind, catalog, b.gkey, b.title, sort);
   res.status(201).json(q(`SELECT * FROM tpl_groups WHERE id=?`).get(info.lastInsertRowid));
 });
-app.patch('/api/tpl-groups/:id', (req, res) => {
+app.patch('/api/tpl-groups/:id', requireManage, (req, res) => {
   const g = q(`SELECT * FROM tpl_groups WHERE id=?`).get(req.params.id);
   if (!g) return res.status(404).json({ error: 'not found' });
   q(`UPDATE tpl_groups SET title=? WHERE id=?`).run((req.body || {}).title || g.title, g.id);
   res.json(q(`SELECT * FROM tpl_groups WHERE id=?`).get(g.id));
 });
-app.delete('/api/tpl-groups/:id', (req, res) => {
+app.delete('/api/tpl-groups/:id', requireManage, (req, res) => {
   q(`DELETE FROM tpl_group_items WHERE group_id=?`).run(req.params.id); // explicit: older DBs may lack the FK
   q(`DELETE FROM tpl_groups WHERE id=?`).run(req.params.id);
   res.json({ ok: true });
 });
-app.post('/api/tpl-groups/:id/items', (req, res) => {
+app.post('/api/tpl-groups/:id/items', requireManage, (req, res) => {
   const g = q(`SELECT * FROM tpl_groups WHERE id=?`).get(req.params.id);
   if (!g) return res.status(404).json({ error: 'group not found' });
   const b = req.body || {};
@@ -663,7 +676,7 @@ app.post('/api/tpl-groups/:id/items', (req, res) => {
     .run(g.id, b.title, b.detail || '', JSON.stringify(b.payloads || []), b.kind || 'check', b.spawns || null, sort);
   res.status(201).json(q(`SELECT * FROM tpl_group_items WHERE id=?`).get(info.lastInsertRowid));
 });
-app.patch('/api/tpl-group-items/:id', (req, res) => {
+app.patch('/api/tpl-group-items/:id', requireManage, (req, res) => {
   const cur = q(`SELECT * FROM tpl_group_items WHERE id=?`).get(req.params.id);
   if (!cur) return res.status(404).json({ error: 'not found' });
   const b = req.body || {};
@@ -673,7 +686,7 @@ app.patch('/api/tpl-group-items/:id', (req, res) => {
       b.kind ?? cur.kind, blank(b.spawns, cur.spawns), b.sort ?? cur.sort, cur.id);
   res.json(q(`SELECT * FROM tpl_group_items WHERE id=?`).get(cur.id));
 });
-app.delete('/api/tpl-group-items/:id', (req, res) => {
+app.delete('/api/tpl-group-items/:id', requireManage, (req, res) => {
   q(`DELETE FROM tpl_group_items WHERE id=?`).run(req.params.id);
   res.json({ ok: true });
 });
@@ -685,7 +698,7 @@ app.get('/api/templates/:type/export', (req, res) => {
   res.type('application/json').send(JSON.stringify(bundle, null, 2));
 });
 // Preview what an uploaded bundle would do without touching the DB.
-app.post('/api/templates/import/preview', (req, res) => {
+app.post('/api/templates/import/preview', requireManage, (req, res) => {
   try {
     const b = validateBundle(req.body);
     res.json({
@@ -699,7 +712,7 @@ app.post('/api/templates/import/preview', (req, res) => {
     });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
-app.post('/api/templates/import', (req, res) => {
+app.post('/api/templates/import', requireManage, (req, res) => {
   const { bundle, onConflict } = req.body || {};
   try {
     const results = importBundle(bundle, ['skip', 'replace', 'rename'].includes(onConflict) ? onConflict : 'skip');
@@ -708,13 +721,13 @@ app.post('/api/templates/import', (req, res) => {
 });
 
 // restore this type's shipped defaults (template edits are discarded; assets untouched)
-app.post('/api/templates/:type/reset', (req, res) => {
+app.post('/api/templates/:type/reset', requireManage, (req, res) => {
   if (!q(`SELECT type FROM tpl_types WHERE type=?`).get(req.params.type)) return res.status(404).json({ error: 'type not found' });
   const n = resetType(req.params.type);
   if (n === false) return res.status(400).json({ error: 'this type has no shipped defaults to restore' });
   res.json({ ok: true, items: n });
 });
-app.post('/api/templates', (req, res) => {
+app.post('/api/templates', requireManage, (req, res) => {
   const { type, label, icon, hint, grp } = req.body || {};
   if (!type || !/^[a-z0-9_]+$/.test(type)) return res.status(400).json({ error: 'type must be lowercase letters/numbers/underscore' });
   if (!label) return res.status(400).json({ error: 'label required' });
@@ -723,7 +736,7 @@ app.post('/api/templates', (req, res) => {
   q(`INSERT INTO tpl_types (type,label,icon,hint,grp,sort) VALUES (?,?,?,?,?,?)`).run(type, label, icon || null, hint || null, grp || null, sort);
   res.status(201).json(q(`SELECT * FROM tpl_types WHERE type=?`).get(type));
 });
-app.patch('/api/templates/:type', (req, res) => {
+app.patch('/api/templates/:type', requireManage, (req, res) => {
   const t = q(`SELECT * FROM tpl_types WHERE type=?`).get(req.params.type);
   if (!t) return res.status(404).json({ error: 'not found' });
   const b = req.body || {};
@@ -731,12 +744,12 @@ app.patch('/api/templates/:type', (req, res) => {
     .run(b.label ?? t.label, b.icon ?? t.icon, b.hint ?? t.hint, b.grp ?? t.grp, t.type);
   res.json(q(`SELECT * FROM tpl_types WHERE type=?`).get(t.type));
 });
-app.delete('/api/templates/:type', (req, res) => {
+app.delete('/api/templates/:type', requireManage, (req, res) => {
   q(`DELETE FROM tpl_items WHERE type=?`).run(req.params.type);
   q(`DELETE FROM tpl_types WHERE type=?`).run(req.params.type);
   res.json({ ok: true });
 });
-app.post('/api/templates/:type/items', (req, res) => {
+app.post('/api/templates/:type/items', requireManage, (req, res) => {
   const t = q(`SELECT type FROM tpl_types WHERE type=?`).get(req.params.type);
   if (!t) return res.status(404).json({ error: 'type not found' });
   const b = req.body || {};
@@ -749,7 +762,7 @@ app.post('/api/templates/:type/items', (req, res) => {
     b.spawns || null, b.catalog || null, JSON.stringify(b.options || []), sort);
   res.status(201).json(q(`SELECT * FROM tpl_items WHERE id=?`).get(info.lastInsertRowid));
 });
-app.patch('/api/tpl-items/:id', (req, res) => {
+app.patch('/api/tpl-items/:id', requireManage, (req, res) => {
   const cur = q(`SELECT * FROM tpl_items WHERE id=?`).get(req.params.id);
   if (!cur) return res.status(404).json({ error: 'not found' });
   const b = req.body || {};
@@ -762,7 +775,7 @@ app.patch('/api/tpl-items/:id', (req, res) => {
       b.sort ?? cur.sort, req.params.id);
   res.json(q(`SELECT * FROM tpl_items WHERE id=?`).get(req.params.id));
 });
-app.delete('/api/tpl-items/:id', (req, res) => {
+app.delete('/api/tpl-items/:id', requireManage, (req, res) => {
   q(`DELETE FROM tpl_items WHERE id=?`).run(req.params.id);
   res.json({ ok: true });
 });
@@ -785,7 +798,7 @@ app.get('/api/projects', (req, res) => {
 // Accepts yyyy-mm-dd or empty; anything else is stored as null rather than trusted verbatim.
 const cleanDate = (v) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
 
-app.post('/api/projects', (req, res) => {
+app.post('/api/projects', requireManage, (req, res) => {
   const { name, client, scope, notes, start_date, end_date } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name required' });
   const info = q(`INSERT INTO projects (name, client, scope, notes, start_date, end_date) VALUES (?,?,?,?,?,?)`)
@@ -793,17 +806,8 @@ app.post('/api/projects', (req, res) => {
   res.status(201).json(q(`SELECT * FROM projects WHERE id=?`).get(info.lastInsertRowid));
 });
 
-// Finishing/reopening an engagement is an admin-only, team-level decision. On the server the
-// session/device role decides; on a linked client the TEAM role does (a linked worker is
-// refused, so it never even reaches the sync channel); a standalone owner administers freely.
-async function canSetEngagementStatus(req) {
-  if (SERVER_MODE) { const u = currentUser(req); return !!u && u.role === 'admin'; }
-  try { const link = (await import('./client-link.js')).status(); if (link?.linked) return link.link?.role === 'admin'; } catch {}
-  return true;
-}
-
-// Edit an engagement's details, dates, or lifecycle (active <-> finished).
-app.patch('/api/projects/:id', async (req, res) => {
+// Edit an engagement's details, dates, or lifecycle (active <-> finished). Admin-only.
+app.patch('/api/projects/:id', requireManage, (req, res) => {
   const p = q(`SELECT * FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'not found' });
   const b = req.body || {};
@@ -812,7 +816,6 @@ app.patch('/api/projects/:id', async (req, res) => {
   for (const k of ['client', 'scope', 'notes']) if (k in b) sets[k] = b[k] || null;
   for (const k of ['start_date', 'end_date']) if (k in b) sets[k] = cleanDate(b[k]);
   if ('status' in b) {
-    if (!(await canSetEngagementStatus(req))) return res.status(403).json({ error: 'only a team admin can finish or reopen an engagement' });
     if (b.status !== 'active' && b.status !== 'finished') return res.status(400).json({ error: 'status must be active or finished' });
     sets.status = b.status;
     // Marking finished with no end date on file stamps today, so it lands on the timeline.
@@ -832,7 +835,7 @@ app.get('/api/projects/:id/bundle', (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename="magi-project-${safe}.json"`);
   res.type('application/json').send(JSON.stringify(bundle, null, 2));
 });
-app.post('/api/projects/import/preview', (req, res) => {
+app.post('/api/projects/import/preview', requireManage, (req, res) => {
   try {
     const b = validateProjectBundle(req.body);
     res.json({
@@ -844,7 +847,7 @@ app.post('/api/projects/import/preview', (req, res) => {
     });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
-app.post('/api/projects/import', (req, res) => {
+app.post('/api/projects/import', requireManage, (req, res) => {
   const { bundle, name } = req.body || {};
   try {
     const r = importProject(bundle, name && String(name).trim() ? String(name).trim() : null);
@@ -868,7 +871,7 @@ app.get('/api/projects/:id', (req, res) => {
 });
 
 // Cascades to assets -> items/findings via the schema's ON DELETE CASCADE.
-app.delete('/api/projects/:id', (req, res) => {
+app.delete('/api/projects/:id', requireManage, (req, res) => {
   const p = q(`SELECT id FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'not found' });
   const assets = q(`SELECT COUNT(*) c FROM folders WHERE project_id=?`).get(p.id).c;
@@ -892,7 +895,7 @@ function resolveLinks(refsJson) {
   return refUids(refsJson).map(uid => q(`SELECT f.uid, f.title, f.severity, a.label AS target
     FROM findings f JOIN assets a ON a.id=f.asset_id WHERE f.uid=?`).get(uid)).filter(Boolean);
 }
-app.post('/api/projects/:id/assets', (req, res) => {
+app.post('/api/projects/:id/assets', requireManage, (req, res) => {
   const p = q(`SELECT id FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'project not found' });
   const { grp, label } = req.body || {};
@@ -918,7 +921,7 @@ app.get('/api/assets/:id', (req, res) => {
   res.json({ ...f, project, targets: targets.map(assetSummary) });
 });
 
-app.delete('/api/assets/:id', (req, res) => {
+app.delete('/api/assets/:id', requireManage, (req, res) => {
   const f = q(`SELECT id FROM folders WHERE id=?`).get(req.params.id);
   if (!f) return res.status(404).json({ error: 'not found' });
   const targets = q(`SELECT COUNT(*) c FROM assets WHERE folder_id=?`).get(f.id).c;
@@ -927,7 +930,7 @@ app.delete('/api/assets/:id', (req, res) => {
 });
 
 // ---- targets (the checklist-bearing things inside an asset) ----
-app.post('/api/assets/:id/targets', (req, res) => {
+app.post('/api/assets/:id/targets', requireManage, (req, res) => {
   const f = q(`SELECT * FROM folders WHERE id=?`).get(req.params.id);
   if (!f) return res.status(404).json({ error: 'asset not found' });
   const { type, label, metadata } = req.body || {};
@@ -952,7 +955,7 @@ app.get('/api/targets/:id', (req, res) => {
   res.json({ ...assetSummary(a), items, findings, folder, project });
 });
 
-app.delete('/api/targets/:id', (req, res) => {
+app.delete('/api/targets/:id', requireManage, (req, res) => {
   const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'not found' });
   const items = q(`SELECT COUNT(*) c FROM items WHERE asset_id=?`).get(a.id).c;
@@ -962,10 +965,13 @@ app.delete('/api/targets/:id', (req, res) => {
 });
 
 // ---- items ----
-app.patch('/api/items/:id', (req, res) => {
+app.patch('/api/items/:id', async (req, res) => {
   const cur = q(`SELECT * FROM items WHERE id=?`).get(req.params.id);
   if (!cur) return res.status(404).json({ error: 'not found' });
   const b = req.body || {};
+  // Ticking a box (status/answer) is worker work; editing the checklist item itself is admin.
+  if (['title', 'detail', 'kind', 'group_title', 'payloads'].some(k => k in b) && !(await canManage(req)))
+    return res.status(403).json({ error: 'admins only — workers use the checklists and record findings' });
   const status = b.status ?? cur.status;
   const answer = b.answer ?? cur.answer;
   const title = b.title ?? cur.title;
@@ -983,7 +989,7 @@ app.patch('/api/items/:id', (req, res) => {
   res.json(q(`SELECT * FROM items WHERE id=?`).get(req.params.id));
 });
 
-app.post('/api/targets/:id/items', (req, res) => {
+app.post('/api/targets/:id/items', requireManage, (req, res) => {
   const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'asset not found' });
   const { title, detail, group_title, payloads, kind, parent_id } = req.body || {};
@@ -1049,7 +1055,7 @@ app.post('/api/items/:id/select', (req, res) => {
   res.status(201).json({ ok: true, selected: true, added: cat.items.length });
 });
 
-app.delete('/api/items/:id', (req, res) => {
+app.delete('/api/items/:id', requireManage, (req, res) => {
   deleteItemTree(req.params.id);
   res.json({ ok: true });
 });

@@ -132,23 +132,36 @@ check('the token is delivered only once', poll2.json?.status === 'approved' && !
 // the token authorizes API use...
 const list = await req('GET', '/api/projects', { token: workerToken, device: dev1 });
 check('device token authorizes API', list.status === 200 && Array.isArray(list.json));
-const made = await req('POST', '/api/projects', { token: workerToken, device: dev1, body: { name: 'Acme Q3' } });
-check('worker can create a project', made.status === 201 && made.json?.id);
-
-// ...but only an admin may finish/reopen an engagement (workers are refused)
-const wFinish = await req('PATCH', `/api/projects/${made.json.id}`, { token: workerToken, device: dev1, body: { status: 'finished' } });
-check('a worker cannot finish an engagement', wFinish.status === 403);
+// RBAC: engagement STRUCTURE + templates are admin-only; workers work checklists + findings.
+const wProj = await req('POST', '/api/projects', { token: workerToken, device: dev1, body: { name: 'Acme Q3' } });
+check('a worker cannot create an engagement', wProj.status === 403);
+const made = await req('POST', '/api/projects', { cookie, body: { name: 'Acme Q3' } });
+check('an admin can create an engagement', made.status === 201 && made.json?.id);
 const wEdit = await req('PATCH', `/api/projects/${made.json.id}`, { token: workerToken, device: dev1, body: { client: 'Acme' } });
-check('a worker can still edit engagement details', wEdit.status === 200 && wEdit.json?.client === 'Acme');
-const aFinish = await req('PATCH', `/api/projects/${made.json.id}`, { cookie, body: { status: 'finished' } });
-check('an admin can finish an engagement', aFinish.status === 200 && aFinish.json?.status === 'finished' && aFinish.json?.end_date);
+check('a worker cannot edit engagement details/scope', wEdit.status === 403);
+const wTpl = await req('POST', '/api/templates/web/items', { token: workerToken, device: dev1, body: { title: 'x' } });
+check('a worker cannot edit templates', wTpl.status === 403);
+const aFinish = await req('PATCH', `/api/projects/${made.json.id}`, { cookie, body: { status: 'finished', client: 'Acme' } });
+check('an admin can edit + finish an engagement', aFinish.status === 200 && aFinish.json?.status === 'finished' && aFinish.json?.end_date);
 
 // findings: creation (the route the app posts to), attack-chain links, and the retest type
 const extAsset = (await req('POST', `/api/projects/${made.json.id}/assets`, { cookie, body: { grp: 'external', label: 'Ext' } })).json;
+const wAsset = await req('POST', `/api/projects/${made.json.id}/assets`, { token: workerToken, device: dev1, body: { grp: 'external', label: 'W' } });
+check('a worker cannot add an asset', wAsset.status === 403);
 const webT = (await req('POST', `/api/assets/${extAsset.id}/targets`, { cookie, body: { type: 'web', label: 'https://x.test' } })).json;
+const wTarget = await req('POST', `/api/assets/${extAsset.id}/targets`, { token: workerToken, device: dev1, body: { type: 'web', label: 'https://w.test' } });
+check('a worker cannot add a target', wTarget.status === 403);
+// but a worker CAN record findings and tick checklist items
+const wf = await req('POST', `/api/targets/${webT.id}/findings`, { token: workerToken, device: dev1, body: { title: 'Worker note', kind: 'note' } });
+check('a worker can record a finding', wf.status === 201 && !!wf.json?.id);
+const anItem = (await req('GET', `/api/targets/${webT.id}`, { cookie })).json.items[0];
+const wTick = await req('PATCH', `/api/items/${anItem.id}`, { token: workerToken, device: dev1, body: { status: 'done' } });
+check('a worker can tick a checklist item', wTick.status === 200 && wTick.json?.status === 'done');
+const wItemEdit = await req('PATCH', `/api/items/${anItem.id}`, { token: workerToken, device: dev1, body: { title: 'hacked title' } });
+check('a worker cannot edit a checklist item’s text', wItemEdit.status === 403);
 const fA = await req('POST', `/api/targets/${webT.id}/findings`, { cookie, body: { title: 'Creds', kind: 'credential', body: 'a:b' } });
 check('a finding can be created on a target', fA.status === 201 && !!fA.json?.id);
-const aUid = (await req('GET', `/api/targets/${webT.id}`, { cookie })).json.findings[0].uid;
+const aUid = (await req('GET', `/api/targets/${webT.id}`, { cookie })).json.findings.find(f => f.title === 'Creds').uid;
 await req('POST', `/api/targets/${webT.id}/findings`, { cookie, body: { title: 'RCE', kind: 'vuln', severity: 'critical', refs: [aUid] } });
 const withLinks = (await req('GET', `/api/targets/${webT.id}`, { cookie })).json.findings;
 check('a finding chains to another (refs resolve to a title)', withLinks.some(f => (f.links || []).some(l => l.title === 'Creds')));
@@ -199,10 +212,10 @@ check('admin-role device enrolls via approval', enrollA.ok && enrollA.role === '
 const adminUsers = await req('GET', '/api/admin/users', { token: enrollA.token, device: dev2 });
 check('admin-role device reaches the admin surface', adminUsers.status === 200 && adminUsers.json?.length >= 3);
 
-// attribution: the worker's project creation is in the audit log under their display name
+// attribution: the worker's finding write is in the audit log under their display name
 const audit = await req('GET', '/api/admin/audit', { token: enrollA.token, device: dev2 });
 check('audit log attributes the write to the worker', audit.status === 200
-  && audit.json?.some(r => r.display_name === 'Ana R.' && r.path === '/api/projects'));
+  && audit.json?.some(r => r.display_name === 'Ana R.' && (r.path || '').includes('/findings')));
 
 // hard-delete removes a device, its orphaned account, AND that account's redeemed codes
 const tdev = 'ffffffff-6666-4666-8666-ffffffffffff';

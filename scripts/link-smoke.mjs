@@ -69,10 +69,11 @@ for (let i = 0; i < 60; i++) { try { const r = await req('GET', '/api/me'); if (
 const serverUrl = `https://127.0.0.1:${PORT}`;
 const fingerprint = new (await import('node:crypto')).X509Certificate(cert).fingerprint256;
 
-// admin logs in and mints two worker codes (one for the good path, one for the mismatch path)
+// admin logs in and mints codes: code1 is an admin code (so the linked device can exercise a
+// structural write below — RBAC itself is covered in server-smoke), code2 for the mismatch path.
 const login = await req('POST', '/api/auth/login', { body: { username: 'admin', password: PASS } });
 const cookie = (login.headers['set-cookie'] || []).map(c => c.split(';')[0]).join('; ');
-const code1 = (await req('POST', '/api/admin/enroll-codes', { cookie, body: { role: 'worker' } })).json?.code;
+const code1 = (await req('POST', '/api/admin/enroll-codes', { cookie, body: { role: 'admin' } })).json?.code;
 const code2 = (await req('POST', '/api/admin/enroll-codes', { cookie, body: { role: 'worker' } })).json?.code;
 
 // now drive the CLIENT module

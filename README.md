@@ -174,8 +174,13 @@ magi server                                        # subsequent runs
   screen; only then is a **device-bound token** issued — the only credential the client uses
   afterwards. The same token replayed from a different device is refused, and only code
   *hashes* are ever stored.
-- **Roles.** `worker` works engagements; `admin` also manages users, devices and codes.
-  A lost laptop or a departure is one call to revoke: the device's token dies instantly.
+- **Roles.** A `worker` does the testing — works the checklists (tick items, spawn follow-ups,
+  select options) and records findings (notes, credentials, vulns, screenshots, attack-chain
+  links). An `admin` owns the **structure**: creating and editing engagements and their scope,
+  adding assets and targets, marking a retest fixed, and editing the checklist **templates** —
+  none of which a worker can do (enforced server-side, and the admin-only controls are hidden
+  from a worker's UI). `admin` also manages users, devices and codes. A lost laptop or a
+  departure is one call to revoke: the device's token dies instantly.
 - **Attribution.** Every change is logged with who made it (the display name), so a lead
   can see the current position — who touched what, when.
 
@@ -248,8 +253,9 @@ Admins get an **Admin** screen (in the app *and* the web UI) that auto-refreshes
 
 Every account uses an authenticator app (TOTP — Google Authenticator, Authy, 1Password, any
 RFC-6238 app), so a stolen or phished password alone can't sign in. On first sign-in the user
-scans/enters a setup key, confirms a code, and is handed **ten one-time recovery codes** for a
-lost phone. After that, sign-in is password → 6-digit code.
+**scans a QR code** (or types the setup key), confirms a code, and is handed **ten one-time
+recovery codes** for a lost phone. After that, sign-in is password → 6-digit code. The QR is
+generated in-app with a tiny built-in encoder — no external service ever sees the secret.
 
 - **Required for everyone** by default. Set `MAGI_MFA=off` to disable enforcement (a low-stakes
   standalone install, or during initial rollout) — enrolled users then sign in with just a
@@ -310,7 +316,7 @@ must match.
 Headless, no fixtures, no network mocks — real servers and a real headless browser:
 
 ```bash
-npm test        # migrate + stash + UI + server + link + sync + backup smokes
+npm test        # migrate + stash + UI + server + link + sync + backup + mfa + io + qr smokes
 ```
 
 - **migrate** — a pre-sync database upgrades cleanly on first boot (the `uid`/clock columns backfill).
@@ -328,7 +334,7 @@ Uses the system Electron, so the package stays around **750 KB**.
 
 ```bash
 npm run pkg                                   # or: cd packaging && makepkg -f
-sudo pacman -U packaging/magi-0.4.0-1-any.pkg.tar.zst
+sudo pacman -U packaging/magi-0.5.0-1-any.pkg.tar.zst
 ```
 
 ### Debian / Ubuntu
@@ -337,15 +343,15 @@ Debian has no Electron package, so the `.deb` bundles its own copy — **~100 MB
 
 ```bash
 npm run build && npm run pkg:deb
-sudo apt install ./dist/installers/magi_0.4.0_amd64.deb
+sudo apt install ./dist/installers/magi_0.5.0_amd64.deb
 ```
 
 ### Any Linux — portable AppImage
 
 ```bash
 npm run build && npm run pkg:appimage
-chmod +x dist/installers/Magi-0.4.0.AppImage
-./dist/installers/Magi-0.4.0.AppImage
+chmod +x dist/installers/Magi-0.5.0.AppImage
+./dist/installers/Magi-0.5.0.AppImage
 ```
 
 ### macOS
@@ -354,8 +360,8 @@ Cross-built from Linux, both architectures:
 
 ```bash
 npm run build && npm run pkg:mac
-# dist/installers/Magi-0.4.0-mac.zip         Intel
-# dist/installers/Magi-0.4.0-arm64-mac.zip   Apple Silicon
+# dist/installers/Magi-0.5.0-mac.zip         Intel
+# dist/installers/Magi-0.5.0-arm64-mac.zip   Apple Silicon
 ```
 
 These are **unsigned and unnotarised**, and were built on Linux — I have no Mac to

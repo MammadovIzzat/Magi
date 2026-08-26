@@ -475,10 +475,10 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .evtab { flex: 1; background: none; border: 1px solid var(--line-3); border-radius: 5px; padding: 5px 4px; font-family: var(--mono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted-3); cursor: pointer; }
 .evtab:hover { color: var(--text); }
 .evtab.on { border-color: var(--gold); color: var(--gold); background: var(--gold-wash); }
-.evrow { display: flex; gap: 6px; }
-.evsearch { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--line-3); border-radius: 5px; padding: 6px 9px; color: var(--text); font-size: 12px; }
+.evrow { display: flex; gap: 6px; align-items: stretch; }
+.evsearch { flex: 1 1 auto; width: auto; min-width: 0; background: var(--bg); border: 1px solid var(--line-3); border-radius: 5px; padding: 7px 10px; color: var(--text); font-size: 12.5px; }
 .evsearch:focus { outline: none; border-color: var(--gold); }
-.evsort { flex: none; background: var(--bg); border: 1px solid var(--line-3); border-radius: 5px; color: var(--text); font-size: 11.5px; padding: 6px 6px; }
+.evsort { flex: 0 0 auto; width: auto; background: var(--bg); border: 1px solid var(--line-3); border-radius: 5px; color: var(--text); font-size: 11.5px; padding: 6px 6px; }
 .chainrow { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 4px; cursor: pointer; }
 .chainrow:hover { background: var(--line); }
 .chainrow input { flex: none; width: auto; padding: 0; margin: 0; }

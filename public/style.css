@@ -452,6 +452,20 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .finding.sev-high .f-sev, .finding.sev-critical .f-sev { color: var(--red); }
 .finding.sev-medium .f-sev { color: var(--gold); }
 .f-kind { color: var(--muted); }
+/* retest remediation status */
+.f-fix { font-family: var(--mono); font-size: 9px; letter-spacing: .12em; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; border: 1px solid; }
+.f-fix.fixed { color: var(--jade); border-color: #46B87A55; background: #46B87A14; }
+.f-fix.half_fixed { color: var(--gold); border-color: var(--gold); background: var(--gold-wash); }
+.f-fix.not_fixed { color: var(--red-ink, var(--red)); border-color: var(--red); background: var(--red-bg, #E2453C14); }
+/* attack-chain links on a finding */
+.f-links { margin-top: 8px; font-size: 11px; }
+.chainlink { color: var(--gold); }
+/* chain-link picker in the finding modal */
+.chainpick { max-height: 168px; overflow-y: auto; border: 1px solid var(--line-3); border-radius: 6px; padding: 4px; margin-top: 2px; }
+.chainrow { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 4px; cursor: pointer; }
+.chainrow:hover { background: var(--line); }
+.chainrow input { flex: none; }
+.chaint { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 12.5px; color: var(--text); }
 .f-tools { display: flex; gap: 1px; margin-left: auto; opacity: 0; transition: opacity .1s; }
 .finding:hover .f-tools { opacity: 1; }
 .f-tools .ibtn { width: 22px; height: 22px; }

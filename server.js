@@ -193,8 +193,8 @@ app.post('/api/auth/login', (req, res) => {
   }
   attempts.delete(key);
   const token = randomBytes(32).toString('hex');
-  // With MFA off (or an account that predates it and enforcement disabled), sign straight in.
-  if (!MFA_ENFORCED && !u.mfa_enabled) {
+  // MFA turned off is a full kill switch: sign straight in, even for accounts that had enrolled.
+  if (!MFA_ENFORCED) {
     q(`INSERT INTO sessions (token, user_id) VALUES (?,?)`).run(token, u.id);
     res.setHeader('Set-Cookie', sessionCookie(req, token, 60 * 60 * 24 * SESSION_TTL_DAYS));
     return res.json({ username: u.username });
@@ -243,6 +243,7 @@ app.post('/api/auth/mfa', (req, res) => {
   if (!okTotp && !okRecovery) { noteFailure(key); return res.status(401).json({ error: 'invalid code' }); }
   attempts.delete(key); promoteSession(req);
   const left = okRecovery ? (JSON.parse(q(`SELECT recovery_hashes FROM users WHERE id=?`).get(s.id).recovery_hashes || '[]')).length : null;
+  if (okRecovery) writeAudit(req, { id: s.id, username: s.username }, `signed in with a recovery code (${left} left)`);
   res.json({ username: s.username, ...(okRecovery ? { recovery_used: true, recovery_left: left } : {}) });
 });
 
@@ -262,6 +263,9 @@ app.post('/api/auth/mfa/enable', (req, res) => {
   const codes = totp.recoveryCodes(10);
   q(`UPDATE users SET mfa_enabled=1, recovery_hashes=? WHERE id=?`).run(JSON.stringify(codes.map(c => sha256(c))), s.id);
   promoteSession(req);
+  // Audit enrolment: if a leaked password were ever used to bind MFA to an attacker's phone
+  // before the real user enrols, this line (plus the victim's lockout) makes it visible.
+  writeAudit(req, { id: s.id, username: s.username }, 'enrolled two-factor auth');
   res.json({ username: s.username, recovery_codes: codes });
 });
 app.post('/api/auth/logout', (req, res) => {
@@ -873,7 +877,17 @@ app.delete('/api/projects/:id', (req, res) => {
 });
 
 // ---- assets (engagement-type folders) ----
-const GRP_KEYS = new Set(['internal', 'external', 'mobile', 'wireless', 'otiot', 'additional']);
+const GRP_KEYS = new Set(['internal', 'external', 'mobile', 'wireless', 'otiot', 'additional', 'retest']);
+const FIX_STATES = new Set(['fixed', 'not_fixed', 'half_fixed']);
+const cleanFix = (v) => (FIX_STATES.has(v) ? v : null);
+const cleanRefs = (v) => (Array.isArray(v) ? JSON.stringify(v.filter(x => typeof x === 'string').slice(0, 50)) : null);
+// Resolve a finding's `refs` (other findings' uids) to display titles for the attack chain.
+function resolveLinks(refsJson) {
+  let uids; try { uids = JSON.parse(refsJson || '[]'); } catch { uids = []; }
+  if (!Array.isArray(uids) || !uids.length) return [];
+  return uids.map(uid => q(`SELECT f.uid, f.title, f.severity, a.label AS target
+    FROM findings f JOIN assets a ON a.id=f.asset_id WHERE f.uid=?`).get(uid)).filter(Boolean);
+}
 app.post('/api/projects/:id/assets', (req, res) => {
   const p = q(`SELECT id FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'project not found' });
@@ -928,7 +942,7 @@ app.get('/api/targets/:id', (req, res) => {
   const items = q(`SELECT * FROM items WHERE asset_id=? ORDER BY sort, id`).all(req.params.id)
     .map(i => ({ ...i, payloads: JSON.parse(i.payloads || '[]'), options: JSON.parse(i.options || '[]') }));
   const findings = q(`SELECT * FROM findings WHERE asset_id=? ORDER BY created_at DESC`).all(req.params.id)
-    .map(f => ({ ...f, attachments: q(`SELECT id, filename, mime, size FROM attachments WHERE finding_id=? ORDER BY id`).all(f.id) }));
+    .map(f => ({ ...f, refs: undefined, links: resolveLinks(f.refs), ref_uids: JSON.parse(f.refs || '[]'), attachments: q(`SELECT id, filename, mime, size FROM attachments WHERE finding_id=? ORDER BY id`).all(f.id) }));
   const folder = q(`SELECT id, grp, label, project_id FROM folders WHERE id=?`).get(a.folder_id);
   const project = folder ? q(`SELECT id, name FROM projects WHERE id=?`).get(folder.project_id) : null;
   res.json({ ...assetSummary(a), items, findings, folder, project });
@@ -1040,11 +1054,20 @@ app.delete('/api/items/:id', (req, res) => {
 app.post('/api/targets/:id/findings', (req, res) => {
   const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'asset not found' });
-  const { title, kind, severity, body } = req.body || {};
+  const { title, kind, severity, body, refs, fix_status } = req.body || {};
   if (!title) return res.status(400).json({ error: 'title required' });
-  const info = q(`INSERT INTO findings (asset_id, title, kind, severity, body) VALUES (?,?,?,?,?)`)
-    .run(req.params.id, title, kind || 'note', severity || null, body || null);
+  const info = q(`INSERT INTO findings (asset_id, title, kind, severity, body, refs, fix_status) VALUES (?,?,?,?,?,?,?)`)
+    .run(req.params.id, title, kind || 'note', severity || null, body || null, cleanRefs(refs), cleanFix(fix_status));
   res.status(201).json(q(`SELECT * FROM findings WHERE id=?`).get(info.lastInsertRowid));
+});
+// Other findings in the same engagement, to link as an attack chain (or a retest reference).
+app.get('/api/targets/:id/finding-candidates', (req, res) => {
+  const a = q(`SELECT folder_id FROM assets WHERE id=?`).get(req.params.id);
+  if (!a) return res.status(404).json({ error: 'not found' });
+  const folder = q(`SELECT project_id FROM folders WHERE id=?`).get(a.folder_id);
+  res.json(q(`SELECT f.uid, f.title, f.kind, f.severity, a.label AS target
+    FROM findings f JOIN assets a ON a.id=f.asset_id JOIN folders fo ON fo.id=a.folder_id
+    WHERE fo.project_id=? AND f.uid IS NOT NULL ORDER BY f.created_at DESC`).all(folder?.project_id ?? -1));
 });
 
 app.patch('/api/findings/:id', (req, res) => {
@@ -1052,10 +1075,12 @@ app.patch('/api/findings/:id', (req, res) => {
   if (!cur) return res.status(404).json({ error: 'not found' });
   const b = req.body || {};
   if ('title' in b && !b.title) return res.status(400).json({ error: 'title cannot be empty' });
-  q(`UPDATE findings SET title=?, kind=?, severity=?, body=? WHERE id=?`).run(
+  q(`UPDATE findings SET title=?, kind=?, severity=?, body=?, refs=?, fix_status=? WHERE id=?`).run(
     b.title ?? cur.title, b.kind ?? cur.kind,
     b.severity === undefined ? cur.severity : (b.severity || null),
-    b.body === undefined ? cur.body : (b.body || null), cur.id);
+    b.body === undefined ? cur.body : (b.body || null),
+    'refs' in b ? cleanRefs(b.refs) : cur.refs,
+    'fix_status' in b ? cleanFix(b.fix_status) : cur.fix_status, cur.id);
   res.json(q(`SELECT * FROM findings WHERE id=?`).get(cur.id));
 });
 

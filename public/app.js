@@ -673,8 +673,26 @@ async function renderTarget(id) {
     { label: folder.project?.name || 'project', go: () => location.hash = `/project/${folder.project_id}` },
     { label: folder.label, go: () => location.hash = `/asset/${folder.id}` },
     { label: a.label }]);
-  topActions(
-    el('button', { className: 'btn danger', onclick: () => delTarget(a) }, 'Delete target'));
+  // Retest targets carry no checklist — just remediation items (a finding per re-checked issue).
+  if (a.type === 'retest') {
+    topActions(
+      el('button', { className: 'btn gold', onclick: () => addFinding(id, true) }, icon('plus', 12), 'Add retest item'),
+      el('button', { className: 'btn danger', onclick: () => delTarget(a) }, 'Delete target'));
+    const list = el('div', { className: 'tlist' });
+    if (!a.findings.length) list.append(el('div', { className: 'empty', style: 'border:0' },
+      el('div', {}, 'No retest items yet. Add one for each finding from the previous engagement you re-checked.'),
+      el('button', { className: 'btn gold', onclick: () => addFinding(id, true) }, icon('plus', 12), 'Add the first')));
+    for (const f of a.findings) list.append(findingCard(f, id));
+    const counts = { fixed: 0, half_fixed: 0, not_fixed: 0 };
+    for (const f of a.findings) if (f.fix_status) counts[f.fix_status]++;
+    return $('#view').replaceChildren(el('div', { className: 'page narrow' },
+      el('div', { className: 'kicker' }, 'Retest'),
+      el('h1', {}, a.label),
+      el('div', { className: 'lede' }, `${a.findings.length} item${a.findings.length === 1 ? '' : 's'} · ${counts.fixed} fixed · ${counts.half_fixed} partial · ${counts.not_fixed} not fixed`),
+      el('div', { className: 'srule' }, el('span', { className: 'kicker' }, 'Remediation items'), el('span', { className: 'rule' }),
+        el('button', { className: 'btn line sm', onclick: () => addFinding(id, true) }, '+ Add')),
+      list));
+  }
 
   const childrenBy = {}, byGroup = {};
   for (const it of a.items) {
@@ -785,26 +803,7 @@ async function renderTarget(id) {
   const dbody = el('div', { className: 'dock-body' });
   if (!a.findings.length) dbody.append(el('div', { className: 'pmeta', style: 'padding:4px 2px;line-height:1.7' },
     'Nothing captured yet. Save raw requests, credentials and confirmed vulnerabilities here — the export is built from them.'));
-  for (const f of a.findings) {
-    const tools = el('div', { className: 'f-tools' },
-      el('button', { className: 'ibtn', title: 'Add image', onclick: () => uploadToFinding(f.id, id) }, icon('image', 11)),
-      el('button', { className: 'ibtn', title: 'Edit', onclick: () => editFinding(f, id) }, icon('edit', 11)),
-      el('button', { className: 'ibtn del', title: 'Delete', onclick: async () => { if (confirm('Delete this finding and its images?')) { await api('/findings/' + f.id, { method: 'DELETE' }); renderTarget(id); } } }, icon('x', 11)));
-    const shots = el('div', { className: 'f-shots' });
-    for (const im of (f.attachments || [])) {
-      const thumb = el('img', { src: '/api/attachments/' + im.id, title: im.filename, loading: 'lazy' });
-      thumb.onclick = () => lightbox('/api/attachments/' + im.id, im.filename);
-      const x = el('button', { className: 'shotx', title: 'Remove image', onclick: async (e) => { e.stopPropagation(); await api('/attachments/' + im.id, { method: 'DELETE' }); renderTarget(id); } }, '✕');
-      shots.append(el('span', { className: 'f-shot' }, thumb, x));
-    }
-    dbody.append(el('div', { className: 'finding sev-' + (f.severity || 'info') },
-      el('div', { className: 'f-top' },
-        f.severity ? el('span', { className: 'f-sev' }, f.severity) : null,
-        el('span', { className: 'f-kind' }, f.kind), tools),
-      el('div', { className: 'f-title' }, f.title),
-      f.body ? el('pre', {}, f.body) : null,
-      (f.attachments || []).length ? shots : null));
-  }
+  for (const f of a.findings) dbody.append(findingCard(f, id));
   dock.append(dbody);
 
   const y = $('.target-col')?.scrollTop || 0;
@@ -946,6 +945,46 @@ const FINDING_KINDS = [{ value: 'note', label: 'Note' }, { value: 'credential', 
 { value: 'vuln', label: 'Vulnerability' }];
 const SEVERITIES = [{ value: '', label: '—' }, { value: 'info', label: 'Info' }, { value: 'low', label: 'Low' },
 { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }, { value: 'critical', label: 'Critical' }];
+const FIX_STATUS = [{ value: 'not_fixed', label: 'Not fixed' }, { value: 'half_fixed', label: 'Partially fixed' }, { value: 'fixed', label: 'Fixed' }];
+const fixLabel = (v) => (FIX_STATUS.find(x => x.value === v)?.label || v);
+
+// One finding, as shown in the evidence log and the retest view (severity, kind or fix-status,
+// screenshots, and any attack-chain links to other findings).
+function findingCard(f, id) {
+  const tools = el('div', { className: 'f-tools' },
+    el('button', { className: 'ibtn', title: 'Add image', onclick: () => uploadToFinding(f.id, id) }, icon('image', 11)),
+    el('button', { className: 'ibtn', title: 'Edit', onclick: () => editFinding(f, id) }, icon('edit', 11)),
+    el('button', { className: 'ibtn del', title: 'Delete', onclick: async () => { if (confirm('Delete this finding and its images?')) { await api('/findings/' + f.id, { method: 'DELETE' }); renderTarget(id); } } }, icon('x', 11)));
+  const shots = el('div', { className: 'f-shots' });
+  for (const im of (f.attachments || [])) {
+    const thumb = el('img', { src: '/api/attachments/' + im.id, title: im.filename, loading: 'lazy' });
+    thumb.onclick = () => lightbox('/api/attachments/' + im.id, im.filename);
+    const x = el('button', { className: 'shotx', title: 'Remove image', onclick: async (e) => { e.stopPropagation(); await api('/attachments/' + im.id, { method: 'DELETE' }); renderTarget(id); } }, '✕');
+    shots.append(el('span', { className: 'f-shot' }, thumb, x));
+  }
+  const links = (f.links || []).length ? el('div', { className: 'f-links' }, el('span', { className: 'muted' }, 'chains → '),
+    ...f.links.flatMap((l, i) => [i ? el('span', { className: 'muted' }, ', ') : null, el('span', { className: 'chainlink', title: l.target }, l.title)].filter(Boolean))) : null;
+  return el('div', { className: 'finding sev-' + (f.severity || 'info') },
+    el('div', { className: 'f-top' },
+      f.severity ? el('span', { className: 'f-sev' }, f.severity) : null,
+      f.fix_status ? el('span', { className: 'f-fix ' + f.fix_status }, fixLabel(f.fix_status)) : el('span', { className: 'f-kind' }, f.kind),
+      tools),
+    el('div', { className: 'f-title' }, f.title),
+    f.body ? el('pre', {}, f.body) : null,
+    links,
+    (f.attachments || []).length ? shots : null);
+}
+async function saveFinding(editing, finding, assetId, payload, images) {
+  if (editing) { await api('/findings/' + finding.id, { method: 'PATCH', body: payload }); return; }
+  const f = await api(`/targets/${assetId}/findings`, { method: 'POST', body: payload });
+  for (const file of images) {
+    if (!file.type || !file.type.startsWith('image/')) continue;
+    try {
+      await fetch(`/api/findings/${f.id}/attachments`, { method: 'POST',
+        headers: { 'content-type': file.type, 'x-filename': encodeURIComponent(file.name) }, body: await file.arrayBuffer() });
+    } catch { /* one bad image shouldn't lose the finding */ }
+  }
+}
 
 // A multi-image picker that collects files into `bucket` (handled outside FormData).
 function fileField(parent, label, bucket) {
@@ -960,10 +999,55 @@ function fileField(parent, label, bucket) {
 //   note        → title + details (no severity, no images)
 //   credential  → title + username / password / server
 //   vuln        → title + severity + location + explanation + images
-function findingModal(assetId, finding = null) {
+async function findingModal(assetId, finding = null, isRetest = false) {
   const editing = !!finding;
   const startKind = finding?.kind === 'request' ? 'note' : (finding?.kind || 'note');
-  const images = []; // selected images for a new vuln
+  const images = [];
+  const selectedRefs = new Set(finding?.ref_uids || []);
+  // Other findings across the engagement, to link as an attack chain (or a retest reference).
+  let candidates = [];
+  try { candidates = (await api(`/targets/${assetId}/finding-candidates`)).filter(c => c.uid && c.uid !== finding?.uid); } catch { }
+
+  const chainSection = (parent) => {
+    if (!candidates.length) return;
+    parent.append(el('label', {}, isRetest ? 'Link the original finding (optional)' : 'Links to (attack chain)'));
+    const box = el('div', { className: 'chainpick' });
+    for (const c of candidates) {
+      const cb = el('input', { type: 'checkbox', checked: selectedRefs.has(c.uid) });
+      cb.onchange = () => (cb.checked ? selectedRefs.add(c.uid) : selectedRefs.delete(c.uid));
+      box.append(el('label', { className: 'chainrow' }, cb,
+        el('span', { className: 'chaint' }, c.severity ? el('span', { className: 'f-sev' }, c.severity) : null,
+          c.title, el('span', { className: 'muted small' }, ' · ' + c.target))));
+    }
+    parent.append(box);
+  };
+
+  if (isRetest) {
+    modal({
+      kicker: 'Retest', title: editing ? 'Edit retest item' : 'Add retest item', cta: 'Save',
+      note: 'Re-checking a finding from the previous engagement — record its ID, current severity, whether it was fixed, and evidence.',
+      build: (b) => {
+        field(b, 'Original finding ID', 'title', { value: finding?.title || '', ph: 'e.g. ACME-2024-014 — SQLi in /search' });
+        const c1 = el('div'), c2 = el('div');
+        field(c1, 'Severity', 'severity', { value: finding?.severity || 'medium', options: SEVERITIES.filter(s => s.value) });
+        field(c2, 'Fix status', 'fix_status', { value: finding?.fix_status || 'not_fixed', options: FIX_STATUS });
+        b.append(el('div', { className: 'field-row' }, c1, c2));
+        field(b, 'Explanation', 'body', { value: finding?.body || '', textarea: true, ph: 'what you re-tested and the result' });
+        chainSection(b);
+        if (!editing) fileField(b, 'Images (screenshots)', images);
+      },
+      onSubmit: async (fd) => {
+        const raw = Object.fromEntries(fd);
+        await saveFinding(editing, finding, assetId, {
+          title: raw.title || 'Retest item', kind: 'vuln', severity: raw.severity || null,
+          body: raw.body || '', fix_status: raw.fix_status || 'not_fixed', refs: [...selectedRefs],
+        }, images);
+        renderTarget(assetId);
+      },
+    });
+    return;
+  }
+
   modal({
     kicker: 'Evidence', title: editing ? 'Edit finding' : 'Capture evidence', cta: 'Save',
     note: editing ? 'Update the finding. Attached images stay put.'
@@ -990,6 +1074,7 @@ function findingModal(assetId, finding = null) {
           field(fields, 'Explanation', 'body', { value: finding?.body || '', textarea: true, ph: 'how it was found / impact' });
           if (!editing) fileField(fields, 'Images (screenshots)', images);
         }
+        chainSection(fields);
       };
       kindSel.onchange = rebuild;
       rebuild();
@@ -1005,24 +1090,13 @@ function findingModal(assetId, finding = null) {
         body = (raw.location ? `Location: ${raw.location}\n\n` : '') + (raw.body || '');
       }
       const title = raw.title || (kind === 'credential' ? 'Credentials' : kind === 'vuln' ? 'Vulnerability' : 'Note');
-      const payload = { title, kind, severity, body };
-      if (editing) { await api('/findings/' + finding.id, { method: 'PATCH', body: payload }); }
-      else {
-        const f = await api(`/assets/${assetId}/findings`, { method: 'POST', body: payload });
-        for (const file of images) {
-          if (!file.type.startsWith('image/')) continue;
-          try {
-            await fetch(`/api/findings/${f.id}/attachments`, { method: 'POST',
-              headers: { 'content-type': file.type, 'x-filename': encodeURIComponent(file.name) }, body: await file.arrayBuffer() });
-          } catch { /* one bad image shouldn't lose the finding */ }
-        }
-      }
+      await saveFinding(editing, finding, assetId, { title, kind, severity, body, refs: [...selectedRefs] }, images);
       renderTarget(assetId);
     },
   });
 }
-const addFinding = (assetId) => findingModal(assetId, null);
-const editFinding = (finding, assetId) => findingModal(assetId, finding);
+const addFinding = (assetId, isRetest = false) => findingModal(assetId, null, isRetest);
+const editFinding = (finding, assetId) => findingModal(assetId, finding, finding?.fix_status != null || finding?.kind === 'retest');
 
 // Upload one or more images to a finding via the raw endpoint (no base64 bloat).
 function uploadToFinding(findingId, assetId) {
@@ -1861,14 +1935,14 @@ function loginPasswordStep() {
 function loginCodeStep() {
   let recovery = false;
   const label = el('label', {}, 'Authenticator code');
-  const code = el('input', { inputMode: 'numeric', autocomplete: 'one-time-code', placeholder: '000000', maxLength: 9, className: 'mfa-code' });
+  const code = el('input', { inputMode: 'numeric', autocomplete: 'one-time-code', placeholder: '000000', maxLength: 6, className: 'mfa-code' });
   const err = el('div', { className: 'loginerr' });
   const toggle = el('button', { type: 'button', className: 'linklike' }, 'Use a recovery code');
   toggle.onclick = () => {
     recovery = !recovery;
     label.textContent = recovery ? 'Recovery code' : 'Authenticator code';
     code.placeholder = recovery ? 'xxxx-xxxx' : '000000';
-    code.maxLength = recovery ? 9 : 9; code.className = recovery ? '' : 'mfa-code';
+    code.maxLength = recovery ? 9 : 6; code.className = recovery ? '' : 'mfa-code';
     toggle.textContent = recovery ? 'Use an authenticator code' : 'Use a recovery code';
     code.value = ''; code.focus();
   };
@@ -1916,7 +1990,7 @@ function loginRecoveryStep(codes) {
       el('button', { type: 'button', className: 'btn', onclick: () => { navigator.clipboard?.writeText(codes.join('\n')); toast('Copied'); } }, icon('down', 12), 'Copy all'),
       el('button', { type: 'button', className: 'btn', onclick: () => downloadText('magi-recovery-codes.txt', codes.join('\n')) }, 'Download')),
     el('button', { className: 'btn gold', type: 'submit' }, 'I saved them — continue')));
-  box.onsubmit = async (e) => { e.preventDefault(); await afterAuth(); };
+  box.onsubmit = async (e) => { e.preventDefault(); try { await afterAuth(); } catch { showLogin(); } };
 }
 let LINK_POLL = null, DATA_POLL = null, LAST_REV = null;
 // Live-refresh: re-render the current engagement view when background sync brings a

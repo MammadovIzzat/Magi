@@ -15,6 +15,7 @@ export const ENGAGEMENT_GROUPS = [
   { key: 'wireless',   label: 'Wireless' },
   { key: 'otiot',      label: 'OT / IoT' },
   { key: 'additional', label: 'Additional' },
+  { key: 'retest',     label: 'Retest' },
 ];
 
 // Leaf asset types, grouped into engagement types for the add-target picker. A single
@@ -30,6 +31,7 @@ export const ASSET_TYPES = [
   { type: 'iot',       group: 'otiot',      label: 'IoT Device',       icon: '\u{1F50C}', hint: 'model / firmware' },
   { type: 'ot',        group: 'otiot',      label: 'OT / ICS',         icon: '\u{1F3ED}', hint: 'PLC / SCADA host' },
   { type: 'container', group: 'additional', label: 'Container / Cloud', icon: '\u{1F4E6}', hint: 'registry/image:tag' },
+  { type: 'retest',    group: 'retest',     label: 'Retest',           icon: '\u{1F501}', hint: 'remediation check — previous engagement' },
 ];
 
 // Selectable tech/CMS/server options for the web "stack" node.
@@ -850,6 +852,8 @@ const domain = {
     {
       key: 'osint', title: '1. DNS & OSINT', items: [
         { kind: 'check', title: 'WHOIS / registrar / ownership', detail: '', payloads: ['whois {domain}'] },
+        { kind: 'check', title: 'Wayback Machine — archived URLs', detail: 'Historical URLs surface dead endpoints, old parameters, leaked keys in archived JS, and staging hosts. Feed the results into content discovery and param mining.', payloads: ['curl -s "https://web.archive.org/cdx/search/cdx?url=*.{domain}/*&output=txt&fl=original&collapse=urlkey"', 'gau {domain} | anew', 'waybackurls {domain}'] },
+        { kind: 'check', title: 'Recon search engine (dorks & tools pivot)', detail: 'One page that pivots the target across Google/GitHub dorks, cert transparency, and OSINT tools — quick coverage before going deep.', payloads: ['https://nitinyadav00.github.io/Bug-Bounty-Search-Engine/'] },
         { kind: 'check', title: 'DNS records (A/AAAA/MX/TXT/NS/CNAME)', detail: 'SPF/DMARC in TXT; MX for email attacks.', payloads: ['dig ANY {domain} +noall +answer', 'dnsrecon -d {domain}'] },
         { kind: 'check', title: 'Zone transfer attempt', detail: 'Try every nameserver, not just the first.', payloads: ['dig axfr @ns1.{domain} {domain}', 'for ns in $(dig +short NS {domain}); do dig axfr @$ns {domain}; done'] },
         { kind: 'check', title: 'ASN / netblock ownership', detail: 'Maps the domain to IP ranges you may also be scoped for.', payloads: ['amass intel -org "Client Name"', 'whois -h whois.radb.net -- "-i origin AS1234"'] },

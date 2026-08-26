@@ -111,9 +111,18 @@ magi import-templates web-template.json --replace  # overwrite  (or --rename to 
 
 **Findings** can be edited after the fact, and each one takes **image attachments** —
 screenshots, stored in the database so they travel with a project export and never
-leave loose files behind. A project's **Export** offers a self-contained **HTML findings
-report** with those screenshots embedded (as data URIs), alongside the Markdown report
-and the portable project file.
+leave loose files behind. A finding can also **link to other findings** in the same
+engagement, so you can record an **attack chain** (a captured credential → the RCE it
+enabled). A project's **Export** offers a self-contained **HTML findings report** with
+those screenshots embedded (as data URIs), alongside the Markdown report and the portable
+project file.
+
+**Retest** is its own engagement type: a target with **no checklist — just remediation
+items**. For each finding from the previous engagement, record its original ID, current
+severity, a **fix status** (fixed / partially fixed / not fixed), an explanation and
+screenshots; the target header rolls up how many are fixed. New shipped types like this land
+on existing installs automatically; a running install gets refreshed *content* for an
+existing type via **↺ Restore defaults**.
 
 **Whole engagements** move too — the project's targets, checklist state, answers and
 findings. On a project's **Export** you choose a Markdown report or a portable project
@@ -255,6 +264,14 @@ lost phone. After that, sign-in is password → 6-digit code.
 Secrets and recovery-code hashes live in the database — so treat the data dir as confidential
 (and see the at-rest note below), and keep the box's clock roughly correct (TOTP is time-based).
 
+**Enrol the admin right after you stand the server up.** Self-service TOTP is trust-on-first-use:
+whoever first completes enrolment for an account binds it to their phone. Team workers can't be
+hit (they hold no password — they authenticate with device tokens), but the password-holding
+**admin** account should enrol before its password could leak, so no one else claims that slot.
+Enrolments are written to the audit log, and a hijack shows up there (plus the real user's
+lockout). Upgrading an existing install to this version signs everyone out once, so the first
+sign-in after the upgrade is the enrolment.
+
 ### Backups
 
 Admins can back the whole team database up from the Admin screen — **encrypted with a password
@@ -311,7 +328,7 @@ Uses the system Electron, so the package stays around **750 KB**.
 
 ```bash
 npm run pkg                                   # or: cd packaging && makepkg -f
-sudo pacman -U packaging/magi-0.3.0-1-any.pkg.tar.zst
+sudo pacman -U packaging/magi-0.4.0-1-any.pkg.tar.zst
 ```
 
 ### Debian / Ubuntu
@@ -320,15 +337,15 @@ Debian has no Electron package, so the `.deb` bundles its own copy — **~100 MB
 
 ```bash
 npm run build && npm run pkg:deb
-sudo apt install ./dist/installers/magi_0.3.0_amd64.deb
+sudo apt install ./dist/installers/magi_0.4.0_amd64.deb
 ```
 
 ### Any Linux — portable AppImage
 
 ```bash
 npm run build && npm run pkg:appimage
-chmod +x dist/installers/Magi-0.3.0.AppImage
-./dist/installers/Magi-0.3.0.AppImage
+chmod +x dist/installers/Magi-0.4.0.AppImage
+./dist/installers/Magi-0.4.0.AppImage
 ```
 
 ### macOS
@@ -337,8 +354,8 @@ Cross-built from Linux, both architectures:
 
 ```bash
 npm run build && npm run pkg:mac
-# dist/installers/Magi-0.3.0-mac.zip         Intel
-# dist/installers/Magi-0.3.0-arm64-mac.zip   Apple Silicon
+# dist/installers/Magi-0.4.0-mac.zip         Intel
+# dist/installers/Magi-0.4.0-arm64-mac.zip   Apple Silicon
 ```
 
 These are **unsigned and unnotarised**, and were built on Linux — I have no Mac to

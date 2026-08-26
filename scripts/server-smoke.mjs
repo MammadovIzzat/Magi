@@ -143,6 +143,26 @@ check('a worker can still edit engagement details', wEdit.status === 200 && wEdi
 const aFinish = await req('PATCH', `/api/projects/${made.json.id}`, { cookie, body: { status: 'finished' } });
 check('an admin can finish an engagement', aFinish.status === 200 && aFinish.json?.status === 'finished' && aFinish.json?.end_date);
 
+// findings: creation (the route the app posts to), attack-chain links, and the retest type
+const extAsset = (await req('POST', `/api/projects/${made.json.id}/assets`, { cookie, body: { grp: 'external', label: 'Ext' } })).json;
+const webT = (await req('POST', `/api/assets/${extAsset.id}/targets`, { cookie, body: { type: 'web', label: 'https://x.test' } })).json;
+const fA = await req('POST', `/api/targets/${webT.id}/findings`, { cookie, body: { title: 'Creds', kind: 'credential', body: 'a:b' } });
+check('a finding can be created on a target', fA.status === 201 && !!fA.json?.id);
+const aUid = (await req('GET', `/api/targets/${webT.id}`, { cookie })).json.findings[0].uid;
+await req('POST', `/api/targets/${webT.id}/findings`, { cookie, body: { title: 'RCE', kind: 'vuln', severity: 'critical', refs: [aUid] } });
+const withLinks = (await req('GET', `/api/targets/${webT.id}`, { cookie })).json.findings;
+check('a finding chains to another (refs resolve to a title)', withLinks.some(f => (f.links || []).some(l => l.title === 'Creds')));
+const cand = await req('GET', `/api/targets/${webT.id}/finding-candidates`, { cookie });
+check('chain candidates list the engagement’s findings', cand.status === 200 && cand.json.length >= 2);
+const rAsset = (await req('POST', `/api/projects/${made.json.id}/assets`, { cookie, body: { grp: 'retest', label: 'RT' } })).json;
+const rT = await req('POST', `/api/assets/${rAsset.id}/targets`, { cookie, body: { type: 'retest', label: 'Remediation' } });
+check('a retest target can be created', rT.status === 201 && !!rT.json?.id);
+check('a retest target carries no checklist', (await req('GET', `/api/targets/${rT.json.id}`, { cookie })).json.items.length === 0);
+const rf = await req('POST', `/api/targets/${rT.json.id}/findings`, { cookie, body: { title: 'ACME-1', kind: 'vuln', fix_status: 'half_fixed' } });
+check('a retest finding stores its fix status', rf.status === 201 && rf.json?.fix_status === 'half_fixed');
+const badFix = await req('POST', `/api/targets/${rT.json.id}/findings`, { cookie, body: { title: 'x', fix_status: 'nonsense' } });
+check('an invalid fix status is rejected (stored null)', badFix.json?.fix_status === null);
+
 // the code was consumed on approval — a new request with it is refused
 const reuse = await req('POST', '/api/enroll', { body: { code: workerCode, username: 'eve', display_name: 'Eve', device_id: 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb' } });
 check('the code is single-use (consumed on approval)', reuse.status === 403);

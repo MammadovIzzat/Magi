@@ -126,6 +126,8 @@ CREATE TABLE IF NOT EXISTS findings (
   kind        TEXT NOT NULL DEFAULT 'note', -- note | request | credential | vuln
   severity    TEXT,                      -- info | low | medium | high | critical
   body        TEXT,                      -- raw request / description
+  refs        TEXT,                      -- JSON array of other findings' uids (attack chain)
+  fix_status  TEXT,                      -- retest only: fixed | not_fixed | half_fixed
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_findings_asset ON findings(asset_id);
@@ -322,10 +324,18 @@ if (!uCols.has('mfa_secret')) db.exec(`ALTER TABLE users ADD COLUMN mfa_secret T
 if (!uCols.has('mfa_enabled')) db.exec(`ALTER TABLE users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0`);
 if (!uCols.has('recovery_hashes')) db.exec(`ALTER TABLE users ADD COLUMN recovery_hashes TEXT`);
 const sCols = new Set(db.prepare(`PRAGMA table_info(sessions)`).all().map(r => r.name));
-if (!sCols.has('pending')) db.exec(`ALTER TABLE sessions ADD COLUMN pending INTEGER NOT NULL DEFAULT 0`);
+if (!sCols.has('pending')) {
+  db.exec(`ALTER TABLE sessions ADD COLUMN pending INTEGER NOT NULL DEFAULT 0`);
+  // Upgrading to MFA: drop every existing session so a cookie minted before MFA can't skip the
+  // second factor. Everyone signs in once more (and enrols) right after the upgrade.
+  db.exec(`DELETE FROM sessions`);
+}
 
 // engagements gained a lifecycle (active/finished) and a start/end window.
 const projCols = new Set(db.prepare(`PRAGMA table_info(projects)`).all().map(r => r.name));
+const findCols = new Set(db.prepare(`PRAGMA table_info(findings)`).all().map(r => r.name));
+if (!findCols.has('refs')) db.exec(`ALTER TABLE findings ADD COLUMN refs TEXT`);
+if (!findCols.has('fix_status')) db.exec(`ALTER TABLE findings ADD COLUMN fix_status TEXT`);
 if (!projCols.has('status')) db.exec(`ALTER TABLE projects ADD COLUMN status TEXT DEFAULT 'active'`);
 if (!projCols.has('start_date')) db.exec(`ALTER TABLE projects ADD COLUMN start_date TEXT`);
 if (!projCols.has('end_date')) db.exec(`ALTER TABLE projects ADD COLUMN end_date TEXT`);
@@ -428,6 +438,18 @@ if (db.prepare(`SELECT COUNT(*) c FROM tpl_types`).get().c === 0) {
 if (db.prepare(`SELECT COUNT(*) c FROM tpl_groups`).get().c === 0) {
   for (const t of ASSET_TYPES) seedTypeGroups(t.type);
   console.error(`  [templates] seeded follow-up checklists & catalogs`);
+}
+
+// Newly-shipped asset types (e.g. Retest) land on already-seeded installs too — idempotent.
+{
+  const have = new Set(db.prepare(`SELECT type FROM tpl_types`).all().map(r => r.type));
+  if (have.size) ASSET_TYPES.forEach((t, i) => {
+    if (have.has(t.type)) return;
+    insType.run(t.type, t.label, t.icon || null, t.hint || null, t.group || null, t.soon ? 1 : 0, 100 + i);
+    seedTypeItems(t.type);
+    seedTypeGroups(t.type);
+    console.error(`  [templates] added new asset type: ${t.type}`);
+  });
 }
 
 // --- upgrade path for databases seeded before engagement groups existed ---

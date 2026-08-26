@@ -86,6 +86,7 @@ const GROUP_ORDER = [
   { key: 'internal', label: 'Internal' }, { key: 'external', label: 'External' },
   { key: 'mobile', label: 'Mobile' }, { key: 'wireless', label: 'Wireless' },
   { key: 'otiot', label: 'OT / IoT' }, { key: 'additional', label: 'Additional' },
+  { key: 'retest', label: 'Retest' },
 ];
 
 // Fill {url}/{ip}/{domain}/… placeholders from the target's identifier, so payloads and
@@ -386,7 +387,7 @@ function delProject(p, assetCount, after) {
 }
 
 // ---------- rail (targets inside the current asset folder) ----------
-const GROUP_ICON = { internal: '🏛️', external: '🌐', mobile: '📱', wireless: '📡', otiot: '🏭', additional: '📦' };
+const GROUP_ICON = { internal: '🏛️', external: '🌐', mobile: '📱', wireless: '📡', otiot: '🏭', additional: '📦', retest: '🔁' };
 function groupLabel(key) { return (GROUP_ORDER.find(g => g.key === key) || {}).label || key; }
 // engagement groups that actually have a selectable (non-soon) target type
 function selectableGroups() { return new Set(TYPES.filter(t => !t.soon).map(t => t.grp || 'additional')); }
@@ -449,7 +450,7 @@ async function renderProject(id) {
   const list = el('div', { className: 'tlist' });
   if (!p.assets.length) {
     list.append(el('div', { className: 'empty', style: 'border:0' },
-      el('div', {}, 'No assets yet. Create an Internal, External, Mobile, OT/IoT or Additional asset, then add targets inside it.'),
+      el('div', {}, 'No assets yet. Create an Internal, External, Mobile, OT/IoT, Additional or Retest asset, then add targets inside it.'),
       el('button', { className: 'btn gold', onclick: () => addAsset(id) }, icon('plus', 12), 'Add asset')));
   }
   for (const a of p.assets) {
@@ -559,7 +560,8 @@ function addAsset(projectId) {
           el('span', { className: 'lbl' }, `${GROUP_ICON[g.key] || ''} ${g.label}`),
           el('span', { className: 'hint' }, soon ? 'coming soon' : (g.key === 'internal' ? 'host, subnet, AD'
             : g.key === 'external' ? 'web, api, domain' : g.key === 'otiot' ? 'IoT, OT/ICS'
-            : g.key === 'additional' ? 'container / cloud' : g.label.toLowerCase())));
+            : g.key === 'additional' ? 'container / cloud' : g.key === 'retest' ? 'remediation check'
+              : g.label.toLowerCase())));
         if (soon) btn.disabled = true;
         else btn.onclick = () => { hidden.value = g.key; for (const x of btns) x.classList.remove('sel'); btn.classList.add('sel'); label.focus(); };
         btns.push(btn); grid.append(btn);

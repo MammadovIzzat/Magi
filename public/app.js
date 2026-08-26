@@ -114,6 +114,16 @@ let LINK = { linked: false }; // team-server link status, refreshed from /api/li
 let ADMIN_PENDING = 0;        // number of pending join requests (for the Admin badge)
 let BACKUP_DUE = false;       // a scheduled backup is due — also lights the Admin badge
 let HOME_TAB = 'active';      // engagements home: 'active' | 'finished' tab
+let EVID = { kind: 'all', q: '', sort: 'new' }; // evidence-log filter/sort (kind, search, order)
+const SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+function filterSortFindings(findings) {
+  let out = EVID.kind === 'all' ? findings.slice() : findings.filter(f => f.kind === EVID.kind);
+  const q = EVID.q.trim().toLowerCase();
+  if (q) out = out.filter(f => `${f.title || ''} ${f.body || ''}`.toLowerCase().includes(q));
+  if (EVID.sort === 'sev') out.sort((a, b) => (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9));
+  else if (EVID.sort === 'title') out.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+  return out; // 'new' keeps the server's created_at-DESC order
+}
 
 // Where the admin API lives for the signed-in identity, or null if not an admin:
 //  - on the server's own web UI: /api/admin directly (session admin)
@@ -808,9 +818,32 @@ async function renderTarget(id) {
       el('span', { className: 'kicker' }, 'Evidence log'),
       el('button', { className: 'btn line sm', style: 'margin-left:auto', onclick: () => addFinding(id) }, '+ Capture')));
   const dbody = el('div', { className: 'dock-body' });
-  if (!a.findings.length) dbody.append(el('div', { className: 'pmeta', style: 'padding:4px 2px;line-height:1.7' },
-    'Nothing captured yet. Save raw requests, credentials and confirmed vulnerabilities here — the export is built from them.'));
-  for (const f of a.findings) dbody.append(findingCard(f, id));
+  if (!a.findings.length) {
+    dbody.append(el('div', { className: 'pmeta', style: 'padding:4px 2px;line-height:1.7' },
+      'Nothing captured yet. Save raw requests, credentials and confirmed vulnerabilities here — the export is built from them.'));
+  } else {
+    // filter (by kind) + search (by name) + sort, repainting only the list so search keeps focus
+    const findList = el('div', { className: 'find-list' });
+    const tabs = el('div', { className: 'evtabs' });
+    const search = el('input', { className: 'evsearch', type: 'search', placeholder: 'Search findings…', value: EVID.q });
+    const sortSel = el('select', { className: 'evsort' },
+      ...[['new', 'Newest'], ['sev', 'Severity'], ['title', 'Name']].map(([v, l]) => el('option', { value: v, selected: EVID.sort === v }, l)));
+    const repaint = () => {
+      [...tabs.children].forEach(b => b.classList.toggle('on', b.dataset.k === EVID.kind));
+      const shown = filterSortFindings(a.findings);
+      findList.replaceChildren();
+      if (!shown.length) findList.append(el('div', { className: 'pmeta', style: 'padding:6px 2px' }, 'No findings match.'));
+      else for (const f of shown) findList.append(findingCard(f, id));
+    };
+    for (const [k, l] of [['all', 'All'], ['note', 'Notes'], ['credential', 'Creds'], ['vuln', 'Vulns']]) {
+      const b = el('button', { className: 'evtab', 'data-k': k, onclick: () => { EVID.kind = k; repaint(); } }, l);
+      b.dataset.k = k; tabs.append(b);
+    }
+    search.oninput = () => { EVID.q = search.value; repaint(); };
+    sortSel.onchange = () => { EVID.sort = sortSel.value; repaint(); };
+    dbody.append(el('div', { className: 'evfilter' }, tabs, el('div', { className: 'evrow' }, search, sortSel)), findList);
+    repaint();
+  }
   dock.append(dbody);
 
   const y = $('.target-col')?.scrollTop || 0;
@@ -1016,18 +1049,27 @@ async function findingModal(assetId, finding = null, isRetest = false) {
   let candidates = [];
   try { candidates = (await api(`/targets/${assetId}/finding-candidates`)).filter(c => c.uid && c.uid !== finding?.uid); } catch { }
 
+  // Linking is optional: a collapsed toggle that opens the picker. The list shows ~3 rows and
+  // scrolls if there are more.
   const chainSection = (parent) => {
     if (!candidates.length) return;
-    parent.append(el('label', {}, isRetest ? 'Link a finding in this engagement (optional)' : 'Links to (attack chain)'));
     const box = el('div', { className: 'chainpick' });
+    const caption = el('span', {});
+    const label = () => (isRetest ? 'Link the original finding' : 'Link related findings (attack chain)') + (selectedRefs.size ? ` · ${selectedRefs.size} selected` : '');
+    caption.textContent = label();
     for (const c of candidates) {
       const cb = el('input', { type: 'checkbox', checked: selectedRefs.has(c.uid) });
-      cb.onchange = () => (cb.checked ? selectedRefs.add(c.uid) : selectedRefs.delete(c.uid));
+      cb.onchange = () => { cb.checked ? selectedRefs.add(c.uid) : selectedRefs.delete(c.uid); caption.textContent = label(); };
       box.append(el('label', { className: 'chainrow' }, cb,
         el('span', { className: 'chaint' }, c.severity ? el('span', { className: 'f-sev' }, c.severity) : null,
           c.title, el('span', { className: 'muted small' }, ' · ' + c.target))));
     }
-    parent.append(box);
+    const open0 = selectedRefs.size > 0; // start open when editing something already linked
+    box.hidden = !open0;
+    const toggle = el('button', { type: 'button', className: 'chaintoggle' + (open0 ? ' open' : '') },
+      el('span', { className: 'chev' }, '▸'), caption);
+    toggle.onclick = () => { box.hidden = !box.hidden; toggle.classList.toggle('open', !box.hidden); };
+    parent.append(el('div', { className: 'chainsec' }, toggle, box));
   };
 
   if (isRetest) {

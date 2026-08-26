@@ -461,7 +461,24 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .f-links { margin-top: 8px; font-size: 11px; }
 .chainlink { color: var(--gold); }
 /* chain-link picker in the finding modal */
-.chainpick { max-height: 168px; overflow-y: auto; border: 1px solid var(--line-3); border-radius: 6px; padding: 4px; margin-top: 2px; }
+/* attack-chain link picker: an optional disclosure; the list shows ~3 rows then scrolls */
+.chainsec { margin-top: 4px; }
+.chaintoggle { display: flex; align-items: center; gap: 7px; width: 100%; text-align: left; background: none; border: 0; padding: 6px 2px; color: var(--muted); font-size: 12px; cursor: pointer; }
+.chaintoggle:hover { color: var(--text); }
+.chaintoggle .chev { transition: transform .12s; color: var(--muted-3); }
+.chaintoggle.open .chev { transform: rotate(90deg); }
+.chainpick[hidden] { display: none; }
+.chainpick { max-height: 116px; overflow-y: auto; border: 1px solid var(--line-3); border-radius: 6px; padding: 4px; margin-top: 2px; }
+/* evidence-log filter / search / sort */
+.evfilter { display: flex; flex-direction: column; gap: 7px; margin-bottom: 10px; }
+.evtabs { display: flex; gap: 2px; }
+.evtab { flex: 1; background: none; border: 1px solid var(--line-3); border-radius: 5px; padding: 5px 4px; font-family: var(--mono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted-3); cursor: pointer; }
+.evtab:hover { color: var(--text); }
+.evtab.on { border-color: var(--gold); color: var(--gold); background: var(--gold-wash); }
+.evrow { display: flex; gap: 6px; }
+.evsearch { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--line-3); border-radius: 5px; padding: 6px 9px; color: var(--text); font-size: 12px; }
+.evsearch:focus { outline: none; border-color: var(--gold); }
+.evsort { flex: none; background: var(--bg); border: 1px solid var(--line-3); border-radius: 5px; color: var(--text); font-size: 11.5px; padding: 6px 6px; }
 .chainrow { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 4px; cursor: pointer; }
 .chainrow:hover { background: var(--line); }
 .chainrow input { flex: none; width: auto; padding: 0; margin: 0; }

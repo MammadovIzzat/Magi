@@ -25,7 +25,7 @@ export const ASSET_TYPES = [
   { type: 'ad',        group: 'internal',   label: 'AD Domain',        icon: '\u{1F3E2}', hint: 'CORP.LOCAL' },
   { type: 'web',       group: 'external',   label: 'Web App',          icon: '\u{1F310}', hint: 'https://app.example.com' },
   { type: 'api',       group: 'external',   label: 'API',              icon: '\u{2699}️', hint: 'https://api.example.com' },
-  { type: 'domain',    group: 'external',   label: 'Domain',           icon: '\u{1F517}', hint: 'example.com' },
+  { type: 'exthost',   group: 'external',   label: 'Host / Network',   icon: '\u{1F5A5}️', hint: 'internet-facing IP or host' },
   { type: 'mobile',    group: 'mobile',     label: 'Mobile App',       icon: '\u{1F4F1}', hint: 'com.example.app' },
   { type: 'wireless',  group: 'wireless',   label: 'Wi-Fi',            icon: '\u{1F4E1}', hint: 'SSID or BSSID', soon: true },
   { type: 'iot',       group: 'otiot',      label: 'IoT Device',       icon: '\u{1F50C}', hint: 'model / firmware' },
@@ -315,6 +315,12 @@ const web = {
         { kind: 'check', title: 'Different content by User-Agent', detail: 'Mobile sites and crawler-facing versions are often older, less hardened and separately routed.', payloads: ['curl -A "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)" {url}', 'curl -A "Googlebot/2.1 (+http://www.google.com/bot.html)" {url}', 'diff the two responses'] },
         { kind: 'input', title: 'Which channels exist for the same application?', detail: 'Web, mobile web, mobile app, desktop client, partner API — each is its own attack surface over the same data.', payloads: [] },
         { kind: 'check', title: 'Co-hosted and related applications', detail: 'Anything sharing the host or origin inherits your foothold; a weak neighbour is a way in.', payloads: ['reverse IP lookup', 'other vhosts on the same certificate SANs'] },
+        { kind: 'check', title: 'Subdomain enumeration', detail: 'Every live subdomain is more attack surface for this engagement — resolve and probe them, then test the interesting ones as their own targets.', payloads: ['subfinder -d {domain} -all | anew', 'amass enum -passive -d {domain}', 'curl -s "https://crt.sh/?q=%25.{domain}&output=json" | jq -r .[].name_value | sort -u', 'httpx -l subs.txt -sc -title -tech-detect'] },
+        { kind: 'check', title: 'Subdomain takeover', detail: 'Dangling CNAMEs pointing at unclaimed cloud services.', payloads: ['nuclei -l subs.txt -t http/takeovers/', 'subjack -w subs.txt'] },
+        { kind: 'check', title: 'DNS records & zone transfer', detail: 'A/AAAA/MX/TXT/NS/CNAME; try a zone transfer on every nameserver.', payloads: ['dig ANY {domain} +noall +answer', 'for ns in $(dig +short NS {domain}); do dig axfr @$ns {domain}; done'] },
+        { kind: 'check', title: 'Find the origin IP behind the CDN/WAF', detail: 'Historical DNS, cert SANs, non-proxied subdomains — then hit origin directly with the Host header to skip the WAF.', payloads: ['crt.sh / securitytrails historical A records', 'curl -H "Host: {domain}" https://<ORIGIN_IP>/ -k'] },
+        { kind: 'check', title: 'Code & secret leaks in public repos', detail: 'Company GitHub org, employee repos, gists, Docker Hub — API keys, creds and internal URLs.', payloads: ['trufflehog github --org=<org>', 'github-dorks', 'search: "{domain}" password'] },
+        { kind: 'check', title: 'Exposed cloud storage & internet-wide scan data', detail: 'Buckets and forgotten hosts/ports Shodan/Censys already indexed.', payloads: ['cloud_enum -k {domain}', 'shodan search ssl.cert.subject.cn:{domain}', 'aws s3 ls s3://<guess> --no-sign-request'] },
       ]
     },
     {
@@ -846,50 +852,6 @@ const subnet = {
   spawnGroups: {}
 };
 
-const domain = {
-  type: 'domain',
-  fields: [{ key: 'domain', label: 'Domain' }],
-  groups: [
-    {
-      key: 'osint', title: '1. DNS & OSINT', items: [
-        { kind: 'check', title: 'WHOIS / registrar / ownership', detail: '', payloads: ['whois {domain}'] },
-        { kind: 'check', title: 'DNS records (A/AAAA/MX/TXT/NS/CNAME)', detail: 'SPF/DMARC in TXT; MX for email attacks.', payloads: ['dig ANY {domain} +noall +answer', 'dnsrecon -d {domain}'] },
-        { kind: 'check', title: 'Zone transfer attempt', detail: 'Try every nameserver, not just the first.', payloads: ['dig axfr @ns1.{domain} {domain}', 'for ns in $(dig +short NS {domain}); do dig axfr @$ns {domain}; done'] },
-        { kind: 'check', title: 'ASN / netblock ownership', detail: 'Maps the domain to IP ranges you may also be scoped for.', payloads: ['amass intel -org "Client Name"', 'whois -h whois.radb.net -- "-i origin AS1234"'] },
-        { kind: 'check', title: 'Dangling DNS records', detail: 'CNAMEs and A records pointing at deprovisioned cloud resources.', payloads: ['dnsx -l subs.txt -cname -resp', 'check NS records for unclaimed zones'] },
-        { kind: 'check', title: 'Third-party / SaaS footprint', detail: 'MX, SPF includes and CNAMEs reveal which vendors hold client data.', payloads: ['dig TXT {domain} | grep include:'] },
-      ]
-    },
-    {
-      key: 'subs', title: '2. Subdomain Enumeration', items: [
-        { kind: 'check', title: 'Passive subdomain enum', detail: 'Cert transparency, sources. Create web/IP assets for live ones.', payloads: ['subfinder -d {domain} -all', 'amass enum -passive -d {domain}', 'curl -s "https://crt.sh/?q=%25.{domain}&output=json"'] },
-        { kind: 'check', title: 'Active brute / permutations', detail: '', payloads: ['ffuf -u https://FUZZ.{domain} -w subdomains.txt', 'dnsx / puredns'] },
-        { kind: 'check', title: 'Resolve + probe live hosts', detail: '', payloads: ['httpx -l subs.txt -sc -title -tech-detect'] },
-        { kind: 'check', title: 'Subdomain takeover check', detail: 'Dangling CNAMEs to unclaimed cloud services.', payloads: ['nuclei -l subs.txt -t http/takeovers/', 'subjack -w subs.txt'] },
-      ]
-    },
-    {
-      key: 'email', title: '3. Email & Exposure', items: [
-        { kind: 'check', title: 'SPF / DKIM / DMARC posture', detail: 'Missing/loose = spoofing risk.', payloads: ['dig TXT {domain}', 'dig TXT _dmarc.{domain}'] },
-        { kind: 'check', title: 'Employee / email OSINT', detail: 'For password spraying (with authorization).', payloads: ['harvester -d {domain} -b all'] },
-        { kind: 'check', title: 'Breach / leaked credential check', detail: 'With authorization: known-breached passwords for client addresses drive the spray list.', payloads: ['dehashed / HIBP domain search'] },
-        { kind: 'check', title: 'Mail security controls', detail: 'Does the gateway strip attachments, rewrite links, enforce DMARC on inbound?', payloads: ['send a benign test mail with a tracked link (if scoped)'] },
-      ]
-    },
-    {
-      key: 'exposure', title: '4. Public Exposure & Leaks', items: [
-        { kind: 'check', title: 'Code & secret leaks in public repos', detail: 'Company GitHub org, personal repos of employees, gists, Docker Hub, npm/PyPI.', payloads: ['github-dorks / trufflehog github --org=<org>', 'gitleaks detect', 'search: "{domain}" password'] },
-        { kind: 'check', title: 'Exposed cloud storage', detail: '', payloads: ['s3scanner / cloud_enum -k {domain}', 'aws s3 ls s3://<guess> --no-sign-request'] },
-        { kind: 'check', title: 'Internet-wide scan data', detail: 'Shodan/Censys often show hosts and ports the client forgot they own.', payloads: ['shodan search ssl.cert.subject.cn:{domain}', 'censys search "{domain}"'] },
-        { kind: 'check', title: 'Search engine dorking', detail: '', payloads: ['site:{domain} ext:pdf|xls|conf|log', 'site:{domain} inurl:admin', 'site:pastebin.com "{domain}"'] },
-        { kind: 'check', title: 'Document metadata', detail: 'Public PDFs and Office files leak usernames, paths and software versions.', payloads: ['metagoofil -d {domain} -t pdf,docx', 'exiftool *.pdf'] },
-        { kind: 'check', title: 'Certificate transparency for internal names', detail: 'CT logs routinely expose internal hostnames and staging environments.', payloads: ['curl -s "https://crt.sh/?q=%25.{domain}&output=json" | jq -r .[].name_value | sort -u'] },
-        { kind: 'check', title: 'Typosquatting / lookalike domains', detail: 'Both a phishing risk to the client and infrastructure someone may already be using.', payloads: ['dnstwist {domain}', 'urlcrazy {domain}'] },
-      ]
-    },
-  ],
-  spawnGroups: {}
-};
 
 const ad = {
   type: 'ad',
@@ -1416,7 +1378,10 @@ mobile.groups.find(g => g.key === 'backend').items.push(
   { kind: 'trigger', title: 'Backend uses JWTs?', detail: 'Decode and attack the token exactly as on the web/API side (alg confusion, weak secret, no expiry).', spawns: 'jwt', payloads: [] },
 );
 
-export const TEMPLATES = { web, ip, domain, ad, api, mobile, container, wireless, iot, ot };
+// 'exthost' is an internet-facing Host/Network target in an External engagement — same
+// checklist as the internal 'ip' type (scan → per-service triggers → exploit → post).
+const exthost = { ...ip, type: 'exthost' };
+export const TEMPLATES = { web, ip, exthost, ad, api, mobile, container, wireless, iot, ot };
 
 export function instantiateItems(assetType) {
   const t = TEMPLATES[assetType];

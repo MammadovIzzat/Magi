@@ -14,7 +14,7 @@ or self-contained HTML report.
 ```
 Project (engagement)
  └─ Asset  (Internal / External / Mobile / OT-IoT / Additional)
-     └─ Target  (web · host · AD · api · domain · mobile · container …)  → checklist + findings
+     └─ Target  (web · host · AD · api · mobile · container …)  → checklist + findings
 ```
 
 Work solo on a local database, or connect to a [team server](#team-server-multi-user) and
@@ -334,7 +334,7 @@ Uses the system Electron, so the package stays around **750 KB**.
 
 ```bash
 npm run pkg                                   # or: cd packaging && makepkg -f
-sudo pacman -U packaging/magi-0.5.3-1-any.pkg.tar.zst
+sudo pacman -U packaging/magi-0.5.4-1-any.pkg.tar.zst
 ```
 
 ### Debian / Ubuntu
@@ -343,15 +343,15 @@ Debian has no Electron package, so the `.deb` bundles its own copy — **~100 MB
 
 ```bash
 npm run build && npm run pkg:deb
-sudo apt install ./dist/installers/magi_0.5.3_amd64.deb
+sudo apt install ./dist/installers/magi_0.5.4_amd64.deb
 ```
 
 ### Any Linux — portable AppImage
 
 ```bash
 npm run build && npm run pkg:appimage
-chmod +x dist/installers/Magi-0.5.3.AppImage
-./dist/installers/Magi-0.5.3.AppImage
+chmod +x dist/installers/Magi-0.5.4.AppImage
+./dist/installers/Magi-0.5.4.AppImage
 ```
 
 ### macOS
@@ -360,8 +360,8 @@ Cross-built from Linux, both architectures:
 
 ```bash
 npm run build && npm run pkg:mac
-# dist/installers/Magi-0.5.3-mac.zip         Intel
-# dist/installers/Magi-0.5.3-arm64-mac.zip   Apple Silicon
+# dist/installers/Magi-0.5.4-mac.zip         Intel
+# dist/installers/Magi-0.5.4-arm64-mac.zip   Apple Silicon
 ```
 
 These are **unsigned and unnotarised**, and were built on Linux — I have no Mac to
@@ -429,9 +429,8 @@ Academy topic list (including a dedicated LLM/AI attack checklist).
 
 | Type | Covers |
 |------|--------|
-| **web** | recon/fingerprint, discovery, auth, injection, upload, access control, session, protocol/cache/infra and cryptography — with deep-dives for login, registration, password reset, MFA, OAuth/SSO, upload, injection, GraphQL, LLM/AI assistants, race conditions, cache poisoning, 403 bypass, payment/checkout and non-production exposure |
-| **ip** | full/UDP scans, OS guess, per-service triggers (SSH, FTP, SMB, HTTP, RDP, DB, SNMP, LDAP, SMTP, NFS, Redis/Elastic, WinRM), exploitation and post-exploitation with dedicated Linux and Windows privesc deep-dives (sudo/SUID/capabilities/GTFOBins; token privileges, service misconfig, credential dumping, DnsAdmins, PtH) |
-| **domain** | DNS/OSINT, ASN, subdomain enum + takeover, email posture, public exposure & leaks |
+| **web** | recon/fingerprint (incl. subdomain enum + takeover, DNS/zone-transfer, origin-IP-behind-CDN, code/secret leaks, exposed cloud storage), discovery, auth, injection, upload, access control, session, protocol/cache/infra and cryptography — with deep-dives for login, registration, password reset, MFA, OAuth/SSO, upload, injection, GraphQL, LLM/AI assistants, race conditions, cache poisoning, 403 bypass, payment/checkout and non-production exposure |
+| **ip** / **exthost** | full/UDP scans, OS guess, per-service triggers (SSH, FTP, SMB, HTTP, RDP, DB, SNMP, LDAP, SMTP, NFS, Redis/Elastic, WinRM), exploitation and post-exploitation with dedicated Linux and Windows privesc deep-dives (sudo/SUID/capabilities/GTFOBins; token privileges, service misconfig, credential dumping, DnsAdmins, PtH). The same checklist is **Host / Network** in both Internal (`ip`) and External (`exthost`) engagements |
 | **ad** | enumeration + BloodHound, AS-REP/Kerberoast/spray, escalation and lateral movement, domain compromise — with deep-dives for AD CS (ESC1-16), delegation, NTLM coercion/relay and ACL abuse |
 | **api** | surface mapping and the full OWASP API Security Top 10 (2023), including sensitive business-flow abuse (API6), with JWT and GraphQL deep-dives |
 | **mobile** | static, dynamic, backend and privacy phases mapped to OWASP MASVS (reuses the web/API OAuth, OTP and JWT checklists) — storage, crypto/key management, network config, IPC, WebViews, deep links, resilience (attestation, debugger/emulator detection) and privacy controls |

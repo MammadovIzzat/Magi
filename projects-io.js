@@ -33,9 +33,9 @@ function serializeTarget(a) {
       options: parseArr(r.options), opt_key: r.opt_key, status: r.status, answer: r.answer,
       sort: r.sort, is_custom: r.is_custom, created_at: r.created_at,
     })),
-    findings: db.prepare(`SELECT id,title,kind,severity,body,created_at FROM findings WHERE asset_id=? ORDER BY id`).all(a.id)
+    findings: db.prepare(`SELECT id,uid,title,kind,severity,body,refs,fix_status,created_at FROM findings WHERE asset_id=? ORDER BY id`).all(a.id)
       .map(f => ({
-        title: f.title, kind: f.kind, severity: f.severity, body: f.body, created_at: f.created_at,
+        uid: f.uid, title: f.title, kind: f.kind, severity: f.severity, body: f.body, refs: f.refs, fix_status: f.fix_status, created_at: f.created_at,
         attachments: db.prepare(`SELECT filename,mime,size,data,created_at FROM attachments WHERE finding_id=? ORDER BY id`).all(f.id)
           .map(at => ({ filename: at.filename, mime: at.mime, size: at.size, created_at: at.created_at, data: Buffer.from(at.data).toString('base64') })),
       })),
@@ -98,9 +98,13 @@ export function importProject(bundle, nameOverride) {
       (asset_id,parent_id,group_key,group_title,title,detail,payloads,kind,spawns,catalog,options,opt_key,status,answer,sort,is_custom,created_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
     const setParent = db.prepare(`UPDATE items SET parent_id=? WHERE id=?`);
-    const insFinding = db.prepare(`INSERT INTO findings (asset_id,title,kind,severity,body,created_at) VALUES (?,?,?,?,?,?)`);
+    const insFinding = db.prepare(`INSERT INTO findings (asset_id,title,kind,severity,body,fix_status,created_at) VALUES (?,?,?,?,?,?,?)`);
     const insAttach = db.prepare(`INSERT INTO attachments (finding_id,filename,mime,size,data,created_at) VALUES (?,?,?,?,?,?)`);
 
+    // Attack-chain links reference other findings by uid; imported findings get fresh uids, so
+    // remember old->new and rewrite the refs in a second pass once every finding exists.
+    const uidMap = new Map();          // old exported uid -> new uid
+    const pendingRefs = [];            // { id, refs: <old uids JSON> } to translate afterwards
     let nAssets = 0, nTargets = 0, nItems = 0, nFindings = 0;
     for (const folder of foldersFromBundle(bundle)) {
       const fid = insFolder.run(pid, folder.grp || 'additional', folder.label || 'Additional',
@@ -131,9 +135,15 @@ export function importProject(bundle, nameOverride) {
 
         for (const f of (tgt.findings || [])) {
           if (!f.title) continue;
+          // fix_status only belongs on a retest target; keep it just there and only for a known
+          // value, so a hand-edited bundle can't flip an ordinary finding into "retest mode".
+          const fix = (tgt.type === 'retest' && ['fixed', 'half_fixed', 'not_fixed'].includes(f.fix_status)) ? f.fix_status : null;
           const fnd = insFinding.run(aid, f.title, f.kind || 'note', f.severity ?? null, f.body ?? null,
-            f.created_at || new Date().toISOString()).lastInsertRowid;
+            fix, f.created_at || new Date().toISOString()).lastInsertRowid;
           nFindings++;
+          const newUid = db.prepare(`SELECT uid FROM findings WHERE id=?`).get(fnd)?.uid;
+          if (f.uid && newUid) uidMap.set(f.uid, newUid);
+          if (f.refs) pendingRefs.push({ id: fnd, refs: f.refs });
           for (const at of (f.attachments || [])) {
             if (!at.data || !at.mime) continue;
             const buf = Buffer.from(at.data, 'base64');
@@ -141,6 +151,14 @@ export function importProject(bundle, nameOverride) {
           }
         }
       }
+    }
+    // Second pass: translate each finding's refs from old uids to the new ones (dropping any
+    // that pointed outside this bundle), so the attack chain survives the round trip.
+    const setRefs = db.prepare(`UPDATE findings SET refs=? WHERE id=?`);
+    for (const p of pendingRefs) {
+      let old; try { old = JSON.parse(p.refs || '[]'); } catch { old = []; }
+      const mapped = (Array.isArray(old) ? old : []).map(u => uidMap.get(u)).filter(Boolean);
+      if (mapped.length) setRefs.run(JSON.stringify(mapped), p.id);
     }
     db.prepare('COMMIT').run();
     return { projectId: pid, assets: nAssets, targets: nTargets, items: nItems, findings: nFindings };

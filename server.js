@@ -881,11 +881,15 @@ const GRP_KEYS = new Set(['internal', 'external', 'mobile', 'wireless', 'otiot',
 const FIX_STATES = new Set(['fixed', 'not_fixed', 'half_fixed']);
 const cleanFix = (v) => (FIX_STATES.has(v) ? v : null);
 const cleanRefs = (v) => (Array.isArray(v) ? JSON.stringify(v.filter(x => typeof x === 'string').slice(0, 50)) : null);
-// Resolve a finding's `refs` (other findings' uids) to display titles for the attack chain.
+// Parse a finding's `refs` defensively — a hostile sync peer or a hand-edited import could
+// store non-JSON or non-string elements; never let that 500 the whole target view.
+function refUids(refsJson) {
+  let a; try { a = JSON.parse(refsJson || '[]'); } catch { return []; }
+  return Array.isArray(a) ? a.filter(u => typeof u === 'string') : [];
+}
+// Resolve a finding's refs (other findings' uids) to display titles for the attack chain.
 function resolveLinks(refsJson) {
-  let uids; try { uids = JSON.parse(refsJson || '[]'); } catch { uids = []; }
-  if (!Array.isArray(uids) || !uids.length) return [];
-  return uids.map(uid => q(`SELECT f.uid, f.title, f.severity, a.label AS target
+  return refUids(refsJson).map(uid => q(`SELECT f.uid, f.title, f.severity, a.label AS target
     FROM findings f JOIN assets a ON a.id=f.asset_id WHERE f.uid=?`).get(uid)).filter(Boolean);
 }
 app.post('/api/projects/:id/assets', (req, res) => {
@@ -942,7 +946,7 @@ app.get('/api/targets/:id', (req, res) => {
   const items = q(`SELECT * FROM items WHERE asset_id=? ORDER BY sort, id`).all(req.params.id)
     .map(i => ({ ...i, payloads: JSON.parse(i.payloads || '[]'), options: JSON.parse(i.options || '[]') }));
   const findings = q(`SELECT * FROM findings WHERE asset_id=? ORDER BY created_at DESC`).all(req.params.id)
-    .map(f => ({ ...f, refs: undefined, links: resolveLinks(f.refs), ref_uids: JSON.parse(f.refs || '[]'), attachments: q(`SELECT id, filename, mime, size FROM attachments WHERE finding_id=? ORDER BY id`).all(f.id) }));
+    .map(f => ({ ...f, refs: undefined, links: resolveLinks(f.refs), ref_uids: refUids(f.refs), attachments: q(`SELECT id, filename, mime, size FROM attachments WHERE finding_id=? ORDER BY id`).all(f.id) }));
   const folder = q(`SELECT id, grp, label, project_id FROM folders WHERE id=?`).get(a.folder_id);
   const project = folder ? q(`SELECT id, name FROM projects WHERE id=?`).get(folder.project_id) : null;
   res.json({ ...assetSummary(a), items, findings, folder, project });

@@ -1012,7 +1012,7 @@ async function findingModal(assetId, finding = null, isRetest = false) {
 
   const chainSection = (parent) => {
     if (!candidates.length) return;
-    parent.append(el('label', {}, isRetest ? 'Link the original finding (optional)' : 'Links to (attack chain)'));
+    parent.append(el('label', {}, isRetest ? 'Link a finding in this engagement (optional)' : 'Links to (attack chain)'));
     const box = el('div', { className: 'chainpick' });
     for (const c of candidates) {
       const cb = el('input', { type: 'checkbox', checked: selectedRefs.has(c.uid) });

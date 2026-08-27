@@ -153,9 +153,9 @@ function isAdmin() { return LINK?.linked ? LINK.link?.role === 'admin' : ME?.rol
 // ---------- modal ----------
 // kicker + title + optional note, fields, optional danger box, gold/red CTA
 function modal(opts) {
-  const { kicker = 'Form', title, note, build, onSubmit, cta = 'Save', danger = false } = opts;
+  const { kicker = 'Form', title, note, build, onSubmit, cta = 'Save', danger = false, wide = false } = opts;
   const root = $('#modalRoot');
-  const form = el('form', { className: 'modal' + (danger ? ' danger' : '') });
+  const form = el('form', { className: 'modal' + (danger ? ' danger' : '') + (wide ? ' wide' : '') });
   const body = el('div', { className: 'modal-body' }, el('h3', {}, title), note ? el('p', { className: 'modal-note' }, note) : null);
   if (build) build(body);
   const errEl = el('div', { className: 'modal-err' });
@@ -1041,7 +1041,7 @@ function findingDetail(f, id) {
   const locs = parseLocations(f.body);
   modal({
     kicker: f.fix_status ? 'Retest · ' + fixLabel(f.fix_status) : (f.kind === 'credential' ? 'Credential' : f.kind === 'note' ? 'Note' : 'Vulnerability'),
-    title: f.title, cta: 'Edit',
+    title: f.title, cta: 'Edit', wide: true,
     build: (b) => {
       if (f.severity) b.append(el('div', { className: 'fd-badges' }, el('span', { className: 'fd-sev sev-' + f.severity }, f.severity.toUpperCase())));
       if (locs.length) { b.append(el('label', {}, locs.length > 1 ? 'Locations' : 'Location')); b.append(el('div', { className: 'fd-locs' }, ...locs.map(l => el('code', {}, l)))); }

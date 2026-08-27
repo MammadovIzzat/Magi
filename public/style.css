@@ -635,6 +635,8 @@ select { appearance: none; cursor: pointer; }
   border: 1px solid var(--line-4); border-radius: 4px; position: relative;
   animation: magiRise .18s ease both;
 }
+.modal.wide { width: min(820px, 94vw); max-height: 90vh; }
+.modal.wide .fd-shots img { height: 150px; }
 .modal::before {
   content: ""; position: absolute; top: -1px; left: 20px; right: 20px; height: 1px;
   background: linear-gradient(90deg, transparent, var(--gold), transparent); opacity: .75;

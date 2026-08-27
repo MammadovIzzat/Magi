@@ -872,7 +872,8 @@ app.post('/api/projects/import', requireManage, (req, res) => {
 app.get('/api/projects/:id', (req, res) => {
   const p = q(`SELECT * FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'not found' });
-  // Asset folders with roll-up progress across all their targets.
+  // Type/engagement-group folders with roll-up, each carrying its targets (with per-target
+  // roll-up) so the engagement page can show engagement -> target directly, grouped by kind.
   const assets = q(`SELECT f.*,
       (SELECT COUNT(*) FROM assets a WHERE a.folder_id=f.id) AS targets,
       (SELECT COUNT(*) FROM items i JOIN assets a ON a.id=i.asset_id WHERE a.folder_id=f.id AND i.kind NOT IN ('select','group')) AS total,
@@ -881,7 +882,31 @@ app.get('/api/projects/:id', (req, res) => {
       (SELECT COUNT(*) FROM items i JOIN assets a ON a.id=i.asset_id WHERE a.folder_id=f.id AND i.status='flag') AS flags,
       (SELECT COUNT(*) FROM findings fi JOIN assets a ON a.id=fi.asset_id WHERE a.folder_id=f.id) AS findings
       FROM folders f WHERE f.project_id=? ORDER BY f.created_at, f.id`).all(req.params.id);
+  for (const f of assets) {
+    f.items = q(`SELECT a.id, a.type, a.label,
+      (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group')) AS total,
+      (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group') AND i.status IN ('done','na','yes','no')) AS handled,
+      (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.status='flag') AS flags,
+      (SELECT COUNT(*) FROM findings fi WHERE fi.asset_id=a.id) AS findings
+      FROM assets a WHERE a.folder_id=? ORDER BY a.created_at, a.id`).all(f.id);
+  }
   res.json({ ...p, assets });
+});
+// Add a target straight to an engagement — the type's engagement-group folder is created or
+// reused automatically, so users never deal with the folder layer.
+app.post('/api/projects/:id/targets', requireManage, (req, res) => {
+  const p = q(`SELECT id FROM projects WHERE id=?`).get(req.params.id);
+  if (!p) return res.status(404).json({ error: 'project not found' });
+  const { type, label, metadata } = req.body || {};
+  const t = q(`SELECT type, soon, grp FROM tpl_types WHERE type=?`).get(type || '');
+  if (!t) return res.status(400).json({ error: 'unknown target type' });
+  if (t.soon) return res.status(400).json({ error: 'that target type is coming soon and not selectable yet' });
+  if (!label) return res.status(400).json({ error: 'identifier required' });
+  const grp = t.grp || 'additional';
+  let folder = q(`SELECT id FROM folders WHERE project_id=? AND grp=? ORDER BY id LIMIT 1`).get(p.id, grp);
+  if (!folder) folder = { id: Number(q(`INSERT INTO folders (project_id, grp, label) VALUES (?,?,?)`).run(p.id, grp, GROUP_LABEL[grp] || grp).lastInsertRowid) };
+  const targetId = createTarget(folder.id, p.id, type, label, metadata || {});
+  res.status(201).json(assetSummary(q(`SELECT * FROM assets WHERE id=?`).get(targetId)));
 });
 
 // Cascades to assets -> items/findings via the schema's ON DELETE CASCADE.
@@ -895,6 +920,7 @@ app.delete('/api/projects/:id', requireManage, (req, res) => {
 
 // ---- assets (engagement-type folders) ----
 const GRP_KEYS = new Set(['internal', 'external', 'mobile', 'wireless', 'otiot', 'additional', 'retest']);
+const GROUP_LABEL = { internal: 'Internal', external: 'External', mobile: 'Mobile', wireless: 'Wireless', otiot: 'OT / IoT', additional: 'Additional', retest: 'Retest' };
 const FIX_STATES = new Set(['fixed', 'not_fixed', 'half_fixed']);
 const cleanFix = (v) => (FIX_STATES.has(v) ? v : null);
 const cleanRefs = (v) => (Array.isArray(v) ? JSON.stringify(v.filter(x => typeof x === 'string').slice(0, 50)) : null);

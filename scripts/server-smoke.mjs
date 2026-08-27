@@ -176,6 +176,16 @@ check('a retest finding stores its fix status', rf.status === 201 && rf.json?.fi
 const badFix = await req('POST', `/api/targets/${rT.json.id}/findings`, { cookie, body: { title: 'x', fix_status: 'nonsense' } });
 check('an invalid fix status is rejected (stored null)', badFix.json?.fix_status === null);
 
+// engagement -> target directly (the folder layer is auto-managed): a web target lands in an
+// External group, a worker is refused (admin-only structure).
+const dt = await req('POST', `/api/projects/${made.json.id}/targets`, { cookie, body: { type: 'web', label: 'https://direct.test' } });
+check('a target can be added straight to an engagement', dt.status === 201 && !!dt.json?.id);
+const detail = await req('GET', `/api/projects/${made.json.id}`, { cookie });
+const extGroup = (detail.json.assets || []).find(f => f.grp === 'external');
+check('the direct target lands in an auto External group with its checklist', !!extGroup && extGroup.items.some(t => t.label === 'https://direct.test' && t.total > 0));
+const wDirect = await req('POST', `/api/projects/${made.json.id}/targets`, { token: workerToken, device: dev1, body: { type: 'web', label: 'https://nope.test' } });
+check('a worker cannot add a target to an engagement', wDirect.status === 403);
+
 // the code was consumed on approval — a new request with it is refused
 const reuse = await req('POST', '/api/enroll', { body: { code: workerCode, username: 'eve', display_name: 'Eve', device_id: 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb' } });
 check('the code is single-use (consumed on approval)', reuse.status === 403);

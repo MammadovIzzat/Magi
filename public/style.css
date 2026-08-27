@@ -274,7 +274,7 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 
 /* ── stat tiles ────────────────────────────────────────── */
 .stats {
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
+  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 1px;
   background: var(--line); border: 1px solid var(--line); margin: 22px 0 0;
 }
 .stat { background: var(--panel); padding: 15px 16px; }
@@ -700,7 +700,7 @@ select { appearance: none; cursor: pointer; }
   .page { padding: 24px 16px 60px; }
   .checklist { padding: 8px 14px 80px; }
   .target-head { padding: 14px 14px 0; }
-  .stats { grid-template-columns: repeat(2, 1fr); }
+  .stats { font-size: 13px; }
 }
 
 /* ── team-server link: account badge + settings ────────── */

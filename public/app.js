@@ -2182,13 +2182,16 @@ function onAuthed(me) {
   ME = me;
   $('#topbar').hidden = false;
   renderAccount();
-  // Load the type list and team link (which decides the admin/worker role) before the first
-  // render — but NEVER let a slow or failed server call leave the app stuck on the login screen
-  // with the top bar already showing. Whatever happens, render the view.
+  // Replace the login screen IMMEDIATELY — never let a slow or hanging server call leave the
+  // two-factor screen sitting under the (now visible) top bar. The type list and team link only
+  // enrich the view (icons, admin controls), so load them in the background and re-render once
+  // they land. A hung request now just delays the enrichment, not the whole app.
+  route();
   (async () => {
-    try { TYPES = await api('/asset-types'); } catch { /* offline / server hiccup — render anyway */ }
-    try { await refreshLink(); } catch { /* keep going */ }
-    route();
+    let enriched = false;
+    try { TYPES = await api('/asset-types'); enriched = true; } catch { /* offline / hiccup — keep the view */ }
+    try { await refreshLink(); enriched = true; } catch { /* keep going */ }
+    if (enriched && CURRENT_USER) route();
   })();
   // Keep the link/admin state (pending badge, incoming requests) reasonably fresh…
   clearInterval(LINK_POLL);

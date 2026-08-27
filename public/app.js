@@ -115,6 +115,19 @@ let ADMIN_PENDING = 0;        // number of pending join requests (for the Admin 
 let BACKUP_DUE = false;       // a scheduled backup is due — also lights the Admin badge
 let HOME_TAB = 'active';      // engagements home: 'active' | 'finished' tab
 let EVID = { kind: 'all', q: '', sort: 'new' }; // evidence-log filter/sort (kind, search, order)
+let DOCK_W = Math.max(240, Math.min(900, +localStorage.getItem('magi.dockW') || 322)); // evidence-log width (draggable)
+// A draggable divider between the checklist and the evidence log — widen/narrow it, remembered.
+function dockResizer(dock) {
+  const handle = el('div', { className: 'dock-resizer', title: 'Drag to resize the evidence log' });
+  handle.onmousedown = (e) => {
+    e.preventDefault();
+    const startX = e.clientX, startW = dock.getBoundingClientRect().width;
+    const move = (ev) => { DOCK_W = Math.max(240, Math.min(900, startW + (startX - ev.clientX))); dock.style.flex = `0 0 ${DOCK_W}px`; dock.style.width = DOCK_W + 'px'; };
+    const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); document.body.style.cursor = ''; try { localStorage.setItem('magi.dockW', DOCK_W); } catch {} };
+    document.addEventListener('mousemove', move); document.addEventListener('mouseup', up); document.body.style.cursor = 'col-resize';
+  };
+  return handle;
+}
 const SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
 function filterSortFindings(findings) {
   let out = EVID.kind === 'all' ? findings.slice() : findings.filter(f => f.kind === EVID.kind);
@@ -847,9 +860,10 @@ async function renderTarget(id) {
   }
   dock.append(dbody);
 
+  dock.style.flex = `0 0 ${DOCK_W}px`; dock.style.width = DOCK_W + 'px';
   const y = $('.target-col')?.scrollTop || 0;
   $('#view').replaceChildren(el('div', { className: 'target' },
-    el('div', { className: 'target-col' }, head, list), dock));
+    el('div', { className: 'target-col' }, head, list), dockResizer(dock), dock));
   const col = $('.target-col'); if (col) col.scrollTop = y;
 }
 
@@ -989,24 +1003,28 @@ const SEVERITIES = [{ value: '', label: '—' }, { value: 'info', label: 'Info' 
 { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }, { value: 'critical', label: 'Critical' }];
 const FIX_STATUS = [{ value: 'not_fixed', label: 'Not fixed' }, { value: 'half_fixed', label: 'Partially fixed' }, { value: 'fixed', label: 'Fixed' }];
 const fixLabel = (v) => (FIX_STATUS.find(x => x.value === v)?.label || v);
+// A vuln's location(s) are stored as a "Location: a, b, c" first line of the body.
+const parseLocations = (body) => { const m = /^Location:\s*(.+)/.exec(body || ''); return m ? m[1].split(',').map(s => s.trim()).filter(Boolean) : []; };
+const stripLocationPrefix = (body) => (body || '').replace(/^Location:.*\n\n?/, '');
 
 // One finding, as shown in the evidence log and the retest view (severity, kind or fix-status,
 // screenshots, and any attack-chain links to other findings).
 function findingCard(f, id) {
-  const tools = el('div', { className: 'f-tools' },
+  const stop = (e) => e.stopPropagation(); // interactive bits shouldn't open the detail popup
+  const tools = el('div', { className: 'f-tools', onclick: stop },
     el('button', { className: 'ibtn', title: 'Add image', onclick: () => uploadToFinding(f.id, id) }, icon('image', 11)),
     el('button', { className: 'ibtn', title: 'Edit', onclick: () => editFinding(f, id) }, icon('edit', 11)),
     el('button', { className: 'ibtn del', title: 'Delete', onclick: async () => { if (confirm('Delete this finding and its images?')) { await api('/findings/' + f.id, { method: 'DELETE' }); renderTarget(id); } } }, icon('x', 11)));
-  const shots = el('div', { className: 'f-shots' });
+  const shots = el('div', { className: 'f-shots', onclick: stop });
   for (const im of (f.attachments || [])) {
     const thumb = el('img', { src: '/api/attachments/' + im.id, title: im.filename, loading: 'lazy' });
-    thumb.onclick = () => lightbox('/api/attachments/' + im.id, im.filename);
+    thumb.onclick = (e) => { e.stopPropagation(); lightbox('/api/attachments/' + im.id, im.filename); };
     const x = el('button', { className: 'shotx', title: 'Remove image', onclick: async (e) => { e.stopPropagation(); await api('/attachments/' + im.id, { method: 'DELETE' }); renderTarget(id); } }, '✕');
     shots.append(el('span', { className: 'f-shot' }, thumb, x));
   }
   const links = (f.links || []).length ? el('div', { className: 'f-links' }, el('span', { className: 'muted' }, 'chains → '),
     ...f.links.flatMap((l, i) => [i ? el('span', { className: 'muted' }, ', ') : null, el('span', { className: 'chainlink', title: l.target }, l.title)].filter(Boolean))) : null;
-  return el('div', { className: 'finding sev-' + (f.severity || 'info') },
+  const card = el('div', { className: 'finding sev-' + (f.severity || 'info'), title: 'Click to open' },
     el('div', { className: 'f-top' },
       f.severity ? el('span', { className: 'f-sev' }, f.severity) : null,
       f.fix_status ? el('span', { className: 'f-fix ' + f.fix_status }, fixLabel(f.fix_status)) : el('span', { className: 'f-kind' }, f.kind),
@@ -1015,6 +1033,30 @@ function findingCard(f, id) {
     f.body ? el('pre', {}, f.body) : null,
     links,
     (f.attachments || []).length ? shots : null);
+  card.onclick = () => findingDetail(f, id);
+  return card;
+}
+// Full, readable view of one finding (opened by clicking its card). Read-only, with an Edit CTA.
+function findingDetail(f, id) {
+  const locs = parseLocations(f.body);
+  modal({
+    kicker: f.fix_status ? 'Retest · ' + fixLabel(f.fix_status) : (f.kind === 'credential' ? 'Credential' : f.kind === 'note' ? 'Note' : 'Vulnerability'),
+    title: f.title, cta: 'Edit',
+    build: (b) => {
+      if (f.severity) b.append(el('div', { className: 'fd-badges' }, el('span', { className: 'fd-sev sev-' + f.severity }, f.severity.toUpperCase())));
+      if (locs.length) { b.append(el('label', {}, locs.length > 1 ? 'Locations' : 'Location')); b.append(el('div', { className: 'fd-locs' }, ...locs.map(l => el('code', {}, l)))); }
+      const bodyText = f.kind === 'vuln' ? stripLocationPrefix(f.body) : f.body;
+      if (bodyText) { b.append(el('label', {}, f.kind === 'credential' ? 'Credentials' : 'Details')); b.append(el('pre', { className: 'fd-body' }, bodyText)); }
+      if ((f.links || []).length) { b.append(el('label', {}, 'Attack chain')); b.append(el('div', { className: 'fd-links' }, ...f.links.map((l, i) => el('span', { className: 'chainlink', title: l.target }, (i ? ', ' : '') + l.title)))); }
+      if ((f.attachments || []).length) {
+        b.append(el('label', {}, `Screenshots (${f.attachments.length})`));
+        const g = el('div', { className: 'fd-shots' });
+        for (const im of f.attachments) { const img = el('img', { src: '/api/attachments/' + im.id, title: im.filename, loading: 'lazy' }); img.onclick = () => lightbox('/api/attachments/' + im.id, im.filename); g.append(img); }
+        b.append(g);
+      }
+    },
+    onSubmit: async () => { editFinding(f, id); }, // "Edit" hands off to the editor
+  });
 }
 async function saveFinding(editing, finding, assetId, payload, images) {
   if (editing) { await api('/findings/' + finding.id, { method: 'PATCH', body: payload }); return; }
@@ -1121,8 +1163,20 @@ async function findingModal(assetId, finding = null, isRetest = false) {
         } else {
           field(fields, 'Title', 'title', { value: finding?.title || '', ph: 'e.g. SQL injection in /search' });
           field(fields, 'Severity', 'severity', { value: finding?.severity || 'medium', options: SEVERITIES.filter(s => s.value) });
-          field(fields, 'Location (URL / domain)', 'location', { ph: 'https://app/search?q=' });
-          field(fields, 'Explanation', 'body', { value: finding?.body || '', textarea: true, ph: 'how it was found / impact' });
+          // one or more affected locations (URLs / domains)
+          fields.append(el('label', {}, 'Location(s) — URL / domain'));
+          const locList = el('div', { className: 'loclist' });
+          const addLoc = (val = '') => {
+            const inp = el('input', { className: 'locinput', value: val, placeholder: 'https://app/search?q=' });
+            const rmv = el('button', { type: 'button', className: 'ibtn del', title: 'Remove', onclick: () => { row.remove(); if (!locList.children.length) addLoc(); } }, icon('x', 11));
+            const row = el('div', { className: 'locrow' }, inp, rmv);
+            locList.append(row); return inp;
+          };
+          const existing = editing ? parseLocations(finding.body) : [];
+          (existing.length ? existing : ['']).forEach(v => addLoc(v));
+          fields.append(locList,
+            el('button', { type: 'button', className: 'btn line sm', style: 'margin:2px 0 6px', onclick: () => addLoc().focus() }, icon('plus', 12), 'Add location'));
+          field(fields, 'Explanation', 'body', { value: editing ? stripLocationPrefix(finding.body) : '', textarea: true, ph: 'how it was found / impact' });
           if (!editing) fileField(fields, 'Images (screenshots)', images);
         }
         chainSection(fields);
@@ -1138,7 +1192,8 @@ async function findingModal(assetId, finding = null, isRetest = false) {
         body = `Username: ${raw.cred_user || ''}\nPassword: ${raw.cred_pass || ''}\nServer: ${raw.cred_server || ''}`;
       } else if (kind === 'vuln') {
         severity = raw.severity || null;
-        body = (raw.location ? `Location: ${raw.location}\n\n` : '') + (raw.body || '');
+        const locs = [...document.querySelectorAll('.modal .locinput')].map(i => i.value.trim()).filter(Boolean);
+        body = (locs.length ? `Location: ${locs.join(', ')}\n\n` : '') + (raw.body || '');
       }
       const title = raw.title || (kind === 'credential' ? 'Credentials' : kind === 'vuln' ? 'Vulnerability' : 'Note');
       await saveFinding(editing, finding, assetId, { title, kind, severity, body, refs: [...selectedRefs] }, images);

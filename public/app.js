@@ -184,6 +184,13 @@ function field(parent, label, name, { type = 'text', value = '', ph = '', textar
   if (options) { input = el('select', { name }); for (const o of options) input.append(el('option', { value: o.value, selected: o.value === value }, o.label)); }
   else if (textarea) input = el('textarea', { name, value, placeholder: ph });
   else input = el('input', { name, type, value, placeholder: ph });
+  // Date/time fields: pop the native calendar when the field is clicked or focused, so you never
+  // have to type a date by hand (the tiny icon alone is an easy target to miss).
+  if (['date', 'time', 'month', 'week', 'datetime-local'].includes(type)) {
+    const pop = () => { try { input.showPicker?.(); } catch {} };
+    input.addEventListener('click', pop);
+    input.addEventListener('focus', pop);
+  }
   parent.append(input); return input;
 }
 

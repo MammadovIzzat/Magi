@@ -624,6 +624,18 @@ input, textarea, select {
 input:focus, textarea:focus, select:focus { border-color: var(--blue); }
 textarea { min-height: 84px; resize: vertical; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; }
 select { appearance: none; cursor: pointer; }
+/* Date/time fields open the calendar on click — make the whole field read as clickable and the
+   picker icon visible against the dark theme (the default black glyph vanishes on dark). */
+input[type="date"], input[type="time"], input[type="month"],
+input[type="week"], input[type="datetime-local"] { cursor: pointer; }
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator,
+input[type="month"]::-webkit-calendar-picker-indicator,
+input[type="week"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  filter: invert(1); opacity: .55; cursor: pointer;
+}
+input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: .9; }
 
 /* ── modal ─────────────────────────────────────────────── */
 .overlay {

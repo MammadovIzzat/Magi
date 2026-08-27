@@ -52,10 +52,19 @@ function magiMark(size) {
 }
 
 async function api(path, opts) {
-  const r = await fetch('/api' + path, {
-    headers: { 'content-type': 'application/json' },
-    ...opts, body: opts?.body ? JSON.stringify(opts.body) : undefined,
-  });
+  // opts.timeout (ms) fails fast instead of hanging when a linked server is unreachable — the
+  // request is proxied to the remote, which can otherwise stall for a long TCP timeout.
+  const signal = opts?.timeout ? AbortSignal.timeout(opts.timeout) : opts?.signal;
+  let r;
+  try {
+    r = await fetch('/api' + path, {
+      headers: { 'content-type': 'application/json' },
+      ...opts, body: opts?.body ? JSON.stringify(opts.body) : undefined, signal,
+    });
+  } catch (e) {
+    if (e?.name === 'TimeoutError' || e?.name === 'AbortError') throw new Error('the server did not respond');
+    throw e;
+  }
   // A 401 from a /link/* call is the remote SERVER rejecting our device token (e.g. it was
   // revoked) — NOT our local session expiring. Only a genuine local 401 sends us to login,
   // otherwise a revoked device would trap the app in a login loop.
@@ -1817,11 +1826,18 @@ async function renderAdmin() {
   const view = $('#view');
   const page = el('div', { className: 'page' });
   page.append(el('div', { className: 'page-head' }, el('div', {}, el('div', { className: 'kicker' }, 'Team server'), el('h1', {}, 'Admin'))));
-  const A = (p, o) => api(ctx.base + p, o);
+  // Paint the Admin shell NOW so the body always matches the header/crumbs. If the linked server
+  // is unreachable the data fetch below hangs — without this, the previous page's body would stay
+  // stranded under the Admin header (a broken-looking, mismatched screen).
+  const loading = el('div', { className: 'empty' }, 'Loading team data…');
+  page.append(loading);
+  view.replaceChildren(page);
+  const A = (p, o) => api(ctx.base + p, { ...o, timeout: 8000 });
 
   let requests = [], devices = [], codes = [], audit = [], users = [];
   try { [requests, devices, codes, audit, users] = await Promise.all([A('/requests'), A('/devices'), A('/enroll-codes'), A('/audit?limit=10'), A('/users')]); }
-  catch (e) { page.append(el('div', { className: 'empty' }, 'Could not load admin data: ' + e.message)); return view.replaceChildren(page); }
+  catch (e) { loading.className = 'empty'; loading.textContent = 'Could not load team data: ' + e.message + '. Check the connection, then press Refresh.'; return; }
+  loading.remove();
   ADMIN_PENDING = requests.length; renderAccount();
 
   const card = (title) => el('div', { className: 'setcard' }, el('div', { className: 'setcard-hd' }, el('h3', {}, title)));

@@ -1,6 +1,6 @@
 # Maintainer: MammadovIzzat <izzatmmmdv@gmail.com>
 pkgname=magi
-pkgver=0.5.6
+pkgver=0.5.7
 pkgrel=1
 pkgdesc="The pentester's familiar — engagement checklists, target tracker and evidence log"
 arch=('any')

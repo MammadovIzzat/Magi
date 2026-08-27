@@ -2144,9 +2144,14 @@ function onAuthed(me) {
   ME = me;
   $('#topbar').hidden = false;
   renderAccount();
-  // Resolve the team link (and thus the admin/worker role) BEFORE the first render, so a linked
-  // worker never briefly sees admin-only controls drawn from the local (owner) role.
-  (async () => { TYPES = await api('/asset-types'); await refreshLink().catch(() => {}); route(); })();
+  // Load the type list and team link (which decides the admin/worker role) before the first
+  // render — but NEVER let a slow or failed server call leave the app stuck on the login screen
+  // with the top bar already showing. Whatever happens, render the view.
+  (async () => {
+    try { TYPES = await api('/asset-types'); } catch { /* offline / server hiccup — render anyway */ }
+    try { await refreshLink(); } catch { /* keep going */ }
+    route();
+  })();
   // Keep the link/admin state (pending badge, incoming requests) reasonably fresh…
   clearInterval(LINK_POLL);
   LINK_POLL = setInterval(() => { if (CURRENT_USER) refreshLink(); }, 12000);

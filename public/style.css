@@ -528,6 +528,14 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 }
 .f-shot:hover .shotx { display: grid; }
 .f-shot .shotx:hover { border-color: var(--red); color: var(--red); }
+/* download-this-screenshot, tucked at the bottom-right; appears on hover like the remove button */
+.f-shot .shotdl {
+  position: absolute; bottom: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--panel-hi); border: 1px solid var(--line-4); color: var(--muted);
+  display: none; place-items: center; cursor: pointer; padding: 0;
+}
+.f-shot:hover .shotdl { display: grid; }
+.f-shot .shotdl:hover { border-color: var(--gold); color: var(--gold); }
 
 /* full-size image overlay */
 .lightbox {
@@ -535,7 +543,8 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 12px; padding: 30px; cursor: zoom-out; animation: magiRise .15s ease both;
 }
-.lightbox img { max-width: 94vw; max-height: 86vh; object-fit: contain; border: 1px solid var(--line-4); border-radius: 4px; }
+.lightbox .lb-bar { display: flex; gap: 8px; cursor: default; }
+.lightbox img { max-width: 94vw; max-height: 82vh; object-fit: contain; border: 1px solid var(--line-4); border-radius: 4px; cursor: default; }
 .lightbox .lb-cap { font-family: var(--mono); font-size: 12px; color: var(--text-2); }
 
 /* ── template library ──────────────────────────────────── */

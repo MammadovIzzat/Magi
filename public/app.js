@@ -1072,9 +1072,10 @@ function findingCard(f, id) {
   const shots = el('div', { className: 'f-shots', onclick: stop });
   for (const im of (f.attachments || [])) {
     const thumb = el('img', { src: '/api/attachments/' + im.id, title: im.filename, loading: 'lazy' });
-    thumb.onclick = (e) => { e.stopPropagation(); lightbox('/api/attachments/' + im.id, im.filename); };
+    thumb.onclick = (e) => { e.stopPropagation(); lightbox('/api/attachments/' + im.id, im.filename, () => downloadAttachment(im)); };
+    const dl = el('button', { className: 'shotdl', title: 'Download image', onclick: (e) => { e.stopPropagation(); downloadAttachment(im); } }, icon('down', 10));
     const x = el('button', { className: 'shotx', title: 'Remove image', onclick: async (e) => { e.stopPropagation(); await api('/attachments/' + im.id, { method: 'DELETE' }); renderTarget(id); } }, '✕');
-    shots.append(el('span', { className: 'f-shot' }, thumb, x));
+    shots.append(el('span', { className: 'f-shot' }, thumb, dl, x));
   }
   const links = (f.links || []).length ? el('div', { className: 'f-links' }, el('span', { className: 'muted' }, 'chains → '),
     ...f.links.flatMap((l, i) => [i ? el('span', { className: 'muted' }, ', ') : null, el('span', { className: 'chainlink', title: l.target }, l.title)].filter(Boolean))) : null;
@@ -1105,7 +1106,7 @@ function findingDetail(f, id) {
       if ((f.attachments || []).length) {
         b.append(el('label', {}, `Screenshots (${f.attachments.length})`));
         const g = el('div', { className: 'fd-shots' });
-        for (const im of f.attachments) { const img = el('img', { src: '/api/attachments/' + im.id, title: im.filename, loading: 'lazy' }); img.onclick = () => lightbox('/api/attachments/' + im.id, im.filename); g.append(img); }
+        for (const im of f.attachments) { const img = el('img', { src: '/api/attachments/' + im.id, title: im.filename, loading: 'lazy' }); img.onclick = () => lightbox('/api/attachments/' + im.id, im.filename, () => downloadAttachment(im)); g.append(img); }
         b.append(g);
       }
     },
@@ -1287,12 +1288,29 @@ function uploadToFinding(findingId, assetId) {
   document.body.append(picker); picker.click();
 }
 
-// Full-size image overlay.
-function lightbox(src, caption) {
+// Save a finding's screenshot to the local machine. Fetches the bytes and triggers a normal
+// browser/Electron download, forcing a save even though the server serves it inline.
+async function downloadAttachment(im) {
+  try {
+    const r = await fetch('/api/attachments/' + im.id);
+    if (!r.ok) throw new Error(r.statusText);
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = el('a', { href: url, download: im.filename || `screenshot-${im.id}.png` });
+    document.body.append(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  } catch (e) { alert('Could not download the image: ' + e.message); }
+}
+
+// Full-size image overlay, with a Download button so a screenshot can be saved locally.
+function lightbox(src, caption, onDownload) {
   const root = $('#modalRoot');
   const close = () => root.replaceChildren();
+  const bar = el('div', { className: 'lb-bar', onclick: (e) => e.stopPropagation() },
+    onDownload ? el('button', { className: 'btn sm', onclick: onDownload }, icon('down', 12), 'Download') : null,
+    el('button', { className: 'btn sm', onclick: close }, 'Close'));
   root.replaceChildren(el('div', { className: 'lightbox', onclick: close },
-    el('img', { src }),
+    bar,
+    el('img', { src, onclick: (e) => e.stopPropagation() }),
     caption ? el('div', { className: 'lb-cap' }, caption) : null));
 }
 

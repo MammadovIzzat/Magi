@@ -1115,13 +1115,19 @@ function findingDetail(f, id) {
 async function saveFinding(editing, finding, assetId, payload, images) {
   if (editing) { await api('/findings/' + finding.id, { method: 'PATCH', body: payload }); return; }
   const f = await api(`/targets/${assetId}/findings`, { method: 'POST', body: payload });
+  // Attach the screenshots. A rejected image must never vanish silently — collect the reasons
+  // and surface them, so "it didn't save" is always explained (too large, wrong type, offline…).
+  const failed = [];
   for (const file of images) {
-    if (!file.type || !file.type.startsWith('image/')) continue;
+    const name = file.name || 'image';
+    if (!file.type || !file.type.startsWith('image/')) { failed.push(`${name} — not an image file`); continue; }
     try {
-      await fetch(`/api/findings/${f.id}/attachments`, { method: 'POST',
-        headers: { 'content-type': file.type, 'x-filename': encodeURIComponent(file.name) }, body: await file.arrayBuffer() });
-    } catch { /* one bad image shouldn't lose the finding */ }
+      const r = await fetch(`/api/findings/${f.id}/attachments`, { method: 'POST',
+        headers: { 'content-type': file.type, 'x-filename': encodeURIComponent(name) }, body: await file.arrayBuffer() });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+    } catch (e) { failed.push(`${name} — ${e.message}`); }
   }
+  if (failed.length) alert(`The finding was saved, but ${failed.length} image${failed.length > 1 ? 's' : ''} could not be attached:\n\n${failed.join('\n')}`);
 }
 
 // A multi-image picker that collects files into `bucket` (handled outside FormData).

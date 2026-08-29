@@ -37,10 +37,10 @@ app.use((req, res, next) => {
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
   next();
 });
-// Generous limit: a project import carries its screenshots inline as base64, and this
-// is a local single-user tool, not a public endpoint. Raw image uploads have their own
-// tighter per-file cap below.
-app.use(express.json({ limit: '64mb' }));
+// Generous limit: a project import carries its screenshots inline as base64, and a sync push
+// carries attachment blobs the same way — so this must comfortably exceed the per-image cap
+// below (a 40 MB image is ~53 MB base64). Raw image uploads have their own per-file cap.
+app.use(express.json({ limit: '128mb' }));
 
 // A packaged build has no public/ on disk: build/build.mjs compiles those files into
 // the bundle and its entry point sets globalThis.__MAGI_ASSETS before this module runs.
@@ -1140,16 +1140,22 @@ app.delete('/api/findings/:id', (req, res) => {
 });
 
 // ---- image attachments on a finding ----
-const MAX_UPLOAD = 15 * 1024 * 1024;
+const MAX_UPLOAD = 40 * 1024 * 1024;
 // Raw body, any content-type, so screenshots upload without base64 bloat or a multipart parser.
 const rawUpload = express.raw({ type: () => true, limit: MAX_UPLOAD });
-app.post('/api/findings/:id/attachments', rawUpload, (req, res) => {
+app.post('/api/findings/:id/attachments', (req, res) => rawUpload(req, res, (err) => {
+  // A body over the parser's limit makes express.raw throw BEFORE the handler — turn that into
+  // the same friendly 413 (otherwise it surfaces as an opaque 500 and the image just vanishes).
+  if (err) {
+    const tooBig = err.type === 'entity.too.large' || err.status === 413 || err.statusCode === 413;
+    return res.status(tooBig ? 413 : 400).json({ error: tooBig ? 'image too large (40 MB max)' : 'could not read the upload' });
+  }
   if (!q(`SELECT id FROM findings WHERE id=?`).get(req.params.id)) return res.status(404).json({ error: 'finding not found' });
   const mime = (req.headers['content-type'] || '').split(';')[0].trim();
   if (!mime.startsWith('image/')) return res.status(400).json({ error: 'only image files are accepted' });
   const buf = req.body;
   if (!Buffer.isBuffer(buf) || !buf.length) return res.status(400).json({ error: 'empty upload' });
-  if (buf.length > MAX_UPLOAD) return res.status(413).json({ error: 'image too large (15 MB max)' });
+  if (buf.length > MAX_UPLOAD) return res.status(413).json({ error: 'image too large (40 MB max)' });
   // filename comes in a header so the raw body stays the file itself; malformed %-encoding
   // must not 500 the upload.
   let raw = 'image';
@@ -1158,7 +1164,7 @@ app.post('/api/findings/:id/attachments', rawUpload, (req, res) => {
   const info = q(`INSERT INTO attachments (finding_id, filename, mime, size, data) VALUES (?,?,?,?,?)`)
     .run(req.params.id, filename, mime, buf.length, buf);
   res.status(201).json(q(`SELECT id, finding_id, filename, mime, size, created_at FROM attachments WHERE id=?`).get(info.lastInsertRowid));
-});
+}));
 app.get('/api/attachments/:id', (req, res) => {
   const a = q(`SELECT filename, mime, data FROM attachments WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'not found' });

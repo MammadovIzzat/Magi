@@ -67,6 +67,19 @@ function req(method, path, { token, device, cookie, body } = {}) {
     r.end();
   });
 }
+// Raw (non-JSON) upload — screenshots go up as the raw file body with the mime in the header.
+function rawReq(path, buf, { cookie, mime = 'image/png', filename = 'shot.png' } = {}) {
+  const headers = { 'content-type': mime, 'content-length': buf.length, 'x-filename': encodeURIComponent(filename) };
+  if (cookie) headers.cookie = cookie;
+  return new Promise((resolve, reject) => {
+    const r = https.request({ host: '127.0.0.1', port: PORT, method: 'POST', path, agent, headers }, res => {
+      let b = ''; res.on('data', d => b += d);
+      res.on('end', () => { let j = null; try { j = b ? JSON.parse(b) : null; } catch {} resolve({ status: res.statusCode, json: j }); });
+    });
+    r.on('error', reject);
+    r.write(buf); r.end();
+  });
+}
 async function waitUp() {
   for (let i = 0; i < 100; i++) {
     if (existsSync(CRT)) { try { return readFileSync(CRT); } catch {} }
@@ -185,6 +198,15 @@ const extGroup = (detail.json.assets || []).find(f => f.grp === 'external');
 check('the direct target lands in an auto External group with its checklist', !!extGroup && extGroup.items.some(t => t.label === 'https://direct.test' && t.total > 0));
 const wDirect = await req('POST', `/api/projects/${made.json.id}/targets`, { token: workerToken, device: dev1, body: { type: 'web', label: 'https://nope.test' } });
 check('a worker cannot add a target to an engagement', wDirect.status === 403);
+
+// Screenshot attachments: a normal image saves; an over-cap upload returns a clean 413 (not an
+// opaque 500 that would let the image vanish silently), and a non-image is refused.
+const okImg = await rawReq(`/api/findings/${badFix.json.id}/attachments`, Buffer.from('89504e470d0a1a0a', 'hex'), { cookie });
+check('a screenshot uploads to a finding', okImg.status === 201 && okImg.json?.mime === 'image/png');
+const bigImg = await rawReq(`/api/findings/${badFix.json.id}/attachments`, Buffer.alloc(41 * 1024 * 1024), { cookie });
+check('an over-cap image is refused with a clean 413 (never a 500)', bigImg.status === 413);
+const notImg = await rawReq(`/api/findings/${badFix.json.id}/attachments`, Buffer.from('hello'), { cookie, mime: 'text/plain' });
+check('a non-image upload is rejected', notImg.status === 400);
 
 // the code was consumed on approval — a new request with it is refused
 const reuse = await req('POST', '/api/enroll', { body: { code: workerCode, username: 'eve', display_name: 'Eve', device_id: 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb' } });

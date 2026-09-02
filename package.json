@@ -1,6 +1,6 @@
 {
   "name": "magi",
-  "version": "0.5.13",
+  "version": "0.5.14",
   "description": "Magi \u2014 the pentester's familiar. Engagement checklists, targets and evidence (web app + CLI)",
   "type": "module",
   "bin": {

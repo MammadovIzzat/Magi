@@ -1061,6 +1061,26 @@ const fixLabel = (v) => (FIX_STATUS.find(x => x.value === v)?.label || v);
 const parseLocations = (body) => { const m = /^Location:\s*(.+)/.exec(body || ''); return m ? m[1].split(',').map(s => s.trim()).filter(Boolean) : []; };
 const stripLocationPrefix = (body) => (body || '').replace(/^Location:.*\n\n?/, '');
 
+// A tick that marks whether this finding has been written into the report, so it's obvious at a
+// glance what's already covered and what's left. Toggles in place and refreshes the view.
+function reportTick(f, afterToggle) {
+  const b = el('button', { className: 'reptick', type: 'button' });
+  const paint = () => {
+    const on = !!f.in_report;
+    b.className = 'reptick' + (on ? ' on' : '');
+    b.title = on ? 'Written into the report — click to unmark' : 'Mark as added to the report';
+    b.replaceChildren(icon('check', 11), el('span', {}, on ? 'In report' : 'Mark done'));
+  };
+  paint();
+  b.onclick = async (e) => {
+    e.stopPropagation();
+    const next = f.in_report ? 0 : 1;
+    try { await api('/findings/' + f.id, { method: 'PATCH', body: { in_report: next } }); f.in_report = next; paint(); afterToggle && afterToggle(); }
+    catch (err) { alert('Could not update: ' + err.message); }
+  };
+  return b;
+}
+
 // One finding, as shown in the evidence log and the retest view (severity, kind or fix-status,
 // screenshots, and any attack-chain links to other findings).
 function findingCard(f, id) {
@@ -1079,10 +1099,11 @@ function findingCard(f, id) {
   }
   const links = (f.links || []).length ? el('div', { className: 'f-links' }, el('span', { className: 'muted' }, 'chains → '),
     ...f.links.flatMap((l, i) => [i ? el('span', { className: 'muted' }, ', ') : null, el('span', { className: 'chainlink', title: l.target }, l.title)].filter(Boolean))) : null;
-  const card = el('div', { className: 'finding sev-' + (f.severity || 'info'), title: 'Click to open' },
+  const card = el('div', { className: 'finding sev-' + (f.severity || 'info') + (f.in_report ? ' in-report' : ''), title: 'Click to open' },
     el('div', { className: 'f-top' },
       f.severity ? el('span', { className: 'f-sev' }, f.severity) : null,
       f.fix_status ? el('span', { className: 'f-fix ' + f.fix_status }, fixLabel(f.fix_status)) : el('span', { className: 'f-kind' }, f.kind),
+      reportTick(f, () => renderTarget(id)),
       tools),
     el('div', { className: 'f-title' }, f.title),
     f.body ? el('pre', {}, f.body) : null,
@@ -1098,7 +1119,9 @@ function findingDetail(f, id) {
     kicker: f.fix_status ? 'Retest · ' + fixLabel(f.fix_status) : (f.kind === 'credential' ? 'Credential' : f.kind === 'note' ? 'Note' : 'Vulnerability'),
     title: f.title, cta: 'Edit', wide: true,
     build: (b) => {
-      if (f.severity) b.append(el('div', { className: 'fd-badges' }, el('span', { className: 'fd-sev sev-' + f.severity }, f.severity.toUpperCase())));
+      b.append(el('div', { className: 'fd-badges' },
+        f.severity ? el('span', { className: 'fd-sev sev-' + f.severity }, f.severity.toUpperCase()) : null,
+        reportTick(f, () => renderTarget(id))));
       if (locs.length) { b.append(el('label', {}, locs.length > 1 ? 'Locations' : 'Location')); b.append(el('div', { className: 'fd-locs' }, ...locs.map(l => el('code', {}, l)))); }
       const bodyText = f.kind === 'vuln' ? stripLocationPrefix(f.body) : f.body;
       if (bodyText) { b.append(el('label', {}, f.kind === 'credential' ? 'Credentials' : 'Details')); b.append(el('pre', { className: 'fd-body' }, bodyText)); }

@@ -208,6 +208,14 @@ check('an over-cap image is refused with a clean 413 (never a 500)', bigImg.stat
 const notImg = await rawReq(`/api/findings/${badFix.json.id}/attachments`, Buffer.from('hello'), { cookie, mime: 'text/plain' });
 check('a non-image upload is rejected', notImg.status === 400);
 
+// The "added to the report" tick round-trips and is independent of the other fields.
+const tickOn = await req('PATCH', `/api/findings/${badFix.json.id}`, { cookie, body: { in_report: 1 } });
+check('a finding can be ticked as written into the report', tickOn.status === 200 && tickOn.json?.in_report === 1);
+const tickKept = await req('PATCH', `/api/findings/${badFix.json.id}`, { cookie, body: { title: 'renamed' } });
+check('the report tick survives an unrelated edit', tickKept.json?.in_report === 1 && tickKept.json?.title === 'renamed');
+const tickOff = await req('PATCH', `/api/findings/${badFix.json.id}`, { cookie, body: { in_report: 0 } });
+check('the report tick can be cleared', tickOff.json?.in_report === 0);
+
 // the code was consumed on approval — a new request with it is refused
 const reuse = await req('POST', '/api/enroll', { body: { code: workerCode, username: 'eve', display_name: 'Eve', device_id: 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb' } });
 check('the code is single-use (consumed on approval)', reuse.status === 403);

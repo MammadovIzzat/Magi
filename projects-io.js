@@ -33,9 +33,9 @@ function serializeTarget(a) {
       options: parseArr(r.options), opt_key: r.opt_key, status: r.status, answer: r.answer,
       sort: r.sort, is_custom: r.is_custom, created_at: r.created_at,
     })),
-    findings: db.prepare(`SELECT id,uid,title,kind,severity,body,refs,fix_status,created_at FROM findings WHERE asset_id=? ORDER BY id`).all(a.id)
+    findings: db.prepare(`SELECT id,uid,title,kind,severity,body,refs,fix_status,in_report,created_at FROM findings WHERE asset_id=? ORDER BY id`).all(a.id)
       .map(f => ({
-        uid: f.uid, title: f.title, kind: f.kind, severity: f.severity, body: f.body, refs: f.refs, fix_status: f.fix_status, created_at: f.created_at,
+        uid: f.uid, title: f.title, kind: f.kind, severity: f.severity, body: f.body, refs: f.refs, fix_status: f.fix_status, in_report: f.in_report, created_at: f.created_at,
         attachments: db.prepare(`SELECT filename,mime,size,data,created_at FROM attachments WHERE finding_id=? ORDER BY id`).all(f.id)
           .map(at => ({ filename: at.filename, mime: at.mime, size: at.size, created_at: at.created_at, data: Buffer.from(at.data).toString('base64') })),
       })),
@@ -98,7 +98,7 @@ export function importProject(bundle, nameOverride) {
       (asset_id,parent_id,group_key,group_title,title,detail,payloads,kind,spawns,catalog,options,opt_key,status,answer,sort,is_custom,created_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
     const setParent = db.prepare(`UPDATE items SET parent_id=? WHERE id=?`);
-    const insFinding = db.prepare(`INSERT INTO findings (asset_id,title,kind,severity,body,fix_status,created_at) VALUES (?,?,?,?,?,?,?)`);
+    const insFinding = db.prepare(`INSERT INTO findings (asset_id,title,kind,severity,body,fix_status,in_report,created_at) VALUES (?,?,?,?,?,?,?,?)`);
     const insAttach = db.prepare(`INSERT INTO attachments (finding_id,filename,mime,size,data,created_at) VALUES (?,?,?,?,?,?)`);
 
     // Attack-chain links reference other findings by uid; imported findings get fresh uids, so
@@ -139,7 +139,7 @@ export function importProject(bundle, nameOverride) {
           // value, so a hand-edited bundle can't flip an ordinary finding into "retest mode".
           const fix = (tgt.type === 'retest' && ['fixed', 'half_fixed', 'not_fixed'].includes(f.fix_status)) ? f.fix_status : null;
           const fnd = insFinding.run(aid, f.title, f.kind || 'note', f.severity ?? null, f.body ?? null,
-            fix, f.created_at || new Date().toISOString()).lastInsertRowid;
+            fix, f.in_report ? 1 : 0, f.created_at || new Date().toISOString()).lastInsertRowid;
           nFindings++;
           const newUid = db.prepare(`SELECT uid FROM findings WHERE id=?`).get(fnd)?.uid;
           if (f.uid && newUid) uidMap.set(f.uid, newUid);

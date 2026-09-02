@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS findings (
   body        TEXT,                      -- raw request / description
   refs        TEXT,                      -- JSON array of other findings' uids (attack chain)
   fix_status  TEXT,                      -- retest only: fixed | not_fixed | half_fixed
+  in_report   INTEGER NOT NULL DEFAULT 0, -- ticked once written into the report, so it's clear what's done
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_findings_asset ON findings(asset_id);
@@ -336,6 +337,7 @@ const projCols = new Set(db.prepare(`PRAGMA table_info(projects)`).all().map(r =
 const findCols = new Set(db.prepare(`PRAGMA table_info(findings)`).all().map(r => r.name));
 if (!findCols.has('refs')) db.exec(`ALTER TABLE findings ADD COLUMN refs TEXT`);
 if (!findCols.has('fix_status')) db.exec(`ALTER TABLE findings ADD COLUMN fix_status TEXT`);
+if (!findCols.has('in_report')) db.exec(`ALTER TABLE findings ADD COLUMN in_report INTEGER NOT NULL DEFAULT 0`);
 if (!projCols.has('status')) db.exec(`ALTER TABLE projects ADD COLUMN status TEXT DEFAULT 'active'`);
 if (!projCols.has('start_date')) db.exec(`ALTER TABLE projects ADD COLUMN start_date TEXT`);
 if (!projCols.has('end_date')) db.exec(`ALTER TABLE projects ADD COLUMN end_date TEXT`);

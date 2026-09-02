@@ -30,17 +30,18 @@ db.prepare(`INSERT INTO findings (asset_id,title,kind,severity,refs) VALUES (?,?
 // a retest target with a fix status
 const rf = rid(db.prepare(`INSERT INTO folders (project_id,grp,label) VALUES (?,?,?)`).run(pid, 'retest', 'RT'));
 const ra = rid(db.prepare(`INSERT INTO assets (project_id,folder_id,type,label) VALUES (?,?,?,?)`).run(pid, rf, 'retest', 'Remediation'));
-db.prepare(`INSERT INTO findings (asset_id,title,kind,fix_status) VALUES (?,?,?,?)`).run(ra, 'ACME-1', 'vuln', 'half_fixed');
+db.prepare(`INSERT INTO findings (asset_id,title,kind,fix_status,in_report) VALUES (?,?,?,?,?)`).run(ra, 'ACME-1', 'vuln', 'half_fixed', 1);
 
 const bundle = io.exportProject(pid);
 check('export carries refs + fix_status', /\brefs\b/.test(JSON.stringify(bundle)) && JSON.stringify(bundle).includes('half_fixed'));
 
 const res = io.importProject(bundle, 'Imported');
-const imp = db.prepare(`SELECT f.title, f.refs, f.fix_status FROM findings f JOIN assets a ON a.id=f.asset_id WHERE a.project_id=?`).all(res.projectId);
+const imp = db.prepare(`SELECT f.title, f.refs, f.fix_status, f.in_report FROM findings f JOIN assets a ON a.id=f.asset_id WHERE a.project_id=?`).all(res.projectId);
 const newCredsUid = db.prepare(`SELECT f.uid FROM findings f JOIN assets a ON a.id=f.asset_id WHERE a.project_id=? AND f.title='Creds'`).get(res.projectId).uid;
 const rce = imp.find(f => f.title === 'RCE');
 
 check('import preserves the retest fix status', imp.find(f => f.title === 'ACME-1')?.fix_status === 'half_fixed');
+check('import preserves the report tick', imp.find(f => f.title === 'ACME-1')?.in_report === 1);
 check('import keeps the attack-chain link', rce && JSON.parse(rce.refs || '[]').length === 1);
 check('the chain link is remapped to the imported finding’s new uid', rce && JSON.parse(rce.refs)[0] === newCredsUid);
 check('the old uid did not leak into the import', rce && !JSON.parse(rce.refs).includes(uidA));

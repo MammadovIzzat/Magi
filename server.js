@@ -1125,12 +1125,13 @@ app.patch('/api/findings/:id', (req, res) => {
   if (!cur) return res.status(404).json({ error: 'not found' });
   const b = req.body || {};
   if ('title' in b && !b.title) return res.status(400).json({ error: 'title cannot be empty' });
-  q(`UPDATE findings SET title=?, kind=?, severity=?, body=?, refs=?, fix_status=? WHERE id=?`).run(
+  q(`UPDATE findings SET title=?, kind=?, severity=?, body=?, refs=?, fix_status=?, in_report=? WHERE id=?`).run(
     b.title ?? cur.title, b.kind ?? cur.kind,
     b.severity === undefined ? cur.severity : (b.severity || null),
     b.body === undefined ? cur.body : (b.body || null),
     'refs' in b ? cleanRefs(b.refs) : cur.refs,
-    'fix_status' in b ? cleanFix(b.fix_status) : cur.fix_status, cur.id);
+    'fix_status' in b ? cleanFix(b.fix_status) : cur.fix_status,
+    'in_report' in b ? (b.in_report ? 1 : 0) : cur.in_report, cur.id);
   res.json(q(`SELECT * FROM findings WHERE id=?`).get(cur.id));
 });
 

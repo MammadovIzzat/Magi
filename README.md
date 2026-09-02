@@ -47,7 +47,7 @@ npm install
 npm start          # http://localhost:4173
 ```
 
-No native build step: uses Node's built-in `node:sqlite` (Node 22.5+). Data lives in `./data/magi.db` (an existing `checklister.db` is picked up automatically).
+SQLite comes from `better-sqlite3-multiple-ciphers` (SQLCipher built in, for optional [encryption at rest](#encryption-at-rest)); a prebuilt binary ships for common platforms, so there's no compile step. Data lives in `./data/magi.db` (an existing `checklister.db` is picked up automatically).
 
 ### Login
 
@@ -72,11 +72,31 @@ MAGI_HOST=0.0.0.0 npm start
 ```
 
 Do that only with a strong password set — it prints a warning when it is not localhost-bound.
-The SQLite file itself is unencrypted; treat `./data/` as client-confidential and keep it out
-of git (`.gitignore` already excludes it).
+Treat `./data/` as client-confidential and keep it out of git (`.gitignore` already excludes it).
 
 Other env vars: `MAGI_PORT` (default 4173), `MAGI_DB`, `MAGI_SESSION_DAYS` (default 30).
 The old `CHECKLISTER_*` names are still accepted, so existing scripts keep working.
+
+### Encryption at rest
+
+By default the SQLite file is plaintext. Set a key and Magi encrypts the whole database with
+**SQLCipher** (AES-256, 256k-round PBKDF2) — the `.db` and its WAL become ciphertext, so a copied
+file, a stolen disk, or a shell that can only read files gets nothing without the key:
+
+```bash
+MAGI_DB_KEY='a-long-passphrase' npm start      # or MAGI_KEY_FILE=/path/to/secret
+```
+
+- **Opt-in:** with no key set, nothing changes (plaintext, as before).
+- **Automatic migration:** an existing plaintext `magi.db` is encrypted **in place** on the first
+  start with a key — every engagement, finding and screenshot preserved.
+- **Server:** prefer `MAGI_KEY_FILE` pointing at a secret kept **outside** the data dir/volume
+  (e.g. a Docker secret), so copying the data volume alone still yields only ciphertext.
+- **Key handling:** the key/passphrase is used only in memory; Magi never writes a derived key to
+  disk. A wrong key is refused at startup rather than corrupting anything.
+- Caveat: encryption at rest protects the powered-off / copied-file / lost-device cases. While the
+  process is running and unlocked, its own memory holds decrypted data — pair this with OS access
+  control on the host.
 
 ### Template editor
 
@@ -316,7 +336,7 @@ must match.
 Headless, no fixtures, no network mocks — real servers and a real headless browser:
 
 ```bash
-npm test        # migrate + stash + UI + server + link + sync + backup + mfa + io + qr smokes
+npm test        # migrate + stash + UI + server + link + sync + backup + mfa + io + qr + crypto smokes
 ```
 
 - **migrate** — a pre-sync database upgrades cleanly on first boot (the `uid`/clock columns backfill).
@@ -325,6 +345,7 @@ npm test        # migrate + stash + UI + server + link + sync + backup + mfa + i
 - **link** — client enrolment, fingerprint/MITM refusal, token encrypted at rest.
 - **sync** — bidirectional replication, last-writer-wins both ways, tombstones, offline-then-reconnect, the stash, and rejection of a crafted (SQL-injection) tombstone.
 - **backup** — incremental deltas, encryption round-trip, a rejected wrong password, image bytes preserved, and a full restore that honours deletes.
+- **crypto** — a keyed database is ciphertext on disk, the right key round-trips, a wrong key is refused, and an existing plaintext DB migrates in place.
 
 ## Install
 
@@ -334,7 +355,7 @@ Uses the system Electron, so the package stays around **750 KB**.
 
 ```bash
 npm run pkg                                   # or: cd packaging && makepkg -f
-sudo pacman -U packaging/magi-0.5.14-1-any.pkg.tar.zst
+sudo pacman -U packaging/magi-0.6.0-1-any.pkg.tar.zst
 ```
 
 ### Debian / Ubuntu
@@ -343,15 +364,15 @@ Debian has no Electron package, so the `.deb` bundles its own copy — **~100 MB
 
 ```bash
 npm run build && npm run pkg:deb
-sudo apt install ./dist/installers/magi_0.5.14_amd64.deb
+sudo apt install ./dist/installers/magi_0.6.0_amd64.deb
 ```
 
 ### Any Linux — portable AppImage
 
 ```bash
 npm run build && npm run pkg:appimage
-chmod +x dist/installers/Magi-0.5.14.AppImage
-./dist/installers/Magi-0.5.14.AppImage
+chmod +x dist/installers/Magi-0.6.0.AppImage
+./dist/installers/Magi-0.6.0.AppImage
 ```
 
 ### macOS
@@ -360,8 +381,8 @@ Cross-built from Linux, both architectures:
 
 ```bash
 npm run build && npm run pkg:mac
-# dist/installers/Magi-0.5.14-mac.zip         Intel
-# dist/installers/Magi-0.5.14-arm64-mac.zip   Apple Silicon
+# dist/installers/Magi-0.6.0-mac.zip         Intel
+# dist/installers/Magi-0.6.0-arm64-mac.zip   Apple Silicon
 ```
 
 These are **unsigned and unnotarised**, and were built on Linux — I have no Mac to

@@ -1,8 +1,10 @@
-// Magi — SQLite data layer using Node's built-in node:sqlite (Node 22.5+ / 26).
-import { DatabaseSync } from 'node:sqlite';
+// Magi — SQLite data layer. Uses better-sqlite3-multiple-ciphers (a synchronous SQLite with
+// SQLCipher built in) so the database file can be encrypted at rest. The API mirrors the old
+// node:sqlite DatabaseSync (prepare/run/get/all/exec), so call sites are unchanged.
+import Database from 'better-sqlite3-multiple-ciphers';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { mkdirSync, existsSync, accessSync, constants } from 'node:fs';
+import { mkdirSync, existsSync, accessSync, readFileSync, constants } from 'node:fs';
 import { homedir } from 'node:os';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { ASSET_TYPES, TEMPLATES, instantiateItems } from './seed/templates.js';
@@ -66,9 +68,55 @@ const LEGACY_DB = join(DATA_DIR, 'checklister.db');
 const DEFAULT_DB = existsSync(LEGACY_DB) ? LEGACY_DB : join(DATA_DIR, 'magi.db');
 export const DB_PATH = env('DB', DEFAULT_DB);
 
-export const db = new DatabaseSync(DB_PATH);
+// ── at-rest encryption (SQLCipher) ────────────────────────────────────────────────────
+// Encryption is ON when a key is configured and OFF (plaintext) otherwise, so existing
+// installs and the test suite keep working until someone opts in.
+//   • Server: MAGI_DB_KEY, or MAGI_KEY_FILE pointing at a secret kept OUTSIDE the data dir
+//     (so copying the data volume alone yields only ciphertext — the attacker needs both).
+//   • Clients / CLI: the passphrase is provided the same way once the unlock step hands it in.
+// The value is passed to SQLCipher, which derives the key (PBKDF2-HMAC-SHA512, 256k rounds)
+// with a random salt kept in the file header — we never derive or store a key ourselves.
+function resolveDbKey() {
+  const direct = env('DB_KEY');
+  if (direct) return direct;
+  const keyFile = env('KEY_FILE');
+  if (keyFile) {
+    try { return readFileSync(keyFile, 'utf8').trim(); }
+    catch (e) { throw new Error(`MAGI_KEY_FILE is set but unreadable (${keyFile}): ${e.message}`); }
+  }
+  return null;
+}
+const sqlStr = (s) => "'" + String(s).replace(/'/g, "''") + "'"; // safe SQL string literal
+function isPlaintextSqlite(p) {
+  try { return readFileSync(p).subarray(0, 16).toString('latin1').startsWith('SQLite format 3'); }
+  catch { return false; }
+}
+// Encrypt an existing PLAINTEXT database in place — no copy, every row/index/trigger kept.
+// Folds any WAL back first so nothing is left behind unencrypted.
+function migrateToEncrypted(path, key) {
+  const m = new Database(path);
+  try {
+    m.pragma('journal_mode = DELETE');
+    m.pragma("cipher='sqlcipher'");
+    m.pragma('rekey=' + sqlStr(key));
+  } finally { m.close(); }
+  console.error('  [db] encrypted the existing database in place (SQLCipher)');
+}
+
+const DB_KEY = resolveDbKey();
+export const ENCRYPTED = !!DB_KEY;
+if (DB_KEY && existsSync(DB_PATH) && isPlaintextSqlite(DB_PATH)) migrateToEncrypted(DB_PATH, DB_KEY);
+
+export const db = new Database(DB_PATH);
+// Key the connection BEFORE any read/write, so a new database is encrypted from creation.
+if (DB_KEY) { db.pragma("cipher='sqlcipher'"); db.pragma('key=' + sqlStr(DB_KEY)); }
 db.exec('PRAGMA journal_mode = WAL;');
 db.exec('PRAGMA foreign_keys = ON;');
+// Fail loudly on a wrong key instead of surfacing cryptic errors deep inside a later query.
+if (DB_KEY) {
+  try { db.prepare('SELECT count(*) FROM sqlite_master').get(); }
+  catch { throw new Error('Cannot open the encrypted database — wrong MAGI_DB_KEY / passphrase?'); }
+}
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS projects (

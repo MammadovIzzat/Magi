@@ -3,9 +3,10 @@
 //   node build/build.mjs          -> dist/magi.cjs + dist/magi-cli.cjs
 //   node build/build.mjs --exe    -> also attempts a standalone executable (see below)
 //
-// public/ (including the webfonts) is compiled into the bundle, so each output is a
-// single self-contained file: no node_modules, no assets on disk, no network. SQLite
-// comes from node:sqlite, which is built into Node itself.
+// public/ (including the webfonts) is compiled into the bundle, so the app code, assets and
+// Express are all inlined. The ONE runtime dependency left external is the SQLCipher driver
+// (better-sqlite3-multiple-ciphers) — a native .node module that can't be inlined — so its
+// node_modules folder must sit alongside the bundle (the Dockerfile and packaging copy it).
 //
 // --exe uses Node's Single Executable Application support. That requires postject to
 // rewrite the ELF, which is currently broken for Node 26 on this toolchain (a plain
@@ -66,6 +67,9 @@ function bundleOne(entry, outfile) {
   execFileSync(esbuild, [
     entry, '--bundle', '--platform=node', '--format=cjs', '--target=node22',
     '--external:node:*', '--legal-comments=none',
+    // The SQLCipher driver is a native module (.node) and can't be inlined — leave it as a
+    // runtime require(), resolved from node_modules shipped alongside the bundle.
+    '--external:better-sqlite3-multiple-ciphers',
     // CJS has no import.meta; map it onto a banner-provided const so fileURLToPath()
     // and createRequire() keep working inside the bundle.
     '--define:import.meta.url=__magiUrl',

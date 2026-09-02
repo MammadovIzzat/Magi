@@ -1,26 +1,40 @@
 # Maintainer: MammadovIzzat <izzatmmmdv@gmail.com>
 pkgname=magi
-pkgver=0.5.14
+pkgver=0.6.0
 pkgrel=1
 pkgdesc="The pentester's familiar — engagement checklists, target tracker and evidence log"
 arch=('any')
 url="https://github.com/MammadovIzzat/Magi"
 license=('MIT')
 # electron runs the desktop window; node runs the CLI and the optional 'magi serve'.
-# node:sqlite is built into Node from 22.5, so there is no native module to compile.
+# The database layer is better-sqlite3-multiple-ciphers (SQLCipher) — a native module. Its
+# prebuilt binary (N-API, so it works under both Node and Electron) ships with the package;
+# python is only needed so `npm install` can fall back to compiling if a prebuild is missing.
 # Pinned to the electron series this was tested against — the launcher will use any
 # electron39+ it finds, so change this line if you prefer a different one.
 # openssl: 'magi server' shells out to it once to create its durable certificate.
 depends=('nodejs>=22.5.0' 'electron43' 'openssl')
-makedepends=('npm')
+makedepends=('npm' 'python' 'gcc' 'make')
 options=('!debug' '!strip')
 
 _srcdir="$(realpath "${startdir}/..")"
 
 build() {
   cd "$_srcdir"
-  npm install --no-audit --no-fund --silent      # esbuild only; no runtime deps ship
+  npm install --no-audit --no-fund --silent      # esbuild + the native SQLCipher driver
   node build/build.mjs
+}
+
+# The one runtime dependency that isn't inlined into the bundle: the native SQLCipher driver.
+# Ship only its runtime subset (JS + the prebuilt binaries), not the C sources or dev headers.
+_install_driver() {
+  local dst="$1" mod=node_modules/better-sqlite3-multiple-ciphers
+  for f in $(cd "$mod" && find lib -type f); do install -Dm644 "$mod/$f" "$dst/$mod/$f"; done
+  install -Dm644 "$mod/package.json" "$dst/$mod/package.json"
+  # Linux prebuilds for both arches (the loader picks by platform+arch at runtime).
+  for a in linux-x64 linux-arm64; do
+    [ -f "$mod/prebuilds/$a.node" ] && install -Dm644 "$mod/prebuilds/$a.node" "$dst/$mod/prebuilds/$a.node"
+  done
 }
 
 check() {
@@ -34,7 +48,10 @@ check() {
   node scripts/smoke.mjs
   local tmp; tmp="$(mktemp -d)"
   cp dist/magi.cjs "$tmp/"
-  # the bundle must boot with no node_modules and no public/ on disk
+  # the bundle inlines everything except the native SQLCipher driver, which it require()s at
+  # runtime — make it resolvable from the boot dir, mirroring what the package ships.
+  _install_driver "$tmp"
+  # the bundle must boot with only that one native module on disk (no public/, no other deps)
   ( cd "$tmp"
     MAGI_PORT=45998 MAGI_DB="$tmp/check.db" timeout 6 node magi.cjs >out.log 2>&1 || true
     grep -q "MAGI" out.log || { echo "bundle failed to start:"; cat out.log; exit 1; } )
@@ -68,6 +85,9 @@ package() {
   # server + CLI bundles
   install -Dm644 dist/magi.cjs     "$pkgdir/usr/lib/magi/magi.cjs"
   install -Dm644 dist/magi-cli.cjs "$pkgdir/usr/lib/magi/magi-cli.cjs"
+
+  # the native SQLCipher driver the bundles require() at runtime
+  _install_driver "$pkgdir/usr/lib/magi"
 
   sed "s/@VERSION@/$pkgver/" packaging/magi.sh > "$srcdir/magi.launcher"
   install -Dm755 "$srcdir/magi.launcher" "$pkgdir/usr/bin/magi"

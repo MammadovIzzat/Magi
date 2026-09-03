@@ -1,6 +1,18 @@
 // MAGI — the pentester's familiar.
 // Vanilla-JS SPA. Markup here, styling entirely in style.css.
 
+// ---------- theme (dark default / light) ----------
+// Applied before first paint to avoid a flash. Dark is the bare :root; light sets data-magi.
+try { const th = localStorage.getItem('magi.theme'); if (th === 'light') document.documentElement.setAttribute('data-magi', 'light'); } catch { /* private mode */ }
+function currentTheme() { return document.documentElement.getAttribute('data-magi') === 'light' ? 'light' : 'dark'; }
+function toggleTheme() {
+  const next = currentTheme() === 'light' ? 'dark' : 'light';
+  if (next === 'light') document.documentElement.setAttribute('data-magi', 'light');
+  else document.documentElement.removeAttribute('data-magi');
+  try { localStorage.setItem('magi.theme', next); } catch { /* ignore */ }
+  if (typeof renderAccount === 'function' && document.querySelector('#account')) renderAccount();
+}
+
 // ---------- tiny helpers ----------
 const $ = (s, r = document) => r.querySelector(s);
 const el = (tag, props = {}, ...kids) => {
@@ -253,7 +265,9 @@ function renderAccount() {
     : LINK?.linked
       ? el('button', { className: 'linkbadge on', title: `Linked to ${LINK.link?.server_url} — open settings`, onclick: () => location.hash = '/settings' },
           el('span', { className: 'dot' }), lbl(LINK.link?.display_name || 'linked'))
-      : LINK?.unavailable ? null
+      : LINK?.unavailable
+        ? el('button', { className: 'linkbadge on', title: 'Team server — open settings', onclick: () => location.hash = '/settings' },
+            el('span', { className: 'dot' }), lbl('server'))
         : el('button', { className: 'linkbadge', title: 'Working locally — click to connect to a team server', onclick: () => location.hash = '/settings' },
             el('span', { className: 'dot' }), lbl('local'));
   const adminBtn = adminCtx()
@@ -264,8 +278,12 @@ function renderAccount() {
     badge, adminBtn,
     el('div', { className: 'avatar' }, (CURRENT_USER || '?')[0].toUpperCase()),
     el('span', { className: 'who' }, CURRENT_USER || ''),
-    el('button', { className: 'iconbtn', title: 'Change username', onclick: changeUsername }, icon('edit')),
-    el('button', { className: 'iconbtn', title: 'Change password', onclick: changePassword }, icon('key')),
+    // Self-service rename is a self-hosted (standalone) thing. When connected to a team server the
+    // server owns identities (like AD), so the client doesn't offer it.
+    (LINK?.linked || LINK?.pending) ? null
+      : el('button', { className: 'iconbtn', title: 'Change username', onclick: changeUsername }, icon('edit')),
+    el('button', { className: 'iconbtn theme', title: `Theme — ${currentTheme()} (click to switch)`, onclick: toggleTheme },
+      el('span', { className: 'themedot' })),
     el('button', { className: 'iconbtn danger', title: 'Sign out', onclick: logout }, icon('exit'))));
   const tb = $('#tplBtn'); if (tb) tb.hidden = !isAdmin(); // editing templates is admin-only
 }
@@ -299,9 +317,8 @@ async function route() {
   $('#backBtn').hidden = !h; // nothing to go back to from the engagements home
   if (!CURRENT_USER) return;
   try {
-    // A server instance can't link anywhere, so its settings page has nothing to show —
-    // send it (and any stale #/settings hash left after a refresh) back to engagements.
-    if (h === '/settings') { if (ME?.server) { location.hash = ''; return; } return renderSettings(); }
+    // Settings holds the account (username / passphrase) in every mode, plus linking on clients.
+    if (h === '/settings') return renderSettings();
     if (h === '/admin') return renderAdmin();
     // Template editing is admin-only; workers are bounced back to their engagements.
     if (h === '/editor' || h.startsWith('/editor/') || h.startsWith('/group/')) {
@@ -465,6 +482,10 @@ function delProject(p, assetCount, after) {
 
 // ---------- rail (targets inside the current asset folder) ----------
 const GROUP_ICON = { internal: '🏛️', external: '🌐', mobile: '📱', wireless: '📡', otiot: '🏭', additional: '📦', retest: '🔁' };
+// Short mono code badge per target type (WEB / API / NET / AD / POC …).
+const TYPE_CODE = { web: 'WEB', api: 'API', ip: 'NET', exthost: 'NET', ad: 'AD', mobile: 'MOB', wireless: 'WIFI', iot: 'IOT', ot: 'OT', container: 'CTR', poc: 'POC', retest: 'RTS' };
+const typeCode = (t) => TYPE_CODE[t] || String(t || '?').replace(/[^a-z0-9]/gi, '').slice(0, 3).toUpperCase() || '?';
+const codeBadge = (type, on) => el('span', { className: 'tcode' + (on ? ' on' : '') }, typeCode(type));
 function groupLabel(key) { return (GROUP_ORDER.find(g => g.key === key) || {}).label || key; }
 // engagement groups that actually have a selectable (non-soon) target type
 function selectableGroups() { return new Set(TYPES.filter(t => !t.soon).map(t => t.grp || 'additional')); }
@@ -486,7 +507,7 @@ function railForFolder(folder, activeTargetId) {
       onclick: () => location.hash = `/target/${a.id}`,
     },
       el('span', { className: 'rt-top' },
-        el('span', { className: 'rt-kind' }, a.type.toUpperCase()),
+        codeBadge(a.type, String(a.id) === String(activeTargetId)),
         el('span', { className: 'rt-pct' }, p + '%')),
       el('span', { className: 'rt-name' }, a.label),
       el('span', { className: 'bar thin' + (p > 70 ? ' good' : !p ? ' idle' : '') }, el('span', { style: `width:${p}%` }))));
@@ -518,7 +539,7 @@ function railForProject(project, activeTargetId) {
         className: 'railtarget' + (String(a.id) === String(activeTargetId) ? ' on' : ''),
         onclick: () => location.hash = `/target/${a.id}`,
       },
-        el('span', { className: 'rt-top' }, el('span', { className: 'rt-kind' }, a.type.toUpperCase()), el('span', { className: 'rt-pct' }, p + '%')),
+        el('span', { className: 'rt-top' }, codeBadge(a.type, String(a.id) === String(activeTargetId)), el('span', { className: 'rt-pct' }, p + '%')),
         el('span', { className: 'rt-name' }, a.label),
         el('span', { className: 'bar thin' + (p > 70 ? ' good' : !p ? ' idle' : '') }, el('span', { style: `width:${p}%` }))));
     }
@@ -563,7 +584,7 @@ async function renderProject(id) {
     const del = isEditor() ? el('button', { className: 'ibtn del', title: 'Delete target' }, icon('trash')) : null;
     if (del) del.onclick = (e) => { e.stopPropagation(); delTarget(a, () => renderProject(id)); };
     return el('button', { className: 'trow', onclick: () => location.hash = `/target/${a.id}` },
-      el('span', { className: 'ticon' }, t.icon || '◇'),
+      codeBadge(a.type),
       el('span', { className: 'tgrow' },
         el('span', { className: 'tname' }, a.label),
         el('span', { className: 'tmeta' }, `${(t.label || a.type).toUpperCase()} · ${a.handled}/${a.total} handled${a.findings ? ' · ' + a.findings + ' finding' + (a.findings === 1 ? '' : 's') : ''}`)),
@@ -886,7 +907,8 @@ async function renderTarget(id) {
   const head = el('div', { className: 'target-head' },
     el('div', { style: 'display:flex;align-items:flex-start;gap:16px' },
       el('div', { style: 'min-width:0;flex:1' },
-        el('div', { className: 'kicker' }, t.label || a.type),
+        el('div', { style: 'display:flex;align-items:center;gap:9px' },
+          codeBadge(a.type), el('span', { className: 'kicker' }, t.label || a.type)),
         el('h1', {}, a.label)),
       el('div', { className: 'target-actions' },
         el('button', { className: 'btn', onclick: () => { groups.forEach(g => openGroups.add(g.key)); renderTarget(id); } }, 'Expand all'),
@@ -1807,10 +1829,23 @@ async function renderSettings() {
   const view = $('#view');
   const page = el('div', { className: 'page' });
   page.append(el('div', { className: 'page-head' },
-    el('div', {}, el('div', { className: 'kicker' }, 'Settings'), el('h1', {}, 'Team server'))));
+    el('div', {}, el('div', { className: 'kicker' }, 'Settings'), el('h1', {}, 'Workspace'))));
+
+  // Account — shown in every mode; this is where changing your passphrase lives now.
+  const canRename = !(LINK?.linked || LINK?.pending);
+  page.append(el('div', { className: 'setcard' },
+    el('div', { className: 'setcard-hd' },
+      el('span', { className: 'kicker' }, 'Operator account'), el('span', { className: 'rule' }),
+      el('div', { className: 'avatar sm' }, (CURRENT_USER || '?')[0].toUpperCase()),
+      el('span', { className: 'who' }, CURRENT_USER || '')),
+    el('div', { className: 'setcard-actions' },
+      canRename ? el('button', { className: 'btn', onclick: changeUsername }, icon('edit'), 'Change username') : null,
+      el('button', { className: 'btn gold', onclick: changePassword }, icon('key'), 'Change passphrase'))));
 
   if (LINK.unavailable) {
-    page.append(el('div', { className: 'empty' }, 'This instance is running as a server — linking is for client installs.'));
+    page.append(el('div', { className: 'setcard' },
+      el('div', { className: 'setcard-hd' }, el('span', { className: 'kicker' }, 'Team server'), el('span', { className: 'rule' })),
+      el('p', { className: 'muted' }, 'This instance is running as a server. Manage users, devices and backups from the Admin panel; linking is for client installs.')));
     return view.replaceChildren(page);
   }
   const kv = (k, v) => el('div', { className: 'kv' }, el('span', { className: 'k' }, k), el('span', { className: 'v' }, v));

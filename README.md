@@ -52,8 +52,8 @@ SQLite comes from `better-sqlite3-multiple-ciphers` (SQLCipher built in, for opt
 ### Login
 
 The first run creates **`admin` / `admin`**. The desktop app opens no port at all, so this
-is a lock screen rather than a network control — but change it from the account bar (🔑)
-anyway, which also signs out every other session. Set your own up front with:
+is a lock screen rather than a network control — but change it from **Settings → Operator
+account** anyway, which also signs out every other session. Set your own up front with:
 
 ```bash
 MAGI_USER=me MAGI_PASS=a-long-passphrase npm start
@@ -368,7 +368,7 @@ Uses the system Electron, so the package stays around **750 KB**.
 
 ```bash
 npm run pkg                                   # or: cd packaging && makepkg -f
-sudo pacman -U packaging/magi-0.7.13-1-any.pkg.tar.zst
+sudo pacman -U packaging/magi-0.8.0-1-any.pkg.tar.zst
 ```
 
 ### Debian / Ubuntu
@@ -377,15 +377,15 @@ Debian has no Electron package, so the `.deb` bundles its own copy — **~100 MB
 
 ```bash
 npm run build && npm run pkg:deb
-sudo apt install ./dist/installers/magi_0.7.13_amd64.deb
+sudo apt install ./dist/installers/magi_0.8.0_amd64.deb
 ```
 
 ### Any Linux — portable AppImage
 
 ```bash
 npm run build && npm run pkg:appimage
-chmod +x dist/installers/Magi-0.7.13.AppImage
-./dist/installers/Magi-0.7.13.AppImage
+chmod +x dist/installers/Magi-0.8.0.AppImage
+./dist/installers/Magi-0.8.0.AppImage
 ```
 
 ### macOS
@@ -394,8 +394,8 @@ Cross-built from Linux, both architectures:
 
 ```bash
 npm run build && npm run pkg:mac
-# dist/installers/Magi-0.7.13-mac.zip         Intel
-# dist/installers/Magi-0.7.13-arm64-mac.zip   Apple Silicon
+# dist/installers/Magi-0.8.0-mac.zip         Intel
+# dist/installers/Magi-0.8.0-arm64-mac.zip   Apple Silicon
 ```
 
 These are **unsigned and unnotarised**, and were built on Linux — I have no Mac to

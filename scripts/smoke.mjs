@@ -120,7 +120,8 @@ checks.push(['settings screen paints (local)', await ev(`
   location.hash = "#/settings"; await new Promise(r => setTimeout(r, 900));
   return !!document.querySelector(".setcard .linkbadge") && /local/i.test(document.querySelector(".linkbadge")?.textContent || "")`)]);
 checks.push(['connect-to-server dialog opens', await ev(`
-  document.querySelector(".setcard-actions .btn.gold")?.click(); await new Promise(r => setTimeout(r, 400));
+  [...document.querySelectorAll(".setcard-actions .btn")].find(b => /connect to a server/i.test(b.textContent))?.click();
+  await new Promise(r => setTimeout(r, 400));
   return ["server_url","code","username","display_name"].every(n => document.querySelector(".modal input[name="+n+"]"))`)]);
 // Regression: an MFA-enabled account returns 401 {mfa:'required'} on password-only login. The
 // login flow must READ that challenge and show the code screen — not treat the 401 as a hard error.

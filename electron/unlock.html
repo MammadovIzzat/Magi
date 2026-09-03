@@ -26,6 +26,7 @@
     <div class="err" id="err"></div>
     <button type="submit">Unlock</button>
     <br><button type="button" class="link" id="q">Quit</button>
+    <button type="button" class="link" id="reset" style="color:#8a5">Forgot passphrase? Reset workspace</button>
   </form>
   <script>
     // This window is a shipped, static file with no remote or user-generated HTML, so it runs
@@ -43,6 +44,12 @@
       ipc.send('magi-unlock:submit', pw.value);
     });
     document.getElementById('q').addEventListener('click', () => ipc && ipc.send('magi-unlock:quit'));
+    document.getElementById('reset').addEventListener('click', () => {
+      if (!ipc) return;
+      if (!confirm('Reset this workspace? The encrypted data cannot be recovered without the passphrase, so this permanently DELETES all local engagements, findings and screenshots, and starts fresh.')) return;
+      if (!confirm('Are you absolutely sure? This cannot be undone.')) return;
+      ipc.send('magi-unlock:reset');
+    });
     if (ipc) ipc.on('magi-unlock:error', (_e, m) => { err.textContent = m; pw.value = ''; pw.focus(); });
     pw.focus();
   </script>

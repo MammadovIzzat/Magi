@@ -249,12 +249,17 @@ names/IPs they reach it by with `MAGI_SERVER_SAN` in `.env`.
 ### Joining from a client
 
 In the app, **account bar → the `local` badge → Team server → Connect**. Paste the server
-address, your one-time code, a username and a **display name** (what your teammates see on
-your changes). The app generates a device id and sends a **join request**; the badge turns
-**pending** and the app polls until an admin approves it (see below). The server is trusted on
-first use — no fingerprint to copy. Once approved, the device-bound token is stored
-**encrypted in the OS keychain** (Keychain / DPAPI / libsecret; it falls back to a `0600` file
-and says so if no keychain is present). On a tiling WM (i3 / sway / Hyprland) — where Electron
+address, your one-time code, a username, a **display name** (what your teammates see on your
+changes) and a **password**. The app generates a device id and sends a **join request**; the
+badge turns **pending** and the app polls until an admin approves it (see below). The server is
+trusted on first use — no fingerprint to copy. Once approved, the client **logs in for a signed
+access token (JWT)** — password, plus a two-factor code if the server enforces MFA — and syncs
+with it. The token is short-lived and **device-bound**; when it expires, or an admin changes your
+password/role, the app pauses sync and shows **Sign in** (your local work is never blocked). The
+server is authoritative for your role and display name — the client only ever holds what the
+server signed. The token is stored **encrypted in the OS keychain** (Keychain / DPAPI /
+libsecret; it falls back to a `0600` file and says so if no keychain is present), and a password
+verifier is cached so you can open the app while the server is unreachable. On a tiling WM (i3 / sway / Hyprland) — where Electron
 doesn't auto-detect the keyring — Magi points it at the Secret Service so gnome-keyring or
 KWallet still encrypts the token; force a backend with `MAGI_PASSWORD_STORE`
 (`gnome-libsecret`, `kwallet6`, or `basic` to opt out).
@@ -360,7 +365,7 @@ Uses the system Electron, so the package stays around **750 KB**.
 
 ```bash
 npm run pkg                                   # or: cd packaging && makepkg -f
-sudo pacman -U packaging/magi-0.7.3-1-any.pkg.tar.zst
+sudo pacman -U packaging/magi-0.7.4-1-any.pkg.tar.zst
 ```
 
 ### Debian / Ubuntu
@@ -369,15 +374,15 @@ Debian has no Electron package, so the `.deb` bundles its own copy — **~100 MB
 
 ```bash
 npm run build && npm run pkg:deb
-sudo apt install ./dist/installers/magi_0.7.3_amd64.deb
+sudo apt install ./dist/installers/magi_0.7.4_amd64.deb
 ```
 
 ### Any Linux — portable AppImage
 
 ```bash
 npm run build && npm run pkg:appimage
-chmod +x dist/installers/Magi-0.7.3.AppImage
-./dist/installers/Magi-0.7.3.AppImage
+chmod +x dist/installers/Magi-0.7.4.AppImage
+./dist/installers/Magi-0.7.4.AppImage
 ```
 
 ### macOS
@@ -386,8 +391,8 @@ Cross-built from Linux, both architectures:
 
 ```bash
 npm run build && npm run pkg:mac
-# dist/installers/Magi-0.7.3-mac.zip         Intel
-# dist/installers/Magi-0.7.3-arm64-mac.zip   Apple Silicon
+# dist/installers/Magi-0.7.4-mac.zip         Intel
+# dist/installers/Magi-0.7.4-arm64-mac.zip   Apple Silicon
 ```
 
 These are **unsigned and unnotarised**, and were built on Linux — I have no Mac to

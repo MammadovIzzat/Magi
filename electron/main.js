@@ -7,7 +7,7 @@ process.env.MAGI_EMBED = '1';               // stop server.js from listening
 
 import { app, BrowserWindow, Menu, dialog, protocol, shell, safeStorage, ipcMain } from 'electron';
 import { readFile } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname, normalize } from 'node:path';
 import { homedir } from 'node:os';
 import { createRequire } from 'node:module';
@@ -92,6 +92,7 @@ function keyOpens(dbPath, passphrase) {
   } catch { return false; }
   finally { try { d?.close(); } catch { /* already gone */ } }
 }
+const RESET = Symbol('reset'); // sentinel: the user wiped an un-unlockable workspace
 // Returns true to proceed, false if the user chose to quit (the app is exiting).
 async function ensureUnlocked() {
   if (process.env.MAGI_DB_KEY || process.env.MAGI_KEY_FILE) return true;   // keyed by env already
@@ -110,16 +111,23 @@ async function ensureUnlocked() {
     w.webContents.on('console-message', (_e, _lvl, message) => console.error('[unlock]', message));
     w.webContents.on('did-fail-load', (_e, code, desc) => console.error('[unlock] load failed', code, desc));
     let settled = false;
-    const cleanup = () => { ipcMain.removeAllListeners('magi-unlock:submit'); ipcMain.removeAllListeners('magi-unlock:quit'); };
+    const cleanup = () => { for (const c of ['submit', 'quit', 'reset']) ipcMain.removeAllListeners('magi-unlock:' + c); };
     const finish = (v) => { if (settled) return; settled = true; cleanup(); if (!w.isDestroyed()) w.destroy(); resolve(v); };
     ipcMain.on('magi-unlock:submit', (_e, p) => {
       if (keyOpens(dbPath, p)) finish(String(p));
       else if (!w.isDestroyed()) w.webContents.send('magi-unlock:error', 'Wrong passphrase — try again.');
     });
     ipcMain.on('magi-unlock:quit', () => finish(null));
+    // Forgot the passphrase → the encrypted data is unrecoverable, so the only way forward is to
+    // wipe it and start fresh. The renderer double-confirms before sending this.
+    ipcMain.on('magi-unlock:reset', () => {
+      for (const suffix of ['', '-wal', '-shm']) { try { rmSync(dbPath + suffix, { force: true }); } catch {} }
+      finish(RESET);
+    });
     w.on('closed', () => { if (!settled) { settled = true; cleanup(); resolve(null); } });
     w.loadFile(join(HERE, 'unlock.html'));
   });
+  if (passphrase === RESET) return true;             // data wiped → continue with a fresh, unkeyed DB
   if (passphrase == null) { app.exit(0); return false; }
   process.env.MAGI_DB_KEY = passphrase;
   return true;

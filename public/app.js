@@ -637,7 +637,7 @@ function addAsset(projectId) {
           el('span', { className: 'lbl' }, `${GROUP_ICON[g.key] || ''} ${g.label}`),
           el('span', { className: 'hint' }, soon ? 'coming soon' : (g.key === 'internal' ? 'host, subnet, AD'
             : g.key === 'external' ? 'web, api, domain' : g.key === 'otiot' ? 'IoT, OT/ICS'
-            : g.key === 'additional' ? 'container / cloud' : g.key === 'retest' ? 'remediation check'
+            : g.key === 'additional' ? 'container, PoC' : g.key === 'retest' ? 'remediation check'
               : g.label.toLowerCase())));
         if (soon) btn.disabled = true;
         else btn.onclick = () => { hidden.value = g.key; for (const x of btns) x.classList.remove('sel'); btn.classList.add('sel'); label.focus(); };
@@ -808,6 +808,27 @@ async function renderTarget(id) {
       el('div', { className: 'lede' }, `${a.findings.length} item${a.findings.length === 1 ? '' : 's'} · ${counts.fixed} fixed · ${counts.half_fixed} partial · ${counts.not_fixed} not fixed`),
       el('div', { className: 'srule' }, el('span', { className: 'kicker' }, 'Remediation items'), el('span', { className: 'rule' }),
         el('button', { className: 'btn line sm', onclick: () => addFinding(id, true) }, '+ Add')),
+      list));
+  }
+
+  // PoC targets carry no checklist — just findings: somewhere to document an exploit / demo with
+  // notes, requests, credentials and screenshots. (Same "no checklist" shape as Retest, but the
+  // normal finding kinds rather than the remediation fix-status flow.)
+  if (a.type === 'poc') {
+    topActions(
+      el('button', { className: 'btn gold', onclick: () => addFinding(id, false) }, icon('plus', 12), 'Add finding'),
+      isEditor() ? el('button', { className: 'btn danger', onclick: () => delTarget(a) }, 'Delete target') : null);
+    const list = el('div', { className: 'tlist' });
+    if (!a.findings.length) list.append(el('div', { className: 'empty', style: 'border:0' },
+      el('div', {}, 'No findings yet. Record the exploit — notes, requests, credentials and screenshots — as your proof of concept.'),
+      el('button', { className: 'btn gold', onclick: () => addFinding(id, false) }, icon('plus', 12), 'Add the first')));
+    for (const f of a.findings) list.append(findingCard(f, id));
+    return $('#view').replaceChildren(el('div', { className: 'page narrow' },
+      el('div', { className: 'kicker' }, 'Proof of concept'),
+      el('h1', {}, a.label),
+      el('div', { className: 'lede' }, `${a.findings.length} finding${a.findings.length === 1 ? '' : 's'}`),
+      el('div', { className: 'srule' }, el('span', { className: 'kicker' }, 'Findings'), el('span', { className: 'rule' }),
+        el('button', { className: 'btn line sm', onclick: () => addFinding(id, false) }, '+ Add')),
       list));
   }
 

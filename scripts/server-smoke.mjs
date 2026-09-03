@@ -184,6 +184,13 @@ const rAsset = (await req('POST', `/api/projects/${made.json.id}/assets`, { toke
 const rT = await req('POST', `/api/assets/${rAsset.id}/targets`, { token: adminTok, body: { type: 'retest', label: 'Remediation' } });
 check('a retest target can be created', rT.status === 201 && !!rT.json?.id);
 check('a retest target carries no checklist', (await req('GET', `/api/targets/${rT.json.id}`, { token: adminTok })).json.items.length === 0);
+// a PoC target (in the Additional group) also carries no checklist — just findings
+const pocAsset = (await req('POST', `/api/projects/${made.json.id}/assets`, { token: adminTok, body: { grp: 'additional', label: 'Extras' } })).json;
+const pocT = await req('POST', `/api/assets/${pocAsset.id}/targets`, { token: adminTok, body: { type: 'poc', label: 'RCE demo' } });
+check('a PoC target can be created in Additional', pocT.status === 201 && !!pocT.json?.id);
+check('a PoC target carries no checklist', (await req('GET', `/api/targets/${pocT.json.id}`, { token: adminTok })).json.items.length === 0);
+const pocFind = await req('POST', `/api/targets/${pocT.json.id}/findings`, { token: adminTok, body: { title: 'Chained RCE', kind: 'vuln', severity: 'critical' } });
+check('a PoC target records normal findings', pocFind.status === 201 && !!pocFind.json?.id);
 const rf = await req('POST', `/api/targets/${rT.json.id}/findings`, { token: adminTok, body: { title: 'ACME-1', kind: 'vuln', fix_status: 'half_fixed' } });
 check('a retest finding stores its fix status', rf.status === 201 && rf.json?.fix_status === 'half_fixed');
 const badFix = await req('POST', `/api/targets/${rT.json.id}/findings`, { token: adminTok, body: { title: 'x', fix_status: 'nonsense' } });

@@ -31,6 +31,9 @@ export const ASSET_TYPES = [
   { type: 'iot',       group: 'otiot',      label: 'IoT Device',       icon: '\u{1F50C}', hint: 'model / firmware' },
   { type: 'ot',        group: 'otiot',      label: 'OT / ICS',         icon: '\u{1F3ED}', hint: 'PLC / SCADA host' },
   { type: 'container', group: 'additional', label: 'Container / Cloud', icon: '\u{1F4E6}', hint: 'registry/image:tag' },
+  // PoC carries NO checklist (no TEMPLATES entry below) — like Retest, it's just a findings target:
+  // somewhere to document a proof of concept / exploit with notes, requests and screenshots.
+  { type: 'poc',       group: 'additional', label: 'PoC',              icon: '\u{1F9EA}', hint: 'proof of concept — exploit / demo, no checklist' },
   { type: 'retest',    group: 'retest',     label: 'Retest',           icon: '\u{1F501}', hint: 'remediation check — previous engagement' },
 ];
 

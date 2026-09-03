@@ -481,7 +481,6 @@ function delProject(p, assetCount, after) {
 }
 
 // ---------- rail (targets inside the current asset folder) ----------
-const GROUP_ICON = { internal: '🏛️', external: '🌐', mobile: '📱', wireless: '📡', otiot: '🏭', additional: '📦', retest: '🔁' };
 // Short mono code badge per target type (WEB / API / NET / AD / POC …).
 const TYPE_CODE = { web: 'WEB', api: 'API', ip: 'NET', exthost: 'NET', ad: 'AD', mobile: 'MOB', wireless: 'WIFI', iot: 'IOT', ot: 'OT', container: 'CTR', poc: 'POC', retest: 'RTS' };
 const typeCode = (t) => TYPE_CODE[t] || String(t || '?').replace(/[^a-z0-9]/gi, '').slice(0, 3).toUpperCase() || '?';
@@ -496,7 +495,7 @@ function railForFolder(folder, activeTargetId) {
   const handled = targets.reduce((a, x) => a + x.handled, 0);
   const head = el('div', { className: 'rail-head' },
     el('div', { className: 'kicker' }, 'Asset · ' + groupLabel(folder.grp)),
-    el('div', { className: 'rail-title' }, `${GROUP_ICON[folder.grp] || ''} ${folder.label}`),
+    el('div', { className: 'rail-title' }, `${folder.label}`),
     el('div', { className: 'rail-status' }, el('span', { className: 'pulse' }),
       `${pct(handled, total)}% · ${targets.length} TARGET${targets.length === 1 ? '' : 'S'}`));
   const list = el('div', { className: 'rail-list' });
@@ -532,7 +531,7 @@ function railForProject(project, activeTargetId) {
       `${pct(handled, total)}% · ${targets.length} TARGET${targets.length === 1 ? '' : 'S'}`));
   const list = el('div', { className: 'rail-list' });
   for (const f of groups) {
-    list.append(el('div', { className: 'rail-label kicker', style: 'margin-top:10px' }, `${GROUP_ICON[f.grp] || ''} ${groupLabel(f.grp)}`));
+    list.append(el('div', { className: 'rail-label kicker', style: 'margin-top:10px' }, `${groupLabel(f.grp)}`));
     for (const a of f.items) {
       const p = pct(a.handled, a.total);
       list.append(el('button', {
@@ -604,7 +603,7 @@ async function renderProject(id) {
   } else {
     for (const f of groups) {
       body.append(el('div', { className: 'srule', style: 'margin-top:22px' },
-        el('span', { className: 'kicker' }, `${GROUP_ICON[f.grp] || ''} ${groupLabel(f.grp)}`), el('span', { className: 'rule' }),
+        el('span', { className: 'kicker' }, `${groupLabel(f.grp)}`), el('span', { className: 'rule' }),
         el('span', { className: 'muted small' }, `${f.items.length} target${f.items.length === 1 ? '' : 's'}`)));
       const list = el('div', { className: 'tlist' });
       for (const a of f.items) list.append(targetRow(a));
@@ -655,7 +654,7 @@ function addAsset(projectId) {
       for (const g of GROUP_ORDER) {
         const soon = !selectable.has(g.key);
         const btn = el('button', { type: 'button', className: 'type' + (g.key === hidden.value ? ' sel' : '') + (soon ? ' soon' : '') },
-          el('span', { className: 'lbl' }, `${GROUP_ICON[g.key] || ''} ${g.label}`),
+          el('span', { className: 'lbl' }, `${g.label}`),
           el('span', { className: 'hint' }, soon ? 'coming soon' : (g.key === 'internal' ? 'host, subnet, AD'
             : g.key === 'external' ? 'web, api, domain' : g.key === 'otiot' ? 'IoT, OT/ICS'
             : g.key === 'additional' ? 'container, PoC' : g.key === 'retest' ? 'remediation check'
@@ -688,7 +687,7 @@ function addTarget(folder) {
       const btns = [];
       for (const t of types) {
         const btn = el('button', { type: 'button', className: 'type' + (t.type === hidden.value ? ' sel' : '') },
-          el('span', { className: 'lbl' }, `${t.icon || ''} ${t.label}`),
+          el('span', { className: 'lbl' }, `${t.label}`),
           el('span', { className: 'hint' }, t.hint || t.type));
         btn.onclick = () => { hidden.value = t.type; label.placeholder = t.hint || 'value'; for (const x of btns) x.classList.remove('sel'); btn.classList.add('sel'); label.focus(); };
         btns.push(btn); grid.append(btn);
@@ -720,11 +719,11 @@ function addTargetToProject(projectId) {
       for (const g of GROUP_ORDER) {
         const gts = byGrp[g.key];
         if (!gts || !gts.length) continue;
-        wrap.append(el('div', { className: 'kicker', style: 'margin:12px 0 6px' }, `${GROUP_ICON[g.key] || ''} ${g.label}`));
+        wrap.append(el('div', { className: 'kicker', style: 'margin:12px 0 6px' }, `${g.label}`));
         const grid = el('div', { className: 'typegrid' });
         for (const t of gts) {
           const btn = el('button', { type: 'button', className: 'type' + (t.type === hidden.value ? ' sel' : '') },
-            el('span', { className: 'lbl' }, `${t.icon || ''} ${t.label}`),
+            el('span', { className: 'lbl' }, `${t.label}`),
             el('span', { className: 'hint' }, t.hint || t.type));
           btn.onclick = () => { hidden.value = t.type; label.placeholder = t.hint || 'value'; for (const x of btns) x.classList.remove('sel'); btn.classList.add('sel'); label.focus(); };
           btns.push(btn); grid.append(btn);
@@ -1502,7 +1501,7 @@ async function renderEditor(type) {
   const typeBtn = (t) => el('button', {
     className: 'tpl-type' + (t.type === active ? ' on' : ''),
     onclick: () => location.hash = `/editor/${t.type}`,
-  }, el('span', { className: 'tt-label' }, `${t.icon || ''} ${t.label}`),
+  }, codeBadge(t.type, t.type === active), el('span', { className: 'tt-label' }, t.label),
     el('span', { className: 'tt-count' }, String(t.item_count)));
   for (const g of GROUP_ORDER) {
     const inG = types.filter(t => (t.grp || 'additional') === g.key);
@@ -1526,13 +1525,14 @@ async function renderEditor(type) {
       else s.items.push(it);
     }
     panel.append(el('div', { className: 'tpl-head' },
-      el('h2', {}, `${t.icon || ''} ${t.label}`),
+      codeBadge(t.type),
+      el('h2', {}, t.label),
       el('span', { className: 'meta' }, `${t.items.length} items · ${sections.length} sections · ${t.catalogs.length} catalogs`),
       el('div', { style: 'display:flex;gap:6px;margin-left:auto' },
         el('button', { className: 'btn sm', onclick: () => editType(t) }, 'Edit'),
         el('button', { className: 'btn sm', onclick: () => tplItemModal(t.type) }, '+ Item'),
-        el('button', { className: 'btn sm', onclick: () => exportTemplates(t.type), title: 'Export this asset type to a file' }, '⬇ Export'),
-        el('button', { className: 'btn sm', onclick: () => resetTypeDefaults(t) }, '↺ Defaults'),
+        el('button', { className: 'btn sm', onclick: () => exportTemplates(t.type), title: 'Export this asset type to a file' }, 'Export'),
+        el('button', { className: 'btn sm', onclick: () => resetTypeDefaults(t) }, 'Defaults'),
         el('button', { className: 'btn sm danger', onclick: () => delType(t) }, 'Delete'))));
 
     sections.forEach((s, si) => {
@@ -1605,7 +1605,6 @@ function editType(t) {
     kicker: 'Edit', title: 'Edit asset type', cta: 'Save',
     build: (b) => {
       field(b, 'Label', 'label', { value: t.label });
-      field(b, 'Icon', 'icon', { value: t.icon || '' });
       field(b, 'Example hint', 'hint', { value: t.hint || '' });
     },
     onSubmit: async (fd) => { await api('/templates/' + t.type, { method: 'PATCH', body: Object.fromEntries(fd) }); renderEditor(t.type); },
@@ -1663,7 +1662,7 @@ function importTemplates() {
         const list = el('div', { className: 'tpl-panel', style: 'margin:14px 0' });
         for (const t of preview.types) {
           list.append(el('div', { className: 'tpl-row' },
-            el('span', { className: 'num' }, t.icon || '◆'),
+            el('span', { className: 'tcode' }, typeCode(t.type)),
             el('div', { className: 'body' },
               el('div', { className: 't' }, t.label + '  '),
               el('div', { className: 'd' }, `${t.items} items · ${t.groups} follow-up/catalog groups`)),
@@ -1834,8 +1833,9 @@ async function renderSettings() {
   // Account — shown in every mode; this is where changing your passphrase lives now.
   const canRename = !(LINK?.linked || LINK?.pending);
   page.append(el('div', { className: 'setcard' },
-    el('div', { className: 'setcard-hd' },
-      el('span', { className: 'kicker' }, 'Operator account'), el('span', { className: 'rule' }),
+    el('div', { className: 'setcard-hd', style: 'display:flex;align-items:center;gap:10px' },
+      el('span', { className: 'kicker' }, 'Operator account'),
+      el('span', { style: 'flex:1' }),
       el('div', { className: 'avatar sm' }, (CURRENT_USER || '?')[0].toUpperCase()),
       el('span', { className: 'who' }, CURRENT_USER || '')),
     el('div', { className: 'setcard-actions' },

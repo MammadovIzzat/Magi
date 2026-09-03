@@ -61,10 +61,12 @@
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --display: "Chakra Petch", system-ui, sans-serif;
   --sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  color-scheme: dark; /* native calendar / selects / scrollbars render dark */
 }
 
 /* Light theme — toggled via data-magi="light" on <html> (default is dark = bare :root). */
 :root[data-magi="light"] {
+  color-scheme: light;
   --void:#F6F6F2; --bg:#F1F1EE; --panel-2:#FAFAF7; --panel:#FFFFFF; --panel-hi:#FFFFFF;
   --row:#FFFFFF; --row-hover:#F6F6F2; --row-sel:#F0F0EA;
   --line-faint:#E7E7E2; --line:#E3E3DE; --line-2:#D4D4CD; --line-3:#CFCFC8;
@@ -668,15 +670,17 @@ select { appearance: none; cursor: pointer; }
 /* Date/time fields open the calendar on click — make the whole field read as clickable and the
    picker icon visible against the dark theme (the default black glyph vanishes on dark). */
 input[type="date"], input[type="time"], input[type="month"],
-input[type="week"], input[type="datetime-local"] { cursor: pointer; }
+input[type="week"], input[type="datetime-local"] { cursor: pointer; font-family: var(--mono); }
+/* color-scheme makes the browser render the native calendar popup + its icon in the app's theme
+   (a dark popup on the dark UI) instead of a jarring white one — no filter hacks needed. */
 input[type="date"]::-webkit-calendar-picker-indicator,
 input[type="time"]::-webkit-calendar-picker-indicator,
 input[type="month"]::-webkit-calendar-picker-indicator,
 input[type="week"]::-webkit-calendar-picker-indicator,
 input[type="datetime-local"]::-webkit-calendar-picker-indicator {
-  filter: invert(1); opacity: .55; cursor: pointer;
+  opacity: .6; cursor: pointer;
 }
-input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: .9; }
+input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 
 /* ── modal ─────────────────────────────────────────────── */
 .overlay {

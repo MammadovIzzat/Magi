@@ -2131,14 +2131,14 @@ async function renderAdmin() {
     BACKUP_DUE = !!bc.due; // keep the top-bar Admin badge in sync while the panel is open
   } catch { /* backups only exist on a server */ }
 
-  // Recent activity (last 10; the full history is in magi-audit.log on the server)
+  // Recent activity (last 10; full history is kept in the database)
   const auditCard = card('Recent activity');
   if (!audit.length) auditCard.append(el('p', { className: 'muted' }, 'Nothing yet.'));
   for (const a of audit.slice(0, 10)) auditCard.append(el('div', { className: 'auditrow' },
     el('span', { className: 'muted small' }, new Date(a.at).toLocaleTimeString()),
     el('span', { className: 'aud-who' }, ` ${a.display_name || a.username || '—'} `),
     el('span', { className: 'muted' }, a.action || `${a.method} ${a.path}`)));
-  if (audit.length) auditCard.append(el('p', { className: 'muted small', style: 'margin-top:8px' }, 'Showing the last 10 — the full log is saved to magi-audit.log on the server.'));
+  if (audit.length) auditCard.append(el('p', { className: 'muted small', style: 'margin-top:8px' }, 'Showing the last 10 — the full audit trail is kept in the database.'));
   page.append(auditCard);
 
   view.replaceChildren(page);

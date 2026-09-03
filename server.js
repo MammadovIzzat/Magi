@@ -1,6 +1,5 @@
 import express from 'express';
 import { randomBytes, createHash } from 'node:crypto';
-import { appendFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { db, hashPassword, verifyPassword, resetType, SESSION_TTL_DAYS, env, usingDefaultPassword, DATA_DIR, isEncrypted, verifyKey, rekeyDatabase } from './db.js';
@@ -162,18 +161,16 @@ app.use('/api', (req, res, next) => {
 // enrolled device's display name). Reads are not logged. This is what lets a lead see the
 // "current position" — who touched what, when — and it is the audit trail a security firm
 // needs. Logged only after a <400 response so refused calls leave no trace.
-const AUDIT_LOG = join(DATA_DIR, 'magi-audit.log');
+//
+// The trail lives in the DATABASE only, never a plaintext file: a readable magi-audit.log would
+// leak the usernames it records, and on an encrypted workspace the DB keeps the trail encrypted
+// with everything else. The `audit` table keeps full history (the UI just shows the most recent).
 function writeAudit(req, u, action) {
   try {
     q(`INSERT INTO audit (user_id, username, display_name, device_id, method, path, action)
        VALUES (?,?,?,?,?,?,?)`).run(u?.id ?? null, u?.username ?? null, u?.display_name ?? null,
       u?.device_id ?? null, req.method, req.path, action || null);
   } catch { /* auditing must never break a request */ }
-  // The UI only keeps the last few entries; the full history lives in this append-only file.
-  try {
-    const who = u?.display_name || u?.username || '-';
-    appendFileSync(AUDIT_LOG, `${new Date().toISOString()}\t${who}\t${action || `${req.method} ${req.path}`}\n`);
-  } catch { /* best effort */ }
 }
 app.use('/api', (req, res, next) => {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();

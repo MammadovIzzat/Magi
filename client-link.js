@@ -184,7 +184,7 @@ function storeToken(link, password, loginJson) {
     token: loginJson.token, jwt_exp: loginJson.exp || claims.exp || null, role: loginJson.role || claims.role || null,
     pass_verifier: hashPassword(String(password)),
     connected_at: link.connected_at || new Date().toISOString(), stash_id: link.stash_id ?? null,
-    needs_reauth: 0,
+    last_sync: link.last_sync || null, last_ok: link.last_ok || null, needs_reauth: 0,
   };
   linkGen++;
   stopApprovalPoll();
@@ -215,12 +215,20 @@ export async function login({ password, otp } = {}) {
 
 // One poll of a pending request. On approval the device is registered server-side; we then log in
 // (auto, using the in-memory password) for a token. rejected -> clears the pending link.
+// Reentrancy-guarded: the background timer and a manual "Check now" must never both reach the
+// one-time stash concurrently (that could double-stash and orphan the personal engagements).
+let approvalBusy = false;
 export async function pollApproval() {
+  if (approvalBusy) return { pending: true, busy: true };
+  approvalBusy = true;
+  try {
   const link = loadLink();
   if (!link || !link.pending || !link.request_id) return { pending: false };
+  const gen = linkGen; // a disconnect/cancel or a new connect during the await must not resurrect this link
   let r;
   try { r = await remoteFetch(`/api/enroll/poll?request_id=${encodeURIComponent(link.request_id)}&device_id=${encodeURIComponent(link.device_id)}`, { link }); }
   catch { return { pending: true, waiting: true }; } // server unreachable — keep waiting
+  if (gen !== linkGen || !loadLink()?.pending) return { pending: false, stale: true };
   if (r.status === 404) { stopApprovalPoll(); try { rmSync(LINK_FILE, { force: true }); } catch {} return { pending: false, gone: true }; }
   const st = r.json?.status;
   if (st === 'rejected') { stopApprovalPoll(); try { rmSync(LINK_FILE, { force: true }); } catch {} return { pending: false, rejected: true }; }
@@ -239,6 +247,7 @@ export async function pollApproval() {
   const res = await attemptLogin(loadLink(), pendingSecret.password);
   if (res.ok) return { approved: true, linked: true };
   return { approved: true, ...res }; // mfa or error → UI completes via login()
+  } finally { approvalBusy = false; }
 }
 
 let approvalTimer = null;
@@ -410,6 +419,7 @@ export async function heartbeat() {
     if (gen !== linkGen || !loadLink()?.token) return { online: false, error: 'link changed' };
     const online = r.status === 200;
     if (online) { link.last_ok = new Date().toISOString(); saveLink(link); }
+    else if (r.status === 401) markNeedsReauth(); // token expired/revoked — surface it, pause sync
     return { online, status: r.status, who: r.json || null, revoked: r.status === 401 };
   } catch (e) { return { online: false, error: e.message }; }
 }

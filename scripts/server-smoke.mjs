@@ -120,10 +120,10 @@ check('admin mints a worker code', mk.status === 201 && typeof mk.json?.code ===
 const workerCode = mk.json?.code;
 
 // request -> admin approves -> client polls the token
-async function enrollApprove(code, username, display_name, device_id) {
+async function enrollApprove(code, username, display_name, device_id, role) {
   const rq = await req('POST', '/api/enroll', { body: { code, username, display_name, device_id } });
   if (rq.status !== 202 || !rq.json?.request_id) return { ok: false, rq };
-  const appr = await req('POST', `/api/admin/requests/${rq.json.request_id}/approve`, { cookie });
+  const appr = await req('POST', `/api/admin/requests/${rq.json.request_id}/approve`, { cookie, body: role ? { role } : {} });
   const poll = await req('GET', `/api/enroll/poll?request_id=${rq.json.request_id}&device_id=${device_id}`);
   return { ok: appr.status === 200 && poll.json?.status === 'approved' && !!poll.json.token, token: poll.json?.token, role: poll.json?.role, rq };
 }
@@ -282,7 +282,7 @@ check('worker is blocked from the admin surface', climb.status === 403);
 // an admin-role enrollee CAN reach the admin surface
 const mkA = await req('POST', '/api/admin/enroll-codes', { cookie, body: { role: 'admin' } });
 const dev2 = 'dddddddd-4444-4444-8444-dddddddddddd';
-const enrollA = await enrollApprove(mkA.json?.code, 'lead', 'Team Lead', dev2);
+const enrollA = await enrollApprove(mkA.json?.code, 'lead', 'Team Lead', dev2, 'admin');
 check('admin-role device enrolls via approval', enrollA.ok && enrollA.role === 'admin');
 const adminUsers = await req('GET', '/api/admin/users', { token: enrollA.token, device: dev2 });
 check('admin-role device reaches the admin surface', adminUsers.status === 200 && adminUsers.json?.length >= 3);
@@ -291,6 +291,38 @@ check('admin-role device reaches the admin surface', adminUsers.status === 200 &
 const audit = await req('GET', '/api/admin/audit', { token: enrollA.token, device: dev2 });
 check('audit log attributes the write to the worker', audit.status === 200
   && audit.json?.some(r => r.display_name === 'Ana R.' && (r.path || '').includes('/findings')));
+
+// ── the editor role: builds engagement structure, but is walled off from server management ──
+const edev = '77777777-8888-4888-8888-777777777777';
+const ecode = (await req('POST', '/api/admin/enroll-codes', { cookie })).json.code;
+const enrollE = await enrollApprove(ecode, 'edd', 'Ed Editor', edev, 'editor');
+check('an editor device enrolls via approval', enrollE.ok && enrollE.role === 'editor');
+const eProj = await req('POST', '/api/projects', { token: enrollE.token, device: edev, body: { name: 'Editor Made' } });
+check('an editor can create an engagement', eProj.status === 201 && !!eProj.json?.id);
+const eTgt = await req('POST', `/api/projects/${eProj.json.id}/targets`, { token: enrollE.token, device: edev, body: { type: 'web', label: 'https://e.test' } });
+check('an editor can add a target', eTgt.status === 201);
+const eDel = await req('DELETE', `/api/projects/${eProj.json.id}`, { token: enrollE.token, device: edev });
+check('an editor can delete an engagement', eDel.status === 200 && eDel.json?.ok === true);
+const eAdmin = await req('GET', '/api/admin/users', { token: enrollE.token, device: edev });
+check('an editor is walled off from the admin surface', eAdmin.status === 403);
+const eTpl = await req('POST', '/api/templates/web/items', { token: enrollE.token, device: edev, body: { title: 'x' } });
+check('an editor cannot edit templates', eTpl.status === 403);
+
+// ── admin manages members: change a role and remove an account (guarding self + last admin) ──
+const rpdev = '88888888-9999-4999-8999-888888888888';
+const rcode = (await req('POST', '/api/admin/enroll-codes', { cookie })).json.code;
+await enrollApprove(rcode, 'rolls', 'Role Player', rpdev, 'worker');
+const rollsId = (await req('GET', '/api/admin/users', { cookie })).json.find(u => u.username === 'rolls')?.id;
+const promote = await req('POST', `/api/admin/users/${rollsId}/role`, { cookie, body: { role: 'editor' } });
+check('an admin can change a member’s role', promote.status === 200 && promote.json?.role === 'editor');
+const rollsNow = (await req('GET', '/api/admin/users', { cookie })).json.find(u => u.username === 'rolls');
+check('the role change is reflected in the member list', rollsNow?.role === 'editor');
+const ownerId = (await req('GET', '/api/admin/users', { cookie })).json.find(u => u.username === 'admin')?.id;
+const selfDel = await req('DELETE', `/api/admin/users/${ownerId}`, { cookie });
+check('an admin cannot delete their own account', selfDel.status === 400);
+const rmMember = await req('DELETE', `/api/admin/users/${rollsId}`, { cookie });
+const usersAfter = await req('GET', '/api/admin/users', { cookie });
+check('an admin can remove a member', rmMember.status === 200 && !usersAfter.json.some(u => u.username === 'rolls'));
 
 // hard-delete removes a device, its orphaned account, AND that account's redeemed codes
 const tdev = 'ffffffff-6666-4666-8666-ffffffffffff';

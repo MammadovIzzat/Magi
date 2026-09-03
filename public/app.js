@@ -157,7 +157,10 @@ function adminCtx() {
 }
 // Is the signed-in identity an admin? On a team the linked device's role decides; standalone
 // or on the server's own web UI it's the account role (the local owner is an admin).
-function isAdmin() { return LINK?.linked ? LINK.link?.role === 'admin' : ME?.role === 'admin'; }
+function isAdmin() { return (LINK?.linked ? LINK.link?.role : ME?.role) === 'admin'; }
+// Editors (and admins) may create/edit/delete engagements, targets and checklist structure.
+// Admin-only actions (templates, the Admin panel, encryption) stay on isAdmin().
+function isEditor() { const r = LINK?.linked ? LINK.link?.role : ME?.role; return r === 'admin' || r === 'editor'; }
 
 // ---------- modal ----------
 // kicker + title + optional note, fields, optional danger box, gold/red CTA
@@ -301,15 +304,15 @@ async function renderHome() {
   const view = $('#view');
   const head = el('div', { className: 'page-head' },
     el('div', {}, el('div', { className: 'kicker' }, 'Workspace'), el('h1', {}, 'Engagements')),
-    isAdmin() ? el('div', { style: 'display:flex;gap:7px' },
+    isEditor() ? el('div', { style: 'display:flex;gap:7px' },
       el('button', { className: 'btn', onclick: importProjectFile, title: 'Import an engagement from a file' }, icon('up', 12), 'Import'),
       el('button', { className: 'btn gold', onclick: newProject }, icon('plus', 12), 'New engagement')) : null);
 
   if (!projects.length) {
     return view.replaceChildren(el('div', { className: 'page' }, head,
       el('div', { className: 'empty', style: 'margin-top:26px' },
-        el('div', {}, isAdmin() ? 'No engagements yet. Every target, checklist and finding lives inside one.' : 'No engagements yet. An admin sets these up.'),
-        isAdmin() ? el('button', { className: 'btn gold', onclick: newProject }, icon('plus', 12), 'Create the first') : null)));
+        el('div', {}, isEditor() ? 'No engagements yet. Every target, checklist and finding lives inside one.' : 'No engagements yet. An admin sets these up.'),
+        isEditor() ? el('button', { className: 'btn gold', onclick: newProject }, icon('plus', 12), 'Create the first') : null)));
   }
 
   const projectRow = (p) => {
@@ -463,7 +466,7 @@ function railForFolder(folder, activeTargetId) {
   return [head,
     el('button', { className: 'railback', onclick: () => location.hash = `/project/${folder.project_id}` }, '‹ Back to engagement'),
     el('div', { className: 'rail-label kicker' }, 'Targets'), list,
-    isAdmin() ? el('div', { className: 'rail-foot' },
+    isEditor() ? el('div', { className: 'rail-foot' },
       el('button', { className: 'dashbtn', onclick: () => addTarget(folder) }, icon('plus', 12), 'Add target')) : null];
 }
 // Rail listing every target in the engagement, grouped by kind (the flat engagement→target model).
@@ -495,7 +498,7 @@ function railForProject(project, activeTargetId) {
   return [head,
     el('button', { className: 'railback', onclick: () => location.hash = `/project/${project.id}` }, '‹ Back to engagement'),
     list,
-    isAdmin() ? el('div', { className: 'rail-foot' },
+    isEditor() ? el('div', { className: 'rail-foot' },
       el('button', { className: 'dashbtn', onclick: () => addTargetToProject(project.id) }, icon('plus', 12), 'Add target')) : null];
 }
 
@@ -509,13 +512,13 @@ async function renderProject(id) {
   const allTargets = p.assets.flatMap(f => (f.items || []).map(t => ({ ...t, grp: f.grp })));
   topActions(
     el('button', { className: 'btn', onclick: () => exportProjectMenu(id, p.name) }, icon('down', 12), 'Export'),
-    isAdmin() ? el('button', { className: 'btn', onclick: () => editProject(p, () => renderProject(id)) }, icon('edit', 12), 'Edit') : null,
-    isAdmin()
+    isEditor() ? el('button', { className: 'btn', onclick: () => editProject(p, () => renderProject(id)) }, icon('edit', 12), 'Edit') : null,
+    isEditor()
       ? (finished
         ? el('button', { className: 'btn', onclick: () => setProjectStatus(p, 'active', () => renderProject(id)) }, 'Reopen')
         : el('button', { className: 'btn', onclick: () => setProjectStatus(p, 'finished', () => renderProject(id)) }, icon('check', 12), 'Finish'))
       : null,
-    isAdmin() ? el('button', { className: 'btn danger', onclick: () => delProject(p, allTargets.length, () => location.hash = '') }, 'Delete') : null);
+    isEditor() ? el('button', { className: 'btn danger', onclick: () => delProject(p, allTargets.length, () => location.hash = '') }, 'Delete') : null);
 
   const total = allTargets.reduce((a, x) => a + x.total, 0);
   const handled = allTargets.reduce((a, x) => a + x.handled, 0);
@@ -528,7 +531,7 @@ async function renderProject(id) {
   const targetRow = (a) => {
     const t = TYPES.find(x => x.type === a.type) || {};
     const cov = pct(a.handled, a.total);
-    const del = isAdmin() ? el('button', { className: 'ibtn del', title: 'Delete target' }, icon('trash')) : null;
+    const del = isEditor() ? el('button', { className: 'ibtn del', title: 'Delete target' }, icon('trash')) : null;
     if (del) del.onclick = (e) => { e.stopPropagation(); delTarget(a, () => renderProject(id)); };
     return el('button', { className: 'trow', onclick: () => location.hash = `/target/${a.id}` },
       el('span', { className: 'ticon' }, t.icon || '◇'),
@@ -546,8 +549,8 @@ async function renderProject(id) {
   const groups = p.assets.filter(f => (f.items || []).length); // only kind-groups that hold targets
   if (!groups.length) {
     body.append(el('div', { className: 'empty', style: 'border:0;margin-top:20px' },
-      el('div', {}, isAdmin() ? 'No targets yet. Add a web app, host, API, AD domain… to start testing.' : 'No targets yet. An admin adds these.'),
-      isAdmin() ? el('button', { className: 'btn gold', onclick: () => addTargetToProject(id) }, icon('plus', 12), 'Add target') : null));
+      el('div', {}, isEditor() ? 'No targets yet. Add a web app, host, API, AD domain… to start testing.' : 'No targets yet. An admin adds these.'),
+      isEditor() ? el('button', { className: 'btn gold', onclick: () => addTargetToProject(id) }, icon('plus', 12), 'Add target') : null));
   } else {
     for (const f of groups) {
       body.append(el('div', { className: 'srule', style: 'margin-top:22px' },
@@ -573,7 +576,7 @@ async function renderProject(id) {
       stat('Targets', String(allTargets.length))),
     el('div', { className: 'srule' },
       el('span', { className: 'kicker' }, 'Targets'), el('span', { className: 'rule' }),
-      isAdmin() ? el('button', { className: 'btn line sm', onclick: () => addTargetToProject(id) }, '+ Add target') : null),
+      isEditor() ? el('button', { className: 'btn line sm', onclick: () => addTargetToProject(id) }, '+ Add target') : null),
     body));
 }
 
@@ -762,7 +765,7 @@ async function renderTarget(id) {
   if (a.type === 'retest') {
     topActions(
       el('button', { className: 'btn gold', onclick: () => addFinding(id, true) }, icon('plus', 12), 'Add retest item'),
-      isAdmin() ? el('button', { className: 'btn danger', onclick: () => delTarget(a) }, 'Delete target') : null);
+      isEditor() ? el('button', { className: 'btn danger', onclick: () => delTarget(a) }, 'Delete target') : null);
     const list = el('div', { className: 'tlist' });
     if (!a.findings.length) list.append(el('div', { className: 'empty', style: 'border:0' },
       el('div', {}, 'No retest items yet. Add one for each finding from the previous engagement you re-checked.'),
@@ -838,7 +841,7 @@ async function renderTarget(id) {
       el('div', { className: 'target-actions' },
         el('button', { className: 'btn', onclick: () => { groups.forEach(g => openGroups.add(g.key)); renderTarget(id); } }, 'Expand all'),
         el('button', { className: 'btn', onclick: () => { openGroups.clear(); renderTarget(id); } }, 'Collapse'),
-        isAdmin() ? el('button', { className: 'btn line', onclick: () => itemModal(id) }, '+ Item') : null)),
+        isEditor() ? el('button', { className: 'btn line', onclick: () => itemModal(id) }, '+ Item') : null)),
     el('div', { className: 'seg' }, segbar,
       el('span', { className: 'count' }, String(handled), el('b', {}, '/' + actionable.length)),
       flagged ? el('span', { className: 'flagcount' }, icon('flag', 11), String(flagged)) : null),
@@ -1005,7 +1008,7 @@ function renderItem(it, assetId, num, depth, childrenBy = {}) {
     actions.append(stBox);
   }
   // Editing the checklist itself (add sub-item / edit / delete) is admin-only; workers tick boxes.
-  if (isAdmin()) actions.append(el('div', { className: 'itools' },
+  if (isEditor()) actions.append(el('div', { className: 'itools' },
     el('button', { className: 'ibtn', title: 'Add sub-item', onclick: () => itemModal(assetId, null, it.id) }, icon('plus', 12)),
     el('button', { className: 'ibtn', title: 'Edit', onclick: () => itemModal(assetId, it) }, icon('edit', 12)),
     el('button', {
@@ -1997,19 +2000,24 @@ async function renderAdmin() {
     el('button', { className: 'btn', onclick: renderAdmin }, icon('down', 12), el('span', { className: 'lbl' }, 'Refresh')),
     el('button', { className: 'btn gold', onclick: () => mintCodeDialog(ctx) }, icon('plus', 12), el('span', { className: 'lbl' }, 'New code')));
   const view = $('#view');
+  const savedY = view.scrollTop;                          // preserve scroll across the 5s live-refresh
+  const isRefresh = !!view.querySelector('.setcard');     // already showing the admin panel
   const page = el('div', { className: 'page' });
   page.append(el('div', { className: 'page-head' }, el('div', {}, el('div', { className: 'kicker' }, 'Team server'), el('h1', {}, 'Admin'))));
-  // Paint the Admin shell NOW so the body always matches the header/crumbs. If the linked server
-  // is unreachable the data fetch below hangs — without this, the previous page's body would stay
-  // stranded under the Admin header (a broken-looking, mismatched screen).
+  // On the FIRST paint, show a shell immediately so the body matches the header even if the server
+  // hangs. On a background refresh, don't swap in a loading state (that flashed the page to the top
+  // every few seconds) — build the new page off-screen and swap it in at the end instead.
   const loading = el('div', { className: 'empty' }, 'Loading team data…');
-  page.append(loading);
-  view.replaceChildren(page);
+  if (!isRefresh) { page.append(loading); view.replaceChildren(page); }
   const A = (p, o) => api(ctx.base + p, { ...o, timeout: 8000 });
 
   let requests = [], devices = [], codes = [], audit = [], users = [];
   try { [requests, devices, codes, audit, users] = await Promise.all([A('/requests'), A('/devices'), A('/enroll-codes'), A('/audit?limit=10'), A('/users')]); }
-  catch (e) { loading.className = 'empty'; loading.textContent = 'Could not load team data: ' + e.message + '. Check the connection, then press Refresh.'; return; }
+  catch (e) {
+    if (isRefresh) return;                                // a refresh failed — keep what's shown, retry next tick
+    loading.textContent = 'Could not load team data: ' + e.message + '. Check the connection, then press Refresh.';
+    return;
+  }
   loading.remove();
   ADMIN_PENDING = requests.length; renderAccount();
 
@@ -2022,7 +2030,7 @@ async function renderAdmin() {
   for (const r of requests) reqCard.append(row(
     [el('strong', {}, r.display_name), el('span', { className: 'muted' }, ' wants to join as '), el('span', { className: 'pill' }, r.role),
       el('div', { className: 'muted small' }, `username ${r.username} · device ${String(r.device_id).slice(0, 8)}… · ${new Date(r.created_at).toLocaleString()}`)],
-    el('button', { className: 'btn gold', onclick: () => decide(ctx, r.id, 'approve', r.display_name) }, icon('check', 12), 'Approve'),
+    el('button', { className: 'btn gold', onclick: () => approveDialog(ctx, r.id, r.display_name) }, icon('check', 12), 'Approve'),
     el('button', { className: 'btn danger', onclick: () => decide(ctx, r.id, 'reject', r.display_name) }, icon('x', 12), 'Reject')));
   page.append(reqCard);
 
@@ -2043,7 +2051,7 @@ async function renderAdmin() {
   for (const m of users) memCard.append(row(
     [el('strong', {}, m.username), el('span', { className: 'muted' }, ' · '), el('span', { className: 'pill' }, m.role),
       el('div', { className: 'muted small' }, m.mfa_enabled ? '🔒 two-factor on' : 'two-factor not set up yet')],
-    m.mfa_enabled ? el('button', { className: 'btn', onclick: () => resetMfaDialog(ctx, m) }, 'Reset MFA') : null));
+    el('button', { className: 'btn', onclick: () => manageUserDialog(ctx, m) }, icon('edit', 12), 'Manage')));
   page.append(memCard);
 
   // Codes
@@ -2056,7 +2064,7 @@ async function renderAdmin() {
   if (LAST_CODE && !active.some(c => c.id === LAST_CODE.id)) LAST_CODE = null;
   if (LAST_CODE) {
     codeCard.append(el('div', { className: 'codebanner' },
-      el('div', {}, el('div', { className: 'muted small' }, `New ${LAST_CODE.role} code — copy it now, it is not shown again`), el('code', { className: 'codebox' }, LAST_CODE.code)),
+      el('div', {}, el('div', { className: 'muted small' }, 'New enrollment code — copy it now, it is not shown again'), el('code', { className: 'codebox' }, LAST_CODE.code)),
       el('div', { style: 'display:flex;gap:7px' },
         el('button', { className: 'btn', onclick: () => { navigator.clipboard?.writeText(LAST_CODE.code); toast('Code copied'); } }, 'Copy'),
         el('button', { className: 'btn', title: 'Dismiss', onclick: () => { LAST_CODE = null; renderAdmin(); } }, icon('x', 12)))));
@@ -2104,6 +2112,7 @@ async function renderAdmin() {
   page.append(auditCard);
 
   view.replaceChildren(page);
+  view.scrollTop = savedY;   // stay where the user was reading, don't jump to the top on refresh
   // Live-refresh while the panel is open (so new requests appear without a manual reload),
   // but don't yank the view out from under an open dialog.
   clearTimeout(window.__adminPoll);
@@ -2133,16 +2142,58 @@ function removeDevice(ctx, id, name) {
 function mintCodeDialog(ctx) {
   modal({
     kicker: 'Admin', title: 'New enrollment code', cta: 'Create',
-    note: 'Single-use. Share it with the person joining; you approve their request afterwards.',
-    build: (b) => {
-      field(b, 'Role', 'role', { options: [{ value: 'worker', label: 'Worker' }, { value: 'admin', label: 'Admin' }] });
-      field(b, 'Note (optional)', 'note', { ph: 'e.g. Ana laptop' });
-    },
+    note: 'A single-use join ticket. Share it with the person joining; you pick their role when you approve their request.',
+    build: (b) => { field(b, 'Note (optional)', 'note', { ph: 'e.g. Ana laptop' }); },
     onSubmit: async (fd) => {
       const r = await api(`${ctx.base}/enroll-codes`, { method: 'POST', body: Object.fromEntries(fd) });
-      LAST_CODE = { id: r.id, code: r.code, role: r.role };
+      LAST_CODE = { id: r.id, code: r.code };
       renderAdmin();
     },
+  });
+}
+// Approve a join request, choosing the new member's role.
+function approveDialog(ctx, id, name) {
+  modal({
+    kicker: 'Admin', title: `Approve ${name}`, cta: 'Approve',
+    note: 'Choose their role — you can change it later from Members.',
+    build: (b) => field(b, 'Role', 'role', { value: 'worker', options: [
+      { value: 'worker', label: 'Worker — use checklists, record findings' },
+      { value: 'editor', label: 'Editor — also add/edit/delete engagements & targets' },
+      { value: 'admin', label: 'Admin — full server management' },
+    ] }),
+    onSubmit: async (fd) => { await api(`${ctx.base}/requests/${id}/approve`, { method: 'POST', body: { role: Object.fromEntries(fd).role } }); toast(`Approved ${name}`); renderAdmin(); },
+  });
+}
+// Manage a member: change role, reset password / two-factor, or remove them.
+function manageUserDialog(ctx, m) {
+  modal({
+    kicker: 'Admin', title: `Manage ${m.username}`, cta: 'Save role',
+    note: 'Changing the role or resetting the password signs this member out of every device (they sign in again).',
+    build: (b) => {
+      field(b, 'Role', 'role', { value: m.role, options: [
+        { value: 'worker', label: 'Worker' }, { value: 'editor', label: 'Editor' }, { value: 'admin', label: 'Admin' },
+      ] });
+      b.append(el('div', { className: 'setcard-actions', style: 'margin-top:12px' },
+        el('button', { type: 'button', className: 'btn', onclick: () => resetUserPasswordDialog(ctx, m) }, 'Reset password…'),
+        m.mfa_enabled ? el('button', { type: 'button', className: 'btn', onclick: () => resetMfaDialog(ctx, m) }, 'Reset two-factor') : null,
+        el('button', { type: 'button', className: 'btn danger', onclick: () => removeUserDialog(ctx, m) }, 'Remove member')));
+    },
+    onSubmit: async (fd) => { await api(`${ctx.base}/users/${m.id}/role`, { method: 'POST', body: { role: Object.fromEntries(fd).role } }); toast('Role updated'); renderAdmin(); },
+  });
+}
+function resetUserPasswordDialog(ctx, m) {
+  modal({
+    kicker: 'Admin', title: `Reset ${m.username}'s password`, cta: 'Reset', danger: true,
+    note: 'Sets a new password and signs them out everywhere — they sign in again with it. Share it over a trusted channel.',
+    build: (b) => { field(b, 'New password', 'password', { type: 'password', ph: 'at least 8 characters' }); field(b, 'Confirm', 'confirm', { type: 'password' }); },
+    onSubmit: async (fd) => { const o = Object.fromEntries(fd); if ((o.password || '').length < 8) throw new Error('password must be at least 8 characters'); if (o.password !== o.confirm) throw new Error('the two passwords do not match'); await api(`${ctx.base}/users/${m.id}/reset-password`, { method: 'POST', body: { password: o.password } }); toast('Password reset'); renderAdmin(); },
+  });
+}
+function removeUserDialog(ctx, m) {
+  modal({
+    kicker: 'Admin', title: `Remove ${m.username}?`, cta: 'Remove', danger: true,
+    note: 'Deletes this account and all its devices from the server. Their synced engagements stay on the server. This cannot be undone.',
+    onSubmit: async () => { await api(`${ctx.base}/users/${m.id}`, { method: 'DELETE' }); toast('Member removed'); renderAdmin(); },
   });
 }
 function killCode(ctx, id) {

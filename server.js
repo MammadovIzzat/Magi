@@ -349,13 +349,22 @@ app.post('/api/auth/logout', (req, res) => {
 // record findings. On the server the device/session role decides; on a linked client the TEAM
 // role does (so a linked worker is refused before it can sync up); a standalone owner manages
 // their own data freely.
-async function canManage(req) {
-  if (SERVER_MODE) { const u = currentUser(req); return !!u && u.role === 'admin'; }
-  try { const link = (await import('./client-link.js')).status(); if (link?.linked) return link.link?.role === 'admin'; } catch {}
-  return true;
+// Three roles: worker (use checklists, record findings), editor (+ add/edit/delete engagements &
+// targets), admin (+ manage the server: users, codes, devices, templates, backups).
+const ROLES = ['admin', 'editor', 'worker'];
+const cleanRole = (r) => (ROLES.includes(r) ? r : 'worker');
+async function actingRole(req) {
+  if (SERVER_MODE) return currentUser(req)?.role || null;
+  try { const link = (await import('./client-link.js')).status(); if (link?.linked) return link.link?.role || null; } catch {}
+  return 'admin'; // a standalone owner has full rights over their own data
 }
+// canManage = admin (server config); canEdit = admin OR editor (engagement structure).
+async function canManage(req) { return (await actingRole(req)) === 'admin'; }
+async function canEdit(req) { const r = await actingRole(req); return r === 'admin' || r === 'editor'; }
 const requireManage = (req, res, next) =>
-  canManage(req).then(ok => ok ? next() : res.status(403).json({ error: 'admins only — workers use the checklists and record findings' })).catch(next);
+  canManage(req).then(ok => ok ? next() : res.status(403).json({ error: 'admins only' })).catch(next);
+const requireEdit = (req, res, next) =>
+  canEdit(req).then(ok => ok ? next() : res.status(403).json({ error: 'read-only — adding or removing engagements and targets is for editors and admins' })).catch(next);
 
 app.get('/api/me', (req, res) => {
   const u = currentUser(req);
@@ -497,16 +506,19 @@ app.post('/api/admin/requests/:id/approve', requireAdmin, (req, res) => {
     return res.status(409).json({ error: 'that username or device already exists' });
   }
   const ec = q(`SELECT id FROM enroll_codes WHERE code_hash=?`).get(rq.code_hash);
+  // The admin picks the role at approval time (the code itself is role-agnostic now). Falls back
+  // to the request's role for older clients that still send one.
+  const role = cleanRole(req.body?.role || rq.role);
   // New flow: the user chose a password at request time (stored hashed) → they can log in for a
   // JWT. Legacy flow: no password → a random one, and the device token is their credential.
   const uid = q(`INSERT INTO users (username, pass_hash, role) VALUES (?,?,?)`)
-    .run(rq.username, rq.pass_hash || hashPassword(randomBytes(24).toString('hex')), rq.role).lastInsertRowid;
+    .run(rq.username, rq.pass_hash || hashPassword(randomBytes(24).toString('hex')), role).lastInsertRowid;
   q(`UPDATE enroll_codes SET used_by=? WHERE id=?`).run(uid, ec.id);
   const token = randomBytes(32).toString('hex');
   q(`INSERT INTO devices (id, user_id, display_name, token_hash) VALUES (?,?,?,?)`).run(rq.device_id, uid, rq.display_name, sha256(token));
-  q(`UPDATE enroll_requests SET status='approved', token=?, decided_at=datetime('now'), decided_by=? WHERE id=?`).run(token, decidedBy, rq.id);
-  writeAudit(req, req.user, `approved ${rq.display_name} (${rq.username}) as ${rq.role}`);
-  res.json({ ok: true, username: rq.username, role: rq.role });
+  q(`UPDATE enroll_requests SET status='approved', role=?, token=?, decided_at=datetime('now'), decided_by=? WHERE id=?`).run(role, token, decidedBy, rq.id);
+  writeAudit(req, req.user, `approved ${rq.display_name} (${rq.username}) as ${role}`);
+  res.json({ ok: true, username: rq.username, role });
 });
 app.post('/api/admin/requests/:id/reject', requireAdmin, (req, res) => {
   const rq = q(`SELECT * FROM enroll_requests WHERE id=? AND status='pending'`).get(req.params.id);
@@ -516,16 +528,16 @@ app.post('/api/admin/requests/:id/reject', requireAdmin, (req, res) => {
   writeAudit(req, req.user, `rejected join request from ${rq.display_name} (${rq.username})`);
   res.json({ ok: true });
 });
-// Mint a single-use code. The raw code is returned exactly once; only its hash is stored.
+// Mint a single-use code. The code is just a join ticket now — role-agnostic; the admin picks the
+// new member's role when approving the request. The raw code is returned once; only its hash is stored.
 app.post('/api/admin/enroll-codes', requireAdmin, (req, res) => {
   const b = req.body || {};
-  const role = b.role === 'admin' ? 'admin' : 'worker';
   const hours = Math.min(24 * 30, Math.max(0, Math.floor(Number(b.expires_in_hours) || 0)));
   const code = randomBytes(9).toString('base64url'); // 12 high-entropy chars — generated, never user-chosen
   const info = q(`INSERT INTO enroll_codes (code_hash, role, note, created_by, expires_at)
      VALUES (?,?,?,?, ${hours ? `datetime('now','+${hours} hours')` : 'NULL'})`)
-    .run(sha256(code), role, b.note || null, req.user.id);
-  res.status(201).json({ id: Number(info.lastInsertRowid), code, role, note: b.note || null, expires_in_hours: hours || null });
+    .run(sha256(code), 'worker', b.note || null, req.user.id);
+  res.status(201).json({ id: Number(info.lastInsertRowid), code, note: b.note || null, expires_in_hours: hours || null });
 });
 app.get('/api/admin/enroll-codes', requireAdmin, (req, res) => {
   res.json(q(`SELECT id, role, note, created_at, expires_at, used_at,
@@ -576,6 +588,31 @@ app.post('/api/admin/users/:id/reset-password', requireAdmin, (req, res) => {
   writeAudit(req, req.user, `reset the password for ${u.username}`);
   res.json({ ok: true });
 });
+// Change a member's role (admin / editor / worker). Bumping the epoch re-issues their tokens with
+// the new role and forces the client to reflect it immediately. Never remove the last admin.
+app.post('/api/admin/users/:id/role', requireAdmin, (req, res) => {
+  const u = q(`SELECT id, username, role FROM users WHERE id=?`).get(req.params.id);
+  if (!u) return res.status(404).json({ error: 'no such user' });
+  const role = cleanRole((req.body || {}).role);
+  if (u.role === 'admin' && role !== 'admin' && q(`SELECT COUNT(*) c FROM users WHERE role='admin'`).get().c <= 1)
+    return res.status(400).json({ error: 'this is the only admin — promote someone else first' });
+  if (role === u.role) return res.json({ ok: true, role });
+  q(`UPDATE users SET role=?, cred_epoch=cred_epoch+1 WHERE id=?`).run(role, u.id);
+  writeAudit(req, req.user, `changed ${u.username}'s role from ${u.role} to ${role}`);
+  res.json({ ok: true, role });
+});
+// Remove a member entirely (and their devices, via ON DELETE CASCADE). Guards against removing the
+// last admin or the acting admin's own account.
+app.delete('/api/admin/users/:id', requireAdmin, (req, res) => {
+  const u = q(`SELECT id, username, role FROM users WHERE id=?`).get(req.params.id);
+  if (!u) return res.status(404).json({ error: 'no such user' });
+  if (u.id === req.user.id) return res.status(400).json({ error: 'you cannot remove your own account' });
+  if (u.role === 'admin' && q(`SELECT COUNT(*) c FROM users WHERE role='admin'`).get().c <= 1)
+    return res.status(400).json({ error: 'cannot remove the only admin' });
+  q(`DELETE FROM users WHERE id=?`).run(u.id); // devices/sessions cascade
+  writeAudit(req, req.user, `removed member ${u.username}`);
+  res.json({ ok: true });
+});
 app.get('/api/admin/devices', requireAdmin, (req, res) => {
   res.json(q(`SELECT d.id, d.display_name, d.created_at, d.last_seen, d.revoked, u.username, u.role
     FROM devices d JOIN users u ON u.id=d.user_id ORDER BY d.created_at DESC`).all());
@@ -616,11 +653,11 @@ if (SERVER_MODE) {
   app.post('/api/sync/push', (req, res) => {
     let { rows, tombstones } = req.body || {};
     try {
-      // Only a team admin may change an engagement's lifecycle. For any other device, neutralize
-      // an incoming project 'status' change (keep the server's current value) before merging — so
-      // a worker cannot finish/reopen an engagement even by crafting a raw sync push.
+      // Admins and editors manage an engagement's lifecycle. For a worker, neutralize an incoming
+      // project 'status' change (keep the server's current value) before merging — so a worker
+      // cannot finish/reopen an engagement even by crafting a raw sync push.
       const actor = currentUser(req);
-      if (actor && actor.role !== 'admin' && Array.isArray(rows)) {
+      if (actor && actor.role === 'worker' && Array.isArray(rows)) {
         rows = rows.map(r => {
           if (r?.table !== 'projects' || !r.fields || !('status' in r.fields)) return r;
           const cur = q(`SELECT status FROM projects WHERE uid=?`).get(r.uid);
@@ -943,7 +980,7 @@ app.get('/api/projects', (req, res) => {
 // Accepts yyyy-mm-dd or empty; anything else is stored as null rather than trusted verbatim.
 const cleanDate = (v) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
 
-app.post('/api/projects', requireManage, (req, res) => {
+app.post('/api/projects', requireEdit, (req, res) => {
   const { name, client, scope, notes, start_date, end_date } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name required' });
   const info = q(`INSERT INTO projects (name, client, scope, notes, start_date, end_date) VALUES (?,?,?,?,?,?)`)
@@ -952,7 +989,7 @@ app.post('/api/projects', requireManage, (req, res) => {
 });
 
 // Edit an engagement's details, dates, or lifecycle (active <-> finished). Admin-only.
-app.patch('/api/projects/:id', requireManage, (req, res) => {
+app.patch('/api/projects/:id', requireEdit, (req, res) => {
   const p = q(`SELECT * FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'not found' });
   const b = req.body || {};
@@ -980,7 +1017,7 @@ app.get('/api/projects/:id/bundle', (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename="magi-project-${safe}.json"`);
   res.type('application/json').send(JSON.stringify(bundle, null, 2));
 });
-app.post('/api/projects/import/preview', requireManage, (req, res) => {
+app.post('/api/projects/import/preview', requireEdit, (req, res) => {
   try {
     const b = validateProjectBundle(req.body);
     res.json({
@@ -992,7 +1029,7 @@ app.post('/api/projects/import/preview', requireManage, (req, res) => {
     });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
-app.post('/api/projects/import', requireManage, (req, res) => {
+app.post('/api/projects/import', requireEdit, (req, res) => {
   const { bundle, name } = req.body || {};
   try {
     const r = importProject(bundle, name && String(name).trim() ? String(name).trim() : null);
@@ -1025,7 +1062,7 @@ app.get('/api/projects/:id', (req, res) => {
 });
 // Add a target straight to an engagement — the type's engagement-group folder is created or
 // reused automatically, so users never deal with the folder layer.
-app.post('/api/projects/:id/targets', requireManage, (req, res) => {
+app.post('/api/projects/:id/targets', requireEdit, (req, res) => {
   const p = q(`SELECT id FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'project not found' });
   const { type, label, metadata } = req.body || {};
@@ -1041,7 +1078,7 @@ app.post('/api/projects/:id/targets', requireManage, (req, res) => {
 });
 
 // Cascades to assets -> items/findings via the schema's ON DELETE CASCADE.
-app.delete('/api/projects/:id', requireManage, (req, res) => {
+app.delete('/api/projects/:id', requireEdit, (req, res) => {
   const p = q(`SELECT id FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'not found' });
   const assets = q(`SELECT COUNT(*) c FROM folders WHERE project_id=?`).get(p.id).c;
@@ -1066,7 +1103,7 @@ function resolveLinks(refsJson) {
   return refUids(refsJson).map(uid => q(`SELECT f.uid, f.title, f.severity, a.label AS target
     FROM findings f JOIN assets a ON a.id=f.asset_id WHERE f.uid=?`).get(uid)).filter(Boolean);
 }
-app.post('/api/projects/:id/assets', requireManage, (req, res) => {
+app.post('/api/projects/:id/assets', requireEdit, (req, res) => {
   const p = q(`SELECT id FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'project not found' });
   const { grp, label } = req.body || {};
@@ -1092,7 +1129,7 @@ app.get('/api/assets/:id', (req, res) => {
   res.json({ ...f, project, targets: targets.map(assetSummary) });
 });
 
-app.delete('/api/assets/:id', requireManage, (req, res) => {
+app.delete('/api/assets/:id', requireEdit, (req, res) => {
   const f = q(`SELECT id FROM folders WHERE id=?`).get(req.params.id);
   if (!f) return res.status(404).json({ error: 'not found' });
   const targets = q(`SELECT COUNT(*) c FROM assets WHERE folder_id=?`).get(f.id).c;
@@ -1101,7 +1138,7 @@ app.delete('/api/assets/:id', requireManage, (req, res) => {
 });
 
 // ---- targets (the checklist-bearing things inside an asset) ----
-app.post('/api/assets/:id/targets', requireManage, (req, res) => {
+app.post('/api/assets/:id/targets', requireEdit, (req, res) => {
   const f = q(`SELECT * FROM folders WHERE id=?`).get(req.params.id);
   if (!f) return res.status(404).json({ error: 'asset not found' });
   const { type, label, metadata } = req.body || {};
@@ -1126,7 +1163,7 @@ app.get('/api/targets/:id', (req, res) => {
   res.json({ ...assetSummary(a), items, findings, folder, project });
 });
 
-app.delete('/api/targets/:id', requireManage, (req, res) => {
+app.delete('/api/targets/:id', requireEdit, (req, res) => {
   const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'not found' });
   const items = q(`SELECT COUNT(*) c FROM items WHERE asset_id=?`).get(a.id).c;
@@ -1141,8 +1178,8 @@ app.patch('/api/items/:id', async (req, res) => {
   if (!cur) return res.status(404).json({ error: 'not found' });
   const b = req.body || {};
   // Ticking a box (status/answer) is worker work; editing the checklist item itself is admin.
-  if (['title', 'detail', 'kind', 'group_title', 'payloads'].some(k => k in b) && !(await canManage(req)))
-    return res.status(403).json({ error: 'admins only — workers use the checklists and record findings' });
+  if (['title', 'detail', 'kind', 'group_title', 'payloads'].some(k => k in b) && !(await canEdit(req)))
+    return res.status(403).json({ error: 'read-only — editing checklist structure is for editors and admins' });
   const status = b.status ?? cur.status;
   const answer = b.answer ?? cur.answer;
   const title = b.title ?? cur.title;
@@ -1160,7 +1197,7 @@ app.patch('/api/items/:id', async (req, res) => {
   res.json(q(`SELECT * FROM items WHERE id=?`).get(req.params.id));
 });
 
-app.post('/api/targets/:id/items', requireManage, (req, res) => {
+app.post('/api/targets/:id/items', requireEdit, (req, res) => {
   const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'asset not found' });
   const { title, detail, group_title, payloads, kind, parent_id } = req.body || {};
@@ -1226,7 +1263,7 @@ app.post('/api/items/:id/select', (req, res) => {
   res.status(201).json({ ok: true, selected: true, added: cat.items.length });
 });
 
-app.delete('/api/items/:id', requireManage, (req, res) => {
+app.delete('/api/items/:id', requireEdit, (req, res) => {
   deleteItemTree(req.params.id);
   res.json({ ok: true });
 });

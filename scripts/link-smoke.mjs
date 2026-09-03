@@ -95,7 +95,7 @@ check('request is pending until an admin approves', reqres.ok === true && reqres
 const pending = (await req('GET', '/api/admin/requests', { cookie })).json;
 const rid = pending.find(r => r.display_name === 'Ana R.')?.id;
 check('the request is visible to the admin', !!rid);
-await req('POST', `/api/admin/requests/${rid}/approve`, { cookie });
+await req('POST', `/api/admin/requests/${rid}/approve`, { cookie, body: { role: 'admin' } });
 await link.pollApproval();
 link.stopSyncLoop(); // finalize started the sync loop; stop it so the test drives things
 check('client links once approved', link.status().linked === true && link.status().link?.username === 'ana');

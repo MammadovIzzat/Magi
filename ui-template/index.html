@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Magi — UI templates</title><link rel="stylesheet" href="style.css" />
+<style>
+  body{padding:32px;max-width:900px;margin:0 auto}
+  .g{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;margin-top:20px}
+  .card{display:flex;flex-direction:column;gap:6px;padding:16px;border:1px solid var(--line,#2a2f3a);border-radius:12px;text-decoration:none;background:var(--panel,#12151d)}
+  .card:hover{border-color:var(--gold,#E8B65A)}
+  .tag{font-family:monospace;color:var(--gold,#E8B65A);font-size:13px}
+  .desc{color:var(--muted,#9aa4b2);font-size:14px}
+</style></head>
+<body>
+  <h1>Magi — UI templates</h1>
+  <p class="muted">Static, real-CSS snapshots of every screen and key dialog, for design work. Each file links <code>style.css</code> (fonts in <code>fonts/</code>).</p>
+  <div class="g">
+    <a class="card" href="login.html"><span class="tag">login</span><span class="desc">Sign-in (lock screen)</span></a>
+    <a class="card" href="engagements.html"><span class="tag">engagements</span><span class="desc">Engagements — the home list</span></a>
+    <a class="card" href="engagement.html"><span class="tag">engagement</span><span class="desc">One engagement — stats + its targets</span></a>
+    <a class="card" href="asset-folder.html"><span class="tag">asset-folder</span><span class="desc">Asset folder — targets in one engagement type</span></a>
+    <a class="card" href="target-checklist.html"><span class="tag">target-checklist</span><span class="desc">Target — attack checklist + evidence log</span></a>
+    <a class="card" href="target-poc.html"><span class="tag">target-poc</span><span class="desc">PoC target — checklist-free findings</span></a>
+    <a class="card" href="target-retest.html"><span class="tag">target-retest</span><span class="desc">Retest target — remediation items</span></a>
+    <a class="card" href="templates-editor.html"><span class="tag">templates-editor</span><span class="desc">Template library / editor</span></a>
+    <a class="card" href="settings-local.html"><span class="tag">settings-local</span><span class="desc">Settings — local workspace + encryption</span></a>
+    <a class="card" href="admin-panel.html"><span class="tag">admin-panel</span><span class="desc">Admin panel — team server management</span></a>
+    <a class="card" href="modal-new-engagement.html"><span class="tag">modal-new-engagement</span><span class="desc">Dialog — new engagement</span></a>
+    <a class="card" href="modal-add-target.html"><span class="tag">modal-add-target</span><span class="desc">Dialog — add a target</span></a>
+    <a class="card" href="modal-finding.html"><span class="tag">modal-finding</span><span class="desc">Dialog — record a finding</span></a>
+    <a class="card" href="modal-connect-server.html"><span class="tag">modal-connect-server</span><span class="desc">Dialog — connect to a team server</span></a>
+  </div>
+</body></html>

@@ -60,6 +60,17 @@ try {
   check('opening a plaintext DB with a key migrates it and keeps the data', mig.status === 0 && mig.out.includes('KEPT'));
   check('after migration the file is encrypted (no SQLite header)', !isPlain());
   check('after migration the old plaintext marker is gone from the file', !fileHas(MIG));
+
+  // ── live rekey: the desktop "Encrypt this workspace" path (encrypt an open plaintext DB) ──
+  rmSync(dataDir, { recursive: true, force: true });
+  const LIVE = 'LIVE_ROW_MARKER_5a1c';
+  const enc = withDb({ MAGI_DATA_DIR: dataDir, MAGI_MFA: 'off' }, // starts plaintext, no key
+    `m.db.prepare("INSERT INTO projects (name) VALUES ('${LIVE}')").run(); m.rekeyDatabase('brand-new-pass'); console.log('REKEYED ' + m.isEncrypted());`);
+  check('rekeyDatabase() encrypts a live plaintext database', enc.status === 0 && enc.out.includes('REKEYED true'));
+  check('the file is ciphertext after a live rekey', !isPlain() && !fileHas(LIVE));
+  const back = withDb({ MAGI_DATA_DIR: dataDir, MAGI_DB_KEY: 'brand-new-pass', MAGI_MFA: 'off' },
+    `const row = m.db.prepare("SELECT name FROM projects WHERE name='${LIVE}'").get(); console.log(row ? 'KEPT' : 'LOST');`);
+  check('a live-rekeyed database opens with its new passphrase, data intact', back.status === 0 && back.out.includes('KEPT'));
 } finally {
   rmSync(dataDir, { recursive: true, force: true });
 }

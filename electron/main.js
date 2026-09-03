@@ -5,13 +5,16 @@
 // network, and no browser is involved.
 process.env.MAGI_EMBED = '1';               // stop server.js from listening
 
-import { app, BrowserWindow, Menu, dialog, protocol, shell, safeStorage } from 'electron';
+import { app, BrowserWindow, Menu, dialog, protocol, shell, safeStorage, ipcMain } from 'electron';
 import { readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, dirname, normalize } from 'node:path';
 import { homedir } from 'node:os';
+import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createDispatcher } from './dispatch.js';
+
+const require = createRequire(import.meta.url);
 
 // safeStorage (token-at-rest encryption) backend selection. Chromium only auto-detects
 // GNOME and KDE; on tiling WMs (i3, sway, Hyprland) it silently uses a no-op "basic" store
@@ -59,7 +62,77 @@ if (!isPrimary) app.exit(0);
 
 let win;
 
+// ── unlock an encrypted workspace ───────────────────────────────────────────────────────
+// If the local database is encrypted, ask for the passphrase and set MAGI_DB_KEY BEFORE the
+// server bundle (and db.js) load — so no lazy-open plumbing is needed. The passphrase lives
+// only in this process's env for the session; nothing is written to disk.
+function resolveDbPath() {
+  if (process.env.MAGI_DB) return process.env.MAGI_DB;
+  const dir = process.env.MAGI_DATA_DIR || join(ROOT, 'data');
+  const legacy = join(dir, 'checklister.db');
+  return existsSync(legacy) ? legacy : join(dir, 'magi.db');
+}
+const isPlaintextSqlite = (p) => {
+  try { return readFileSync(p).subarray(0, 16).toString('latin1').startsWith('SQLite format 3'); }
+  catch { return false; }
+};
+function keyOpens(dbPath, passphrase) {
+  try {
+    const Database = require('better-sqlite3-multiple-ciphers');
+    const d = new Database(dbPath);
+    d.pragma("cipher='sqlcipher'");
+    d.pragma("key='" + String(passphrase).replace(/'/g, "''") + "'");
+    d.prepare('SELECT count(*) FROM sqlite_master').get();
+    d.close();
+    return true;
+  } catch { return false; }
+}
+const UNLOCK_HTML = 'data:text/html;charset=utf-8,' + encodeURIComponent(`<!doctype html><meta charset="utf-8">
+<style>:root{color-scheme:dark}html,body{height:100%;margin:0}body{background:#08090E;color:#E7E9EF;font:14px system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:grid;place-items:center}
+.card{width:320px;padding:8px 26px 22px;text-align:center}.mark{font-family:ui-monospace,monospace;letter-spacing:.4em;color:#E8B65A;font-weight:600;font-size:15px;margin-bottom:16px}
+h1{font-size:16px;margin:0 0 4px}p{color:#A7AFC2;margin:0 0 16px;font-size:12.5px;line-height:1.5}
+input{width:100%;box-sizing:border-box;background:#05060A;border:1px solid #232734;border-radius:4px;color:#E7E9EF;padding:10px 12px;font-size:13px;outline:none}input:focus{border-color:#3D6FF0}
+.err{color:#E2453C;min-height:16px;font-size:12px;margin:8px 0 0}
+button[type=submit]{width:100%;margin-top:12px;padding:10px;border-radius:4px;border:1px solid #E8B65A;background:#E8B65A;color:#08090E;font-weight:600;cursor:pointer;font-size:13px}
+.link{margin-top:8px;background:none;border:none;color:#6A7288;cursor:pointer;font-size:12px}</style>
+<form class="card" id="f"><div class="mark">MAGI</div><h1>Encrypted workspace</h1>
+<p>Enter the passphrase to unlock your local data.</p>
+<input id="pw" type="password" placeholder="Passphrase" autocomplete="off" autofocus>
+<div class="err" id="err"></div><button type="submit">Unlock</button><br><button type="button" class="link" id="q">Quit</button></form>
+<script>const pw=document.getElementById('pw'),err=document.getElementById('err');
+document.getElementById('f').addEventListener('submit',e=>{e.preventDefault();err.textContent='';window.magiUnlock.submit(pw.value);});
+document.getElementById('q').addEventListener('click',()=>window.magiUnlock.quit());
+window.magiUnlock.onError(m=>{err.textContent=m;pw.value='';pw.focus();});pw.focus();</script>`);
+
+// Returns true to proceed, false if the user chose to quit (the app is exiting).
+async function ensureUnlocked() {
+  if (process.env.MAGI_DB_KEY || process.env.MAGI_KEY_FILE) return true;   // keyed by env already
+  const dbPath = resolveDbPath();
+  if (!existsSync(dbPath) || isPlaintextSqlite(dbPath)) return true;       // fresh or plaintext — no prompt
+  const passphrase = await new Promise((resolve) => {
+    const w = new BrowserWindow({
+      width: 380, height: 340, resizable: false, backgroundColor: '#08090E',
+      title: 'Magi — Unlock', autoHideMenuBar: true,
+      webPreferences: { preload: join(HERE, 'unlock-preload.js'), contextIsolation: true, sandbox: false },
+    });
+    let settled = false;
+    const cleanup = () => { ipcMain.removeAllListeners('magi-unlock:submit'); ipcMain.removeAllListeners('magi-unlock:quit'); };
+    const finish = (v) => { if (settled) return; settled = true; cleanup(); if (!w.isDestroyed()) w.destroy(); resolve(v); };
+    ipcMain.on('magi-unlock:submit', (_e, p) => {
+      if (keyOpens(dbPath, p)) finish(String(p));
+      else if (!w.isDestroyed()) w.webContents.send('magi-unlock:error', 'Wrong passphrase — try again.');
+    });
+    ipcMain.on('magi-unlock:quit', () => finish(null));
+    w.on('closed', () => { if (!settled) { settled = true; cleanup(); resolve(null); } });
+    w.loadURL(UNLOCK_HTML);
+  });
+  if (passphrase == null) { app.exit(0); return false; }
+  process.env.MAGI_DB_KEY = passphrase;
+  return true;
+}
+
 async function createWindow() {
+  if (!(await ensureUnlocked())) return;   // encrypted DB → prompt first; user may quit
   // Installed builds ship one bundled CommonJS file, in a place that depends on how
   // they were packaged; a source checkout just uses server.js.
   const entry = [

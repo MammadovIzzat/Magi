@@ -92,6 +92,9 @@ MAGI_DB_KEY='a-long-passphrase' npm start      # or MAGI_KEY_FILE=/path/to/secre
   start with a key — every engagement, finding and screenshot preserved.
 - **Server:** prefer `MAGI_KEY_FILE` pointing at a secret kept **outside** the data dir/volume
   (e.g. a Docker secret), so copying the data volume alone still yields only ciphertext.
+- **Desktop app:** turn it on from **Settings → Encryption at rest → Encrypt this workspace**
+  (set a passphrase). From then on the app shows an **unlock screen at every launch** and asks
+  for that passphrase; **Change passphrase…** rekeys it. No env var needed on the desktop.
 - **Key handling:** the key/passphrase is used only in memory; Magi never writes a derived key to
   disk. A wrong key is refused at startup rather than corrupting anything.
 - Caveat: encryption at rest protects the powered-off / copied-file / lost-device cases. While the
@@ -355,7 +358,7 @@ Uses the system Electron, so the package stays around **750 KB**.
 
 ```bash
 npm run pkg                                   # or: cd packaging && makepkg -f
-sudo pacman -U packaging/magi-0.6.0-1-any.pkg.tar.zst
+sudo pacman -U packaging/magi-0.6.1-1-any.pkg.tar.zst
 ```
 
 ### Debian / Ubuntu
@@ -364,15 +367,15 @@ Debian has no Electron package, so the `.deb` bundles its own copy — **~100 MB
 
 ```bash
 npm run build && npm run pkg:deb
-sudo apt install ./dist/installers/magi_0.6.0_amd64.deb
+sudo apt install ./dist/installers/magi_0.6.1_amd64.deb
 ```
 
 ### Any Linux — portable AppImage
 
 ```bash
 npm run build && npm run pkg:appimage
-chmod +x dist/installers/Magi-0.6.0.AppImage
-./dist/installers/Magi-0.6.0.AppImage
+chmod +x dist/installers/Magi-0.6.1.AppImage
+./dist/installers/Magi-0.6.1.AppImage
 ```
 
 ### macOS
@@ -381,8 +384,8 @@ Cross-built from Linux, both architectures:
 
 ```bash
 npm run build && npm run pkg:mac
-# dist/installers/Magi-0.6.0-mac.zip         Intel
-# dist/installers/Magi-0.6.0-arm64-mac.zip   Apple Silicon
+# dist/installers/Magi-0.6.1-mac.zip         Intel
+# dist/installers/Magi-0.6.1-arm64-mac.zip   Apple Silicon
 ```
 
 These are **unsigned and unnotarised**, and were built on Linux — I have no Mac to

@@ -216,6 +216,13 @@ check('the report tick survives an unrelated edit', tickKept.json?.in_report ===
 const tickOff = await req('PATCH', `/api/findings/${badFix.json.id}`, { cookie, body: { in_report: 0 } });
 check('the report tick can be cleared', tickOff.json?.in_report === 0);
 
+// At-rest encryption is keyed by the server's own secret file — the app-level rekey is refused
+// on a team server (only a standalone/desktop workspace can encrypt itself through the app).
+const secStatus = await req('GET', '/api/security', { cookie });
+check('the team server reports encryption is not app-manageable', secStatus.json?.manageable === false);
+const secRekey = await req('POST', '/api/security/rekey', { cookie, body: { next: 'irrelevant12' } });
+check('the team server refuses an app-level rekey', secRekey.status === 400);
+
 // the code was consumed on approval — a new request with it is refused
 const reuse = await req('POST', '/api/enroll', { body: { code: workerCode, username: 'eve', display_name: 'Eve', device_id: 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb' } });
 check('the code is single-use (consumed on approval)', reuse.status === 403);

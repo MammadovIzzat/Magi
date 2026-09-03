@@ -3,7 +3,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { db, hashPassword, verifyPassword, resetType, SESSION_TTL_DAYS, env, usingDefaultPassword, DATA_DIR } from './db.js';
+import { db, hashPassword, verifyPassword, resetType, SESSION_TTL_DAYS, env, usingDefaultPassword, DATA_DIR, isEncrypted, verifyKey, rekeyDatabase } from './db.js';
 import { exportBundle, importBundle, validateBundle } from './templates-io.js';
 import { exportProject as exportProjectBundle, importProject, validateProjectBundle } from './projects-io.js';
 import { projectReportHTML } from './report-html.js';
@@ -325,6 +325,29 @@ app.post('/api/change-username', (req, res) => {
   q(`UPDATE users SET username=? WHERE id=?`).run(name, u.id);
   writeAudit(req, { id: u.id, username: name }, `changed username from ${row.username} to ${name}`);
   res.json({ ok: true, username: name });
+});
+
+// ---- at-rest encryption (standalone / desktop only) ----
+// The team server is keyed by its secret file at boot and must NOT be rekeyed through the app;
+// this lets a local/desktop workspace encrypt its own database or change the passphrase. The
+// passphrase is never stored — it must be entered again at the next launch.
+app.get('/api/security', (req, res) => {
+  res.json({ encrypted: isEncrypted(), manageable: !SERVER_MODE });
+});
+app.post('/api/security/rekey', async (req, res) => {
+  if (SERVER_MODE) return res.status(400).json({ error: 'the server database is keyed by its secret file, not through the app' });
+  if (!(await canManage(req))) return res.status(403).json({ error: 'not allowed' });
+  const { current, next } = req.body || {};
+  if (!next || String(next).length < 8) return res.status(400).json({ error: 'passphrase must be at least 8 characters' });
+  const wasEncrypted = isEncrypted();
+  if (wasEncrypted) {
+    if (!verifyKey(current || '')) return res.status(400).json({ error: 'current passphrase is wrong' });
+    if (next === current) return res.status(400).json({ error: 'new passphrase must differ from the current one' });
+  }
+  try { rekeyDatabase(String(next)); }
+  catch (e) { return res.status(500).json({ error: 'could not change the key: ' + e.message }); }
+  writeAudit(req, currentUser(req) || {}, wasEncrypted ? 'changed the database passphrase' : 'encrypted the local database');
+  res.json({ ok: true, encrypted: true });
 });
 
 // ---- team server: enrollment (admin-approved) & admin ----

@@ -1800,7 +1800,55 @@ async function renderSettings() {
         el('button', { className: 'btn', onclick: pingLink }, 'Check connection'),
         el('button', { className: 'btn danger', onclick: disconnectDialog }, icon('exit'), 'Disconnect'))));
   }
+
+  // Local at-rest encryption — offered on a standalone / desktop workspace (the team server is
+  // keyed by its own secret file, so its web UI never lands here anyway).
+  if (!ME?.server && (!LINK?.linked || isAdmin())) {
+    try { const sec = await api('/security'); if (sec.manageable) page.append(securityCard(sec)); }
+    catch { /* an older server without the endpoint — just omit the card */ }
+  }
   view.replaceChildren(page);
+}
+function securityCard(sec) {
+  const c = el('div', { className: 'setcard' });
+  c.append(el('div', { className: 'setcard-hd' }, el('h3', {}, 'Encryption at rest')));
+  if (sec.encrypted) {
+    c.append(
+      el('p', { className: 'muted' }, el('span', { className: 'pill ok' }, '🔒 encrypted'),
+        ' This workspace’s database is encrypted on disk — a copied file or a stolen disk is useless without the passphrase.'),
+      el('div', { className: 'setcard-actions' },
+        el('button', { className: 'btn', onclick: () => rekeyDialog(true) }, 'Change passphrase…')));
+  } else {
+    c.append(
+      el('p', { className: 'muted' }, 'The database is stored unencrypted. Set a passphrase to encrypt it with SQLCipher; you then enter it each time Magi starts.'),
+      el('div', { className: 'setcard-actions' },
+        el('button', { className: 'btn gold', onclick: () => rekeyDialog(false) }, 'Encrypt this workspace…')));
+  }
+  return c;
+}
+function rekeyDialog(isChange) {
+  modal({
+    kicker: 'Security',
+    title: isChange ? 'Change passphrase' : 'Encrypt this workspace',
+    cta: isChange ? 'Change' : 'Encrypt',
+    danger: !isChange,
+    note: isChange
+      ? 'Enter your current passphrase, then a new one. It is never stored — you type it at each launch.'
+      : 'Choose a passphrase (at least 8 characters). It is NEVER stored, so if you lose it the data cannot be recovered. You will enter it every time Magi starts — back up first if you can.',
+    build: (b) => {
+      if (isChange) field(b, 'Current passphrase', 'current', { type: 'password' });
+      field(b, isChange ? 'New passphrase' : 'Passphrase', 'next', { type: 'password' });
+      field(b, 'Confirm passphrase', 'confirm', { type: 'password' });
+    },
+    onSubmit: async (fd) => {
+      const o = Object.fromEntries(fd);
+      if ((o.next || '').length < 8) throw new Error('passphrase must be at least 8 characters');
+      if (o.next !== o.confirm) throw new Error('the two passphrases do not match');
+      await api('/security/rekey', { method: 'POST', body: { current: o.current, next: o.next } });
+      toast(isChange ? 'Passphrase changed' : 'Workspace encrypted — you’ll enter this passphrase next launch');
+      renderSettings();
+    },
+  });
 }
 function connectDialog() {
   modal({

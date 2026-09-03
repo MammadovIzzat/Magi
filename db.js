@@ -110,12 +110,46 @@ if (DB_KEY && existsSync(DB_PATH) && isPlaintextSqlite(DB_PATH)) migrateToEncryp
 export const db = new Database(DB_PATH);
 // Key the connection BEFORE any read/write, so a new database is encrypted from creation.
 if (DB_KEY) { db.pragma("cipher='sqlcipher'"); db.pragma('key=' + sqlStr(DB_KEY)); }
-db.exec('PRAGMA journal_mode = WAL;');
-db.exec('PRAGMA foreign_keys = ON;');
-// Fail loudly on a wrong key instead of surfacing cryptic errors deep inside a later query.
-if (DB_KEY) {
-  try { db.prepare('SELECT count(*) FROM sqlite_master').get(); }
-  catch { throw new Error('Cannot open the encrypted database — wrong MAGI_DB_KEY / passphrase?'); }
+// The first statement after keying is what actually decrypts a page — a wrong key throws here
+// (SQLITE_NOTADB). Wrap it so that surfaces as a clear message, not a cryptic stack.
+try {
+  db.exec('PRAGMA journal_mode = WAL;');
+  db.exec('PRAGMA foreign_keys = ON;');
+  if (DB_KEY) db.prepare('SELECT count(*) FROM sqlite_master').get();
+} catch (e) {
+  if (DB_KEY) throw new Error('Cannot open the encrypted database — wrong MAGI_DB_KEY / passphrase?');
+  throw e;
+}
+
+// Live encryption state + controls, used by the desktop/standalone "Encrypt this workspace"
+// action (the team server is keyed by its secret file instead and never rekeys through the API).
+let liveEncrypted = !!DB_KEY;
+export const isEncrypted = () => liveEncrypted;
+// Does `passphrase` open THIS database? Used to confirm the current passphrase before a change.
+export function verifyKey(passphrase) {
+  try {
+    const d = new Database(DB_PATH);
+    d.pragma("cipher='sqlcipher'");
+    d.pragma('key=' + sqlStr(passphrase));
+    d.prepare('SELECT count(*) FROM sqlite_master').get();
+    d.close();
+    return true;
+  } catch { return false; }
+}
+// Encrypt a plaintext database in place, or change the key of an already-encrypted one, on the
+// LIVE connection (the app keeps running). The passphrase is never persisted — it must be
+// entered again at the next launch. Rekeying a plaintext DB requires leaving WAL first.
+export function rekeyDatabase(newPassphrase) {
+  if (!newPassphrase) throw new Error('a passphrase is required');
+  if (liveEncrypted) {
+    db.pragma('rekey=' + sqlStr(newPassphrase));
+  } else {
+    db.pragma('journal_mode = DELETE');
+    db.pragma("cipher='sqlcipher'");
+    db.pragma('rekey=' + sqlStr(newPassphrase));
+    db.pragma('journal_mode = WAL');
+    liveEncrypted = true;
+  }
 }
 
 db.exec(`

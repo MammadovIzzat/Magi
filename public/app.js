@@ -2320,6 +2320,14 @@ function loginShell(card) {
 }
 const showLoginErr = (node, msg) => { node.textContent = String(msg).toUpperCase().startsWith('TOO MANY') ? String(msg).toUpperCase() : msg; };
 async function afterAuth() { onAuthed(await api('/me')); } // fetch the full profile (role, server, …)
+// Login is the one endpoint whose non-2xx body is meaningful: a 401 can be a real error (bad
+// password / wrong code) OR an MFA challenge ({mfa:'required'|'setup'}). api() throws on any 401
+// before exposing the body, so login talks to the endpoint directly and returns the parsed body.
+async function postLogin(body) {
+  const r = await fetch('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  let json = {}; try { json = await r.json(); } catch { /* empty */ }
+  return { status: r.status, json };
+}
 function copyField(display, value, mono) {
   return el('div', { className: 'mfa-copy' },
     el('input', { readOnly: true, value: display, className: 'mfa-field' + (mono ? ' mono' : '') }),
@@ -2343,10 +2351,11 @@ function loginPasswordStep() {
   box.onsubmit = async (e) => {
     e.preventDefault(); err.textContent = ''; p.style.borderColor = '';
     try {
-      const r = await api('/auth/login', { method: 'POST', body: { username: u.value, password: p.value } });
+      const { json: r } = await postLogin({ username: u.value, password: p.value });
+      if (r.token) { setAuthToken(r.token); return afterAuth(); }
       if (r.mfa === 'setup') return loginSetupStep(u.value, p.value, r);
       if (r.mfa === 'required') return loginCodeStep(u.value, p.value);
-      setAuthToken(r.token); await afterAuth();
+      throw new Error(r.error || 'authentication failed');
     } catch (ex) { showLoginErr(err, ex.message.toUpperCase().startsWith('TOO MANY') ? ex.message : `AUTH REJECTED — ${ex.message}.`); p.style.borderColor = 'var(--red)'; }
   };
   u.focus();
@@ -2377,7 +2386,8 @@ function loginCodeStep(username, password) {
   box.onsubmit = async (e) => {
     e.preventDefault(); err.textContent = '';
     try {
-      const r = await api('/auth/login', { method: 'POST', body: { username, password, otp: code.value } });
+      const { json: r } = await postLogin({ username, password, otp: code.value });
+      if (!r.token) throw new Error(r.error || 'that code did not work — try again');
       setAuthToken(r.token); await afterAuth();
     } catch (ex) { showLoginErr(err, ex.message); code.select(); }
   };
@@ -2421,7 +2431,8 @@ function loginSetupStep(username, password, r) {
   box.onsubmit = async (e) => {
     e.preventDefault(); err.textContent = '';
     try {
-      const res = await api('/auth/login', { method: 'POST', body: { username, password, otp: code.value } });
+      const { json: res } = await postLogin({ username, password, otp: code.value });
+      if (!res.token) throw new Error(res.error || 'that code did not match');
       setAuthToken(res.token);
       loginRecoveryStep(res.recovery_codes);
     } catch (ex) { showLoginErr(err, ex.message); code.select(); }

@@ -122,6 +122,24 @@ checks.push(['settings screen paints (local)', await ev(`
 checks.push(['connect-to-server dialog opens', await ev(`
   document.querySelector(".setcard-actions .btn.gold")?.click(); await new Promise(r => setTimeout(r, 400));
   return ["server_url","code","username","display_name"].every(n => document.querySelector(".modal input[name="+n+"]"))`)]);
+// Regression: an MFA-enabled account returns 401 {mfa:'required'} on password-only login. The
+// login flow must READ that challenge and show the code screen — not treat the 401 as a hard error.
+// (This standalone server never enforces MFA, so stub fetch to return the challenge just for the login.)
+checks.push(['password step advances to the two-factor screen on an MFA challenge', await ev(`
+  showLogin(); await new Promise(r => setTimeout(r, 200));
+  const real = window.fetch;
+  window.fetch = (u, o) => (typeof u === "string" && u.includes("/api/auth/login"))
+    ? Promise.resolve(new Response(JSON.stringify({ error: "a two-factor code is required", mfa: "required" }), { status: 401, headers: { "content-type": "application/json" } }))
+    : real(u, o);
+  const f = document.querySelector(".login-box");
+  f.querySelector("input[name=username]").value = "izzat";
+  f.querySelector("input[type=password]").value = "whatever12";
+  f.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+  await new Promise(r => setTimeout(r, 500));
+  window.fetch = real;
+  const onCode = /two-factor/i.test(document.querySelector(".login-hd")?.textContent || "") && !!document.querySelector("input.mfa-code, input[inputmode=numeric]");
+  const noError = !(document.querySelector(".loginerr")?.textContent || "").trim();
+  return onCode && noError`)]);
 
 ws.close();
 

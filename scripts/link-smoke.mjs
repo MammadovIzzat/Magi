@@ -6,7 +6,7 @@
 // the client, the token stored ENCRYPTED at rest when a keychain is present (and never
 // left in plaintext), authenticated requests, heartbeat, and clean disconnect.
 import { spawn } from 'node:child_process';
-import { rmSync, existsSync, readFileSync, mkdtempSync, statSync } from 'node:fs';
+import { rmSync, existsSync, readFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import https from 'node:https';
@@ -76,19 +76,18 @@ const cookie = (login.headers['set-cookie'] || []).map(c => c.split(';')[0]).joi
 const code1 = (await req('POST', '/api/admin/enroll-codes', { cookie, body: { role: 'admin' } })).json?.code;
 const code2 = (await req('POST', '/api/admin/enroll-codes', { cookie, body: { role: 'worker' } })).json?.code;
 
-// now drive the CLIENT module
+// The client runs an ENCRYPTED workspace, so the token is protected at rest by the same passphrase
+// (there is no separate link file any more). Set the key BEFORE importing the module that opens the DB.
+process.env.MAGI_DB_KEY = 'client-workspace-passphrase-9';
 const link = await import('../client-link.js');
+const { db: clientDb } = await import('../db.js');
 
 // 1) a wrong fingerprint must be refused (MITM defence) — code stays unused
 const bad = await link.connect({ server_url: serverUrl, fingerprint: 'AA:BB:CC', code: code1, username: 'x', display_name: 'X', password: 'wrongfp-secret' });
 check('wrong fingerprint is refused as MITM', bad.ok === false && /fingerprint/i.test(bad.error || ''));
 
-// 2) request access -> pending; an admin approves -> the client links. Token is encrypted at
-// rest and never written in plaintext. (No fingerprint needed: trusted on first connect.)
-const secret = [];
-link.setEncryptor({ available: true,
-  encrypt: (s) => { secret.push(s); return 'ENC(' + Buffer.from(s).toString('base64') + ')'; },
-  decrypt: (b) => Buffer.from(String(b).replace(/^ENC\(|\)$/g, ''), 'base64').toString() });
+// 2) request access -> pending; an admin approves -> the client links. The token is stored inside
+// the encrypted workspace database, not a plaintext file. (No fingerprint needed: trusted on first connect.)
 const reqres = await link.connect({ server_url: serverUrl, code: code1, username: 'ana', display_name: 'Ana R.', password: 'ana-secret-8' });
 if (!reqres.ok) die('connect() failed: ' + reqres.error);
 check('request is pending until an admin approves', reqres.ok === true && reqres.pending === true && link.status().pending === true);
@@ -99,11 +98,19 @@ await req('POST', `/api/admin/requests/${rid}/approve`, { cookie, body: { role: 
 await link.pollApproval();
 link.stopSyncLoop(); // finalize started the sync loop; stop it so the test drives things
 check('client links once approved', link.status().linked === true && link.status().link?.username === 'ana');
-check('link reports token encrypted at rest', link.status().link?.token_at_rest === 'encrypted');
-const rawFile = readFileSync(link.LINK_PATH, 'utf8');
-const token = secret[0];
-check('raw token is NOT written to disk', token && !rawFile.includes(token));
-check('link file is chmod 0600', (statSync(link.LINK_PATH).mode & 0o777) === 0o600);
+check('the role comes from the signed token, not client storage', link.status().link?.role === 'admin');
+check('link reports the token encrypted at rest', link.status().link?.token_at_rest === 'encrypted');
+
+// The link is one row in the DB, and only the minimum is kept — no role or display name.
+const stored = JSON.parse(clientDb.prepare(`SELECT data FROM client_link WHERE id=1`).get().data);
+const token = stored.token;
+check('the token is stored in the workspace database', typeof token === 'string' && token.length > 20);
+check('role and display name are NOT persisted (derived from the JWT / server)', stored.role === undefined && stored.display_name === undefined);
+check('no plaintext link.json is left on disk', !existsSync(link.LINK_PATH));
+const rawDb = readFileSync(join(clientDir, 'magi.db'));
+const rawWal = existsSync(join(clientDir, 'magi.db-wal')) ? readFileSync(join(clientDir, 'magi.db-wal')) : Buffer.alloc(0);
+check('the workspace file is genuinely encrypted (not a plaintext SQLite header)', rawDb.slice(0, 15).toString() !== 'SQLite format 3');
+check('the raw token never appears on disk in the clear', !rawDb.includes(Buffer.from(token)) && !rawWal.includes(Buffer.from(token)));
 
 // 3) authenticated requests work through the link, and are attributed to the display name
 const created = await link.remoteFetch('/api/projects', { method: 'POST', body: { name: 'Linked Project' } });
@@ -131,7 +138,7 @@ check('the code was single-use (reuse refused)', reuse.ok === false);
 
 // 5) disconnect clears the local link
 link.disconnect();
-check('disconnect removes the stored link', !existsSync(link.LINK_PATH) && link.status().linked === false);
+check('disconnect removes the stored link', !clientDb.prepare(`SELECT 1 FROM client_link WHERE id=1`).get() && link.status().linked === false);
 
 let bad2 = 0;
 for (const [name, okk] of checks) { console.log(`  ${okk ? 'ok  ' : 'FAIL'}  ${name}`); if (!okk) bad2++; }

@@ -89,6 +89,27 @@ const l4 = await login();
 const rcReuse = await req('POST', '/api/auth/mfa', { cookie: l4.cookie, body: { code: recovery[0] } });
 check('a used recovery code cannot be reused', rcReuse.status === 401);
 
+// 4b) the CLIENT token endpoint (/api/auth/token) is MFA-gated too: a linked device mints a JWT
+// only after the second factor — first a setup challenge, then a required code on later logins.
+// (This is the path an app uses when it logs in to a server; issue: "not asked mfa" must not happen.)
+const cAdmin = await (async () => { const l = await login(); await req('POST', '/api/auth/mfa', { cookie: l.cookie, body: { code: totp.currentCode(secret) } }); return l.cookie; })();
+const codeT = (await req('POST', '/api/admin/enroll-codes', { cookie: cAdmin, body: { note: 'tok' } })).json.code;
+const devT = 'aa11bb22-cc33-4d44-8e55-ff66aa77bb88';
+const enT = await req('POST', '/api/enroll', { body: { code: codeT, username: 'dana', display_name: 'Dana', device_id: devT, password: 'dana-secret-8' } });
+await req('POST', `/api/admin/requests/${enT.json.request_id}/approve`, { cookie: cAdmin, body: { role: 'worker' } });
+
+const tok0 = await req('POST', '/api/auth/token', { body: { username: 'dana', password: 'dana-secret-8', device_id: devT } });
+check('a client login with no code is met with an MFA setup challenge (no token)', !tok0.json?.token && tok0.json?.mfa === 'setup' && typeof tok0.json?.secret === 'string');
+const tSecret = tok0.json.secret;
+const tokBad = await req('POST', '/api/auth/token', { body: { username: 'dana', password: 'dana-secret-8', device_id: devT, otp: '000000' } });
+check('a wrong setup code mints no client token', tokBad.status === 401 && !tokBad.json?.token);
+const tokOk = await req('POST', '/api/auth/token', { body: { username: 'dana', password: 'dana-secret-8', device_id: devT, otp: totp.currentCode(tSecret) } });
+check('the right setup code mints a client JWT + recovery codes', tokOk.status === 200 && typeof tokOk.json?.token === 'string' && Array.isArray(tokOk.json?.recovery_codes));
+const tokNoOtp = await req('POST', '/api/auth/token', { body: { username: 'dana', password: 'dana-secret-8', device_id: devT } });
+check('once enrolled, a client login without a code is refused', tokNoOtp.status === 401 && tokNoOtp.json?.mfa === 'required' && !tokNoOtp.json?.token);
+const tokReq = await req('POST', '/api/auth/token', { body: { username: 'dana', password: 'dana-secret-8', device_id: devT, otp: totp.currentCode(tSecret) } });
+check('a returning client mints a JWT with its code', tokReq.status === 200 && typeof tokReq.json?.token === 'string');
+
 // 5) admin reset clears MFA → the account is sent back into setup at next sign-in
 const cAuthed = (await (async () => { const l = await login(); await req('POST', '/api/auth/mfa', { cookie: l.cookie, body: { code: totp.currentCode(secret) } }); return l.cookie; })());
 const adminId = (await req('GET', '/api/admin/users', { cookie: cAuthed })).json.find(u => u.username === 'admin').id;

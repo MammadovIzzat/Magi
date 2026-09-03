@@ -1,6 +1,6 @@
 {
   "name": "magi",
-  "version": "0.7.7",
+  "version": "0.7.8",
   "description": "Magi — the pentester's familiar. Engagement checklists, targets and evidence (web app + CLI)",
   "type": "module",
   "bin": {
@@ -16,7 +16,7 @@
     "pkg:appimage": "electron-builder --linux AppImage",
     "pkg:mac": "electron-builder --mac zip --x64 --arm64",
     "pkg:all": "npm run build && electron-builder --linux deb AppImage --mac zip",
-    "test": "node scripts/migrate-smoke.mjs && node scripts/stash-smoke.mjs && node scripts/smoke.mjs && node scripts/server-smoke.mjs && node scripts/link-smoke.mjs && node scripts/sync-smoke.mjs && node scripts/backup-smoke.mjs && node scripts/mfa-smoke.mjs && node scripts/io-smoke.mjs && node scripts/qr-smoke.mjs && node scripts/crypto-smoke.mjs && node scripts/jwt-smoke.mjs",
+    "test": "node scripts/migrate-smoke.mjs && node scripts/stash-smoke.mjs && node scripts/smoke.mjs && node scripts/server-smoke.mjs && node scripts/link-smoke.mjs && node scripts/link-migrate-smoke.mjs && node scripts/sync-smoke.mjs && node scripts/backup-smoke.mjs && node scripts/mfa-smoke.mjs && node scripts/io-smoke.mjs && node scripts/qr-smoke.mjs && node scripts/crypto-smoke.mjs && node scripts/jwt-smoke.mjs",
     "test:server": "node scripts/server-smoke.mjs",
     "test:link": "node scripts/link-smoke.mjs",
     "test:sync": "node scripts/sync-smoke.mjs",

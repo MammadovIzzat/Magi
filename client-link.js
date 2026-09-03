@@ -7,17 +7,20 @@
 //     band: we open TLS, read the server's actual certificate, and refuse unless its
 //     fingerprint matches. Only then do we pin that certificate for every later request.
 //     A man-in-the-middle with a different cert cannot match the pasted fingerprint.
-//   - The bearer token is the one real secret. It is encrypted at rest with the OS keychain
-//     (Electron safeStorage) when the desktop app injects an encryptor; otherwise it is
-//     written to a 0600 file and flagged as unencrypted so the UI can warn.
+//   - The bearer token (JWT) is the one real secret. It lives as one row inside the local
+//     database, so an encrypted workspace protects it with the same passphrase; when the
+//     workspace is NOT encrypted the UI warns that it is stored in the clear. Only the minimum
+//     is kept — server URL + pinned cert, device id, username, the JWT, and an offline-login
+//     verifier. The role and display name are NOT stored: the role is read from the JWT, the
+//     display name is fetched from the server.
 //   - The device id is a UUID generated here and kept; the server binds the token to it.
-import { readFileSync, writeFileSync, existsSync, rmSync, chmodSync } from 'node:fs';
+import { readFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
 import https from 'node:https';
 import tls from 'node:tls';
-import { DATA_DIR, db, hashPassword, verifyPassword } from './db.js';
+import { DATA_DIR, db, hashPassword, verifyPassword, isEncrypted } from './db.js';
 import * as sync from './sync.js';
 import * as jwt from './jwt.js';
 import { exportProject } from './projects-io.js';
@@ -31,9 +34,9 @@ let pendingSecret = null;
 const LINK_FILE = join(DATA_DIR, 'link.json');
 const TIMEOUT = 8000;
 
-// Optional at-rest encryptor for the token, provided by the desktop main process (Electron
-// safeStorage → OS keychain). It arrives via a global so it reaches this module whether or
-// not the server is bundled. Without it, the token falls back to a 0600 file and the UI warns.
+// A legacy at-rest encryptor for the token (Electron safeStorage → OS keychain). Still accepted
+// so an OLD link.json written by a previous version can be decrypted once and migrated into the
+// database. New links are NOT encrypted here — they live in the (optionally encrypted) DB instead.
 //   { available: boolean, encrypt(str)->base64, decrypt(base64)->str }
 let encryptor = globalThis.__MAGI_ENCRYPTOR || null;
 export function setEncryptor(e) { encryptor = e || null; }
@@ -42,31 +45,43 @@ const normFp = (s) => String(s || '').toUpperCase().replace(/[^0-9A-F]/g, '');
 const derToPem = (der) => '-----BEGIN CERTIFICATE-----\n'
   + der.toString('base64').match(/.{1,64}/g).join('\n') + '\n-----END CERTIFICATE-----\n';
 
+// The link is one JSON row in the database (client_link, id=1). Role, display name and token
+// expiry are DERIVED (from the JWT / the server) and never stored — see publicLink().
 function saveLink(link) {
-  const out = { ...link };
-  if (link.token != null) {
-    if (encryptor?.available) out.token = { enc: 'safeStorage', data: encryptor.encrypt(link.token) };
-    else out.token = { enc: 'none', data: link.token };
-  }
-  writeFileSync(LINK_FILE, JSON.stringify(out, null, 2));
-  try { chmodSync(LINK_FILE, 0o600); } catch { /* best effort on non-POSIX */ }
+  const { role, display_name, jwt_exp, _locked, _plaintext, ...keep } = link;
+  db.prepare(`INSERT INTO client_link (id, data) VALUES (1, ?)
+    ON CONFLICT(id) DO UPDATE SET data=excluded.data`).run(JSON.stringify(keep));
+}
+function deleteLink() { try { db.prepare(`DELETE FROM client_link`).run(); } catch { /* best effort */ } }
+
+/** Load the stored link. Null when not linked. Migrates a legacy link.json on first read. */
+export function loadLink() {
+  migrateLegacyLink();
+  const row = db.prepare(`SELECT data FROM client_link WHERE id=1`).get();
+  if (!row) return null;
+  try { return JSON.parse(row.data); } catch { return null; }
 }
 
-/** Load the stored link, decrypting the token if we can. Null when not linked. */
-export function loadLink() {
-  if (!existsSync(LINK_FILE)) return null;
-  let raw;
-  try { raw = JSON.parse(readFileSync(LINK_FILE, 'utf8')); } catch { return null; }
-  if (raw.token && typeof raw.token === 'object') {
-    if (raw.token.enc === 'safeStorage') {
-      if (encryptor?.available) { try { raw.token = encryptor.decrypt(raw.token.data); } catch { raw.token = null; raw._locked = true; } }
-      else { raw.token = null; raw._locked = true; } // encrypted by a keychain we can't reach here
-    } else {
-      raw.token = raw.token.data;
-      raw._plaintext = true; // stored without a keychain — the UI warns
+// One-time import of a link.json written by an older version: decrypt its token (via the keychain
+// if that is how it was stored), drop the fields we no longer persist, write it into the DB, and
+// delete the file. A token we cannot decrypt (keychain gone) is dropped so the client re-authenticates.
+let legacyChecked = false;
+function migrateLegacyLink() {
+  if (legacyChecked) return;
+  legacyChecked = true;
+  try {
+    if (db.prepare(`SELECT 1 FROM client_link WHERE id=1`).get()) return; // already have a DB link
+    if (!existsSync(LINK_FILE)) return;
+    const raw = JSON.parse(readFileSync(LINK_FILE, 'utf8'));
+    if (raw.token && typeof raw.token === 'object') {
+      if (raw.token.enc === 'safeStorage') { try { raw.token = encryptor?.available ? encryptor.decrypt(raw.token.data) : null; } catch { raw.token = null; } }
+      else raw.token = raw.token.data;
     }
-  }
-  return raw;
+    const { role, display_name, jwt_exp, _locked, _plaintext, ...keep } = raw;
+    if (keep.token == null && !keep.pending) keep.needs_reauth = 1; // token lost with the keychain → re-auth
+    db.prepare(`INSERT OR REPLACE INTO client_link (id, data) VALUES (1, ?)`).run(JSON.stringify(keep));
+    rmSync(LINK_FILE, { force: true });
+  } catch { /* corrupt/unreadable file → nothing to migrate */ }
 }
 
 /**
@@ -177,12 +192,11 @@ async function requestToken(link, password, otp) {
 // Persist a freshly-minted token and go fully linked. The password is used only to compute an
 // offline-login verifier and is then discarded — the JWT and the verifier are what we keep.
 function storeToken(link, password, loginJson) {
-  const claims = jwt.decodeUnsafe(loginJson.token) || {};
   const full = {
     server_url: link.server_url, fingerprint: link.fingerprint, cert_pem: link.cert_pem,
-    device_id: link.device_id, username: link.username || link.req_username, display_name: link.display_name,
-    token: loginJson.token, jwt_exp: loginJson.exp || claims.exp || null, role: loginJson.role || claims.role || null,
-    pass_verifier: hashPassword(String(password)),
+    device_id: link.device_id, username: link.username || link.req_username,
+    token: loginJson.token,                       // carries role, epoch, exp, username, device_id
+    pass_verifier: hashPassword(String(password)), // scrypt — lets the client log in offline
     connected_at: link.connected_at || new Date().toISOString(), stash_id: link.stash_id ?? null,
     last_sync: link.last_sync || null, last_ok: link.last_ok || null, needs_reauth: 0,
   };
@@ -229,9 +243,9 @@ export async function pollApproval() {
   try { r = await remoteFetch(`/api/enroll/poll?request_id=${encodeURIComponent(link.request_id)}&device_id=${encodeURIComponent(link.device_id)}`, { link }); }
   catch { return { pending: true, waiting: true }; } // server unreachable — keep waiting
   if (gen !== linkGen || !loadLink()?.pending) return { pending: false, stale: true };
-  if (r.status === 404) { stopApprovalPoll(); try { rmSync(LINK_FILE, { force: true }); } catch {} return { pending: false, gone: true }; }
+  if (r.status === 404) { stopApprovalPoll(); deleteLink(); return { pending: false, gone: true }; }
   const st = r.json?.status;
-  if (st === 'rejected') { stopApprovalPoll(); try { rmSync(LINK_FILE, { force: true }); } catch {} return { pending: false, rejected: true }; }
+  if (st === 'rejected') { stopApprovalPoll(); deleteLink(); return { pending: false, rejected: true }; }
   if (st !== 'approved') return { pending: true };
 
   // Approved. Set local data aside once, move out of 'pending' into 'awaiting login', then try to
@@ -418,7 +432,7 @@ export async function heartbeat() {
     const r = await remoteFetch('/api/me', { link });
     if (gen !== linkGen || !loadLink()?.token) return { online: false, error: 'link changed' };
     const online = r.status === 200;
-    if (online) { link.last_ok = new Date().toISOString(); saveLink(link); }
+    if (online) { remoteDisplayName = r.json?.display_name || remoteDisplayName; link.last_ok = new Date().toISOString(); saveLink(link); }
     else if (r.status === 401) markNeedsReauth(); // token expired/revoked — surface it, pause sync
     return { online, status: r.status, who: r.json || null, revoked: r.status === 401 };
   } catch (e) { return { online: false, error: e.message }; }
@@ -430,27 +444,34 @@ export function disconnect() {
   linkGen++;        // invalidate any in-flight syncOnce/heartbeat so it can't write after us
   stopSyncLoop();
   stopApprovalPoll();
+  remoteDisplayName = null;
   if (link && !link.pending) { // only a fully-linked client cleared a mirror and holds a stash
     try { clearMirror(); } catch {}                 // drop our cached copy of the server's data
     try { restoreStash(link.stash_id); } catch {} // bring personal engagements back
     try { sync.setWatermarks(db, { pull: '', push: '' }); } catch {}
   }
-  try { rmSync(LINK_FILE, { force: true }); } catch {}
+  deleteLink();
+  try { rmSync(LINK_FILE, { force: true }); } catch {} // remove any leftover legacy file too
   return { ok: true, was: link ? publicLink(link) : null };
 }
 
+// The last display name the server reported (from /api/me). Held in memory only — the display
+// name is never persisted; offline we fall back to the username.
+let remoteDisplayName = null;
 function publicLink(link) {
   if (!link) return null;
+  const claims = link.token ? jwt.decodeUnsafe(link.token) : null;
+  const username = link.username || link.req_username || claims?.username || null;
   return {
     server_url: link.server_url, fingerprint: link.fingerprint, device_id: link.device_id,
-    username: link.username || link.req_username, display_name: link.display_name,
-    role: link.role || (link.token ? jwt.decodeUnsafe(link.token)?.role : null) || null,
+    username, display_name: remoteDisplayName || username,
+    role: claims?.role || null,                    // authoritative source is the signed token
     pending: !!link.pending, request_id: link.request_id || null,
-    needs_login: !!(link.needs_login && !link.token), needs_reauth: !!link.needs_reauth, jwt_exp: link.jwt_exp || null,
+    needs_login: !!(link.needs_login && !link.token), needs_reauth: !!link.needs_reauth,
+    jwt_exp: claims?.exp || null,
     connected_at: link.connected_at || null, last_ok: link.last_ok || null, last_sync: link.last_sync || null,
-    // How the token is (or will be) stored: keyed off the actual encryptor, so this is right
-    // both for a freshly-connected link and one just loaded from disk.
-    token_at_rest: link._locked ? 'locked' : (encryptor?.available ? 'encrypted' : 'unencrypted'),
+    // The token lives in the database, so it is protected exactly when the workspace is encrypted.
+    token_at_rest: isEncrypted() ? 'encrypted' : 'unencrypted',
   };
 }
 

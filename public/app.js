@@ -1793,9 +1793,8 @@ async function renderSettings() {
         el('button', { className: 'btn gold', onclick: connectDialog }, icon('server'), 'Connect to a server'))));
   } else {
     const L = LINK.link || {};
-    const atRest = L.token_at_rest === 'encrypted' ? el('span', { className: 'pill ok' }, 'encrypted · OS keychain')
-      : L.token_at_rest === 'unencrypted' ? el('span', { className: 'pill warn' }, 'stored unencrypted — no keychain here')
-        : el('span', { className: 'pill' }, L.token_at_rest || 'unknown');
+    const atRest = L.token_at_rest === 'encrypted' ? el('span', { className: 'pill ok' }, 'encrypted · workspace passphrase')
+      : el('span', { className: 'pill warn' }, 'stored unencrypted — enable encryption');
     page.append(el('div', { className: 'setcard' },
       el('div', { className: 'setcard-hd' }, el('span', { className: 'linkbadge on' }, el('span', { className: 'dot' }), 'Linked')),
       L.needs_reauth ? el('div', { className: 'duebanner' },
@@ -1806,6 +1805,8 @@ async function renderSettings() {
       kv('This device', L.device_id),
       kv('Fingerprint', el('code', { className: 'fp' }, L.fingerprint || '—')),
       el('div', { className: 'kv' }, el('span', { className: 'k' }, 'Token at rest'), el('span', { className: 'v' }, atRest)),
+      L.token_at_rest !== 'encrypted' ? el('p', { className: 'muted small' },
+        'Your access token is stored in this workspace’s database, which is not encrypted — anyone with the file can read it. Turn on encryption below to protect it with a passphrase.') : null,
       kv('Connected', L.connected_at ? new Date(L.connected_at).toLocaleString() : '—'),
       kv('Last sync', L.last_sync ? new Date(L.last_sync).toLocaleString() : 'not yet'),
       (() => { const s = el('span', {}, 'checking…'); api('/link/ping').then(hb => { s.textContent = hb?.who?.version ? 'v' + hb.who.version : (hb?.online ? 'unknown' : 'offline'); }).catch(() => { s.textContent = 'offline'; }); return kv('Server version', s); })(),

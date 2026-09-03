@@ -62,6 +62,14 @@ export function setupSchema(db) {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       failed INTEGER NOT NULL DEFAULT 0,
       data TEXT NOT NULL);
+    -- The link to a team server (server URL + pinned cert, this device's id, the username, the
+    -- JWT, and the offline-login verifier). A single row. Client-local — NEVER synced (not a SPEC
+    -- table) — and kept IN the database so an encrypted workspace protects the token with the same
+    -- passphrase, instead of a separate plaintext file. Role and display name are NOT stored: the
+    -- role is read from the JWT, the display name is fetched from the server.
+    CREATE TABLE IF NOT EXISTS client_link (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      data TEXT NOT NULL);
   `);
   // A mute is only ever meant to bracket one in-process call. If a crash left one behind it
   // would silently freeze all change capture forever, so clear any leftover on every boot.

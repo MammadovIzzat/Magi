@@ -144,9 +144,10 @@ async function createWindow() {
   ].find(existsSync);
   if (!entry) throw new Error('Magi: could not find the server bundle next to ' + ROOT);
 
-  // Encrypt the team-server token at rest with the OS keychain (Keychain / DPAPI / libsecret).
-  // Set before the server bundle loads so its background sync reads it. A global so it reaches
-  // client-link whether the server is bundled or a loose file.
+  // The link token now lives inside the (optionally encrypted) workspace database, not a separate
+  // file. This OS-keychain bridge (Keychain / DPAPI / libsecret) is kept only so an OLD link.json
+  // written by a previous version — where the token was keychain-encrypted — can be decrypted once
+  // and migrated into the database. Set before the server bundle loads so migration can reach it.
   try {
     if (safeStorage.isEncryptionAvailable()) {
       globalThis.__MAGI_ENCRYPTOR = {
@@ -155,7 +156,7 @@ async function createWindow() {
         decrypt: (b) => safeStorage.decryptString(Buffer.from(String(b), 'base64')),
       };
     }
-  } catch { /* no keychain available — client-link falls back to a 0600 file and the UI warns */ }
+  } catch { /* no keychain — an old keychain-encrypted link.json can't be migrated; the client re-authenticates */ }
 
   let mod;
   try { mod = await import(pathToFileURL(entry).href); }

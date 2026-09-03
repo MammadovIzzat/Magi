@@ -61,6 +61,10 @@ const isPrimary = app.requestSingleInstanceLock();
 if (!isPrimary) app.exit(0);
 
 let win;
+// The unlock window is the app's only window while it's shown; destroying it after a successful
+// unlock would fire 'window-all-closed' and quit the app mid-startup, racing the main window
+// (a bare ERR_FAILED). Only let 'window-all-closed' quit once the main window is actually up.
+let started = false;
 
 // ── unlock an encrypted workspace ───────────────────────────────────────────────────────
 // If the local database is encrypted, ask for the passphrase and set MAGI_DB_KEY BEFORE the
@@ -145,24 +149,34 @@ async function createWindow() {
     }
   } catch { /* no keychain available — client-link falls back to a 0600 file and the UI warns */ }
 
-  const mod = await import(pathToFileURL(entry).href);
+  let mod;
+  try { mod = await import(pathToFileURL(entry).href); }
+  catch (e) { throw new Error('failed to load the server bundle (' + entry + '): ' + (e?.stack || e)); }
   const dispatch = createDispatcher(mod.default?.default ?? mod.default);
 
   protocol.handle('magi', async (request) => {
-    const url = new URL(request.url);
-    if (url.pathname.startsWith('/api/')) return dispatch(request);
-
-    // static assets, path-traversal safe
-    const rel = normalize(url.pathname === '/' ? '/index.html' : url.pathname).replace(/^(\.\.[/\\])+/, '');
-    const file = join(PUBLIC, rel);
-    if (!file.startsWith(PUBLIC)) return new Response('forbidden', { status: 403 });
+    // A throw here (or a rejected dispatch) otherwise surfaces as an opaque ERR_FAILED with no
+    // clue why — so catch everything, log the real cause, and return a visible 500 instead.
     try {
-      const ext = rel.slice(rel.lastIndexOf('.'));
-      return new Response(await readFile(file), {
-        headers: { 'content-type': MIME[ext] || 'application/octet-stream' },
-      });
-    } catch {
-      return new Response('not found', { status: 404 });
+      const url = new URL(request.url);
+      if (url.pathname.startsWith('/api/')) return await dispatch(request);
+
+      // static assets, path-traversal safe
+      const rel = normalize(url.pathname === '/' ? '/index.html' : url.pathname).replace(/^(\.\.[/\\])+/, '');
+      const file = join(PUBLIC, rel);
+      if (!file.startsWith(PUBLIC)) return new Response('forbidden', { status: 403 });
+      try {
+        const ext = rel.slice(rel.lastIndexOf('.'));
+        return new Response(await readFile(file), {
+          headers: { 'content-type': MIME[ext] || 'application/octet-stream' },
+        });
+      } catch (e) {
+        console.error('[magi] static asset not served:', file, '-', e?.message || e);
+        return new Response('not found: ' + rel, { status: 404 });
+      }
+    } catch (err) {
+      console.error('[magi] protocol handler threw for', request.url, '-', err?.stack || err);
+      return new Response('internal error: ' + (err?.message || err), { status: 500 });
     }
   });
 
@@ -176,9 +190,16 @@ async function createWindow() {
     show: false,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
+  started = true;   // the real window exists now — 'window-all-closed' may quit from here on
 
   // Never paint a half-styled window: wait for the first frame.
   win.once('ready-to-show', () => win.show());
+
+  // Diagnostics: if the window can't load or the renderer dies, say why (visible when run from a
+  // terminal) instead of only a bare ERR_FAILED.
+  win.webContents.on('did-fail-load', (_e, code, desc, url) => console.error('[magi] window did-fail-load', code, desc, url));
+  win.webContents.on('render-process-gone', (_e, details) => console.error('[magi] render process gone:', JSON.stringify(details)));
+  win.webContents.on('console-message', (_e, _lvl, message, line, src) => console.error('[magi:renderer]', message, `(${src}:${line})`));
 
   // Anything that is not Magi opens in the real browser, not in this window.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -201,5 +222,5 @@ if (isPrimary) app.whenReady().then(createWindow).catch((err) => {
   dialog.showErrorBox('Magi could not start', String(err?.stack || err));
   app.exit(1);
 });
-app.on('window-all-closed', () => app.quit());
+app.on('window-all-closed', () => { if (started) app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

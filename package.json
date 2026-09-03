@@ -1,6 +1,6 @@
 {
   "name": "magi",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Magi — the pentester's familiar. Engagement checklists, targets and evidence (web app + CLI)",
   "type": "module",
   "bin": {
@@ -33,6 +33,29 @@
     "electron-builder": "^26.15.3",
     "esbuild": "^0.28.2",
     "postject": "^1.0.0-alpha.6"
+  },
+  "build": {
+    "appId": "com.mammadovizzat.magi",
+    "directories": { "output": "dist/installers" },
+    "asar": false,
+    "npmRebuild": false,
+    "files": [
+      "electron/**/*",
+      "dist/magi-server.cjs",
+      "public/**/*",
+      "package.json",
+      "packaging/magi.png"
+    ],
+    "linux": {
+      "target": ["deb", "AppImage"],
+      "category": "Development",
+      "icon": "packaging/magi.png"
+    },
+    "mac": {
+      "target": ["zip"],
+      "category": "public.app-category.developer-tools",
+      "icon": "packaging/magi.png"
+    }
   },
   "main": "electron/main.js",
   "productName": "Magi",

@@ -226,17 +226,19 @@ export async function pollApproval() {
   if (st === 'rejected') { stopApprovalPoll(); try { rmSync(LINK_FILE, { force: true }); } catch {} return { pending: false, rejected: true }; }
   if (st !== 'approved') return { pending: true };
 
-  // Approved. Set local data aside once, then log in for a token.
+  // Approved. Set local data aside once, move out of 'pending' into 'awaiting login', then try to
+  // log in for a token (auto, using the in-memory password). If the server wants an OTP, or we
+  // have no cached password, the link sits in needs_login and the UI collects credentials.
   if (link.stash_id === undefined) {
     try { link.stash_id = stashLocalProjects() ?? null; } catch (e) { return { pending: true, error: `could not set local data aside: ${e.message}` }; }
     sync.setWatermarks(db, { pull: '', push: '' });
-    saveLink(link); // remember we've stashed, so a retry can't stash again
   }
+  link.pending = false; link.needs_login = true; saveLink(link);
   stopApprovalPoll();
-  if (!pendingSecret?.password) return { pending: false, approved: true, needs_login: true };
-  const res = await attemptLogin({ ...link, pending: undefined }, pendingSecret.password);
-  if (res.ok) return { pending: false, approved: true, linked: true };
-  return { pending: false, approved: true, ...res }; // mfa or error → UI completes via login()
+  if (!pendingSecret?.password) return { approved: true, needs_login: true };
+  const res = await attemptLogin(loadLink(), pendingSecret.password);
+  if (res.ok) return { approved: true, linked: true };
+  return { approved: true, ...res }; // mfa or error → UI completes via login()
 }
 
 let approvalTimer = null;
@@ -434,7 +436,7 @@ function publicLink(link) {
     username: link.username || link.req_username, display_name: link.display_name,
     role: link.role || (link.token ? jwt.decodeUnsafe(link.token)?.role : null) || null,
     pending: !!link.pending, request_id: link.request_id || null,
-    needs_reauth: !!link.needs_reauth, jwt_exp: link.jwt_exp || null,
+    needs_login: !!(link.needs_login && !link.token), needs_reauth: !!link.needs_reauth, jwt_exp: link.jwt_exp || null,
     connected_at: link.connected_at || null, last_ok: link.last_ok || null, last_sync: link.last_sync || null,
     // How the token is (or will be) stored: keyed off the actual encryptor, so this is right
     // both for a freshly-connected link and one just loaded from disk.
@@ -447,6 +449,7 @@ export function status() {
   const link = loadLink();
   if (!link) return { linked: false };
   if (link.pending) return { linked: false, pending: true, link: publicLink(link) };
+  if (link.needs_login && !link.token) return { linked: false, needs_login: true, link: publicLink(link) };
   return { linked: true, link: publicLink(link) };
 }
 

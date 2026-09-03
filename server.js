@@ -652,10 +652,28 @@ if (!SERVER_MODE) {
   app.get('/api/link/ping', async (req, res) => { const m = await linkMod(); res.json(await m.heartbeat()); });
   app.post('/api/link/connect', async (req, res) => {
     const m = await linkMod();
-    const { server_url, fingerprint, code, username, display_name } = req.body || {};
-    const r = await m.connect({ server_url, fingerprint, code, username, display_name });
+    const { server_url, fingerprint, code, username, display_name, password } = req.body || {};
+    const r = await m.connect({ server_url, fingerprint, code, username, display_name, password });
     if (!r.ok) return res.status(400).json({ error: r.error });
     res.status(201).json(r.link);
+  });
+  // Finish a just-approved link that needs a second factor, or re-authenticate after the token
+  // expired / was revoked. Returns { mfa } (with a setup key on first enrolment) when the server
+  // wants an OTP, so the UI can collect it and call again.
+  app.post('/api/link/login', async (req, res) => {
+    const m = await linkMod();
+    const { password, otp } = req.body || {};
+    const r = await m.login({ password, otp });
+    if (r.ok) return res.json({ ok: true, link: r.link, recovery_codes: r.recovery_codes });
+    if (r.mfa) return res.json({ ok: false, mfa: r.mfa, secret: r.secret, otpauth_uri: r.otpauth_uri });
+    res.status(400).json({ error: r.error || 'login failed' });
+  });
+  // Offline: prove identity against the cached password verifier (no server contact).
+  app.post('/api/link/offline-login', async (req, res) => {
+    const m = await linkMod();
+    const r = m.offlineLogin((req.body || {}).password);
+    if (!r.ok) return res.status(401).json({ error: r.error });
+    res.json({ ok: true, link: r.link });
   });
   app.post('/api/link/disconnect', async (req, res) => { const m = await linkMod(); res.json(m.disconnect()); });
   app.post('/api/link/sync', async (req, res) => { const m = await linkMod(); res.json(await m.syncOnce()); });

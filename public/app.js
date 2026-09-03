@@ -1774,10 +1774,18 @@ async function renderSettings() {
         el('button', { className: 'btn danger', onclick: cancelPending }, icon('x'), 'Cancel request'))));
     clearTimeout(window.__pendPoll);
     window.__pendPoll = setTimeout(() => { if (location.hash.startsWith('#/settings')) renderSettings(); }, 3000);
+  } else if (LINK.needs_login) {
+    const L = LINK.link || {};
+    page.append(el('div', { className: 'setcard' },
+      el('div', { className: 'setcard-hd' }, el('span', { className: 'linkbadge on' }, el('span', { className: 'dot' }), 'Approved')),
+      el('p', { className: 'muted' }, `Your request to join ${L.server_url || 'the server'} was approved. Sign in with your password to finish linking.`),
+      el('div', { className: 'setcard-actions' },
+        el('button', { className: 'btn gold', onclick: () => linkSignIn() }, icon('server'), 'Sign in'),
+        el('button', { className: 'btn danger', onclick: disconnectDialog }, icon('x'), 'Cancel'))));
   } else if (!LINK.linked) {
     page.append(el('div', { className: 'setcard' },
       el('div', { className: 'setcard-hd' }, el('span', { className: 'linkbadge' }, el('span', { className: 'dot' }), 'Working locally')),
-      el('p', { className: 'muted' }, 'Everything you create stays in this install. Connect to a team server to share engagements — you will need the server address, a one-time code from an admin, and a name. The admin then approves your request.'),
+      el('p', { className: 'muted' }, 'Everything you create stays in this install. Connect to a team server to share engagements — you will need the server address, a one-time code from an admin, a name and a password. The admin then approves your request.'),
       el('div', { className: 'setcard-actions' },
         el('button', { className: 'btn gold', onclick: connectDialog }, icon('server'), 'Connect to a server'))));
   } else {
@@ -1787,6 +1795,9 @@ async function renderSettings() {
         : el('span', { className: 'pill' }, L.token_at_rest || 'unknown');
     page.append(el('div', { className: 'setcard' },
       el('div', { className: 'setcard-hd' }, el('span', { className: 'linkbadge on' }, el('span', { className: 'dot' }), 'Linked')),
+      L.needs_reauth ? el('div', { className: 'duebanner' },
+        el('div', {}, el('strong', {}, '🔒 Sign-in required'), el('div', { className: 'muted small' }, 'Your session expired or an admin reset your access — syncing is paused. Your local work is safe.')),
+        el('button', { className: 'btn gold', onclick: () => linkSignIn({ reauth: true }) }, 'Sign in')) : null,
       kv('Server', L.server_url),
       kv('Signed as', `${L.display_name} · ${L.username} · ${L.role}`),
       kv('This device', L.device_id),
@@ -1853,19 +1864,82 @@ function rekeyDialog(isChange) {
 function connectDialog() {
   modal({
     kicker: 'Team server', title: 'Request to join a server', cta: 'Send request',
-    note: 'Get the address and a one-time code from an admin; they approve your request before you are connected. Your local engagements are set aside on approval and restored if you disconnect.',
+    note: 'Get the address and a one-time code from an admin, and pick a password — they approve your request and give you a role. Your local engagements are set aside on approval and restored if you disconnect.',
     build: (b) => {
       field(b, 'Server address', 'server_url', { ph: 'https://magi.corp.local:8443' });
       field(b, 'One-time code', 'code', { ph: 'from your admin' });
       field(b, 'Username', 'username', { ph: 'a new login name' });
       field(b, 'Your display name', 'display_name', { ph: 'shown on your changes, e.g. Ana R.' });
+      field(b, 'Password', 'password', { type: 'password', ph: 'at least 8 characters' });
+      field(b, 'Confirm password', 'confirm', { type: 'password' });
     },
     onSubmit: async (fd) => {
-      const link = await api('/link/connect', { method: 'POST', body: Object.fromEntries(fd) });
-      LINK = link.pending ? { linked: false, pending: true, link } : { linked: true, link };
-      toast(link.pending ? 'Request sent — waiting for an admin to approve' : ('Linked to ' + link.server_url));
+      const o = Object.fromEntries(fd);
+      if ((o.password || '').length < 8) throw new Error('password must be at least 8 characters');
+      if (o.password !== o.confirm) throw new Error('the two passwords do not match');
+      delete o.confirm;
+      const link = await api('/link/connect', { method: 'POST', body: o });
+      LINK = { linked: false, pending: true, link };
+      toast('Request sent — waiting for an admin to approve');
       renderSettings();
     },
+  });
+}
+// Password (+ OTP when the server asks) to finish a just-approved link, or to re-authenticate
+// after the token expired / an admin reset access. A small state machine: password → maybe MFA
+// setup (show the key/QR) or a required code → done.
+function linkSignIn({ reauth } = {}) {
+  const root = $('#modalRoot');
+  const close = () => root.replaceChildren();
+  let phase = 'password', setup = null, savedPw = '';
+  function render() {
+    const body = el('div', { className: 'modal-body' },
+      el('h3', {}, reauth ? 'Sign in to resume sync' : 'Sign in to finish connecting'),
+      el('p', { className: 'modal-note' }, reauth
+        ? 'Your session expired or an admin reset your access. Enter your password to keep syncing — your local work is safe.'
+        : 'Your request was approved. Enter your password to finish linking.'));
+    let pw, otp;
+    if (phase === 'password') { pw = el('input', { type: 'password', value: savedPw }); body.append(el('label', {}, 'Password'), pw); }
+    if (phase === 'setup') {
+      body.append(el('p', { className: 'muted small' }, 'This server requires two-factor. Scan or add the key, then enter the code:'));
+      const qr = typeof qrMatrix === 'function' ? qrEl(setup.otpauth_uri) : null;
+      if (qr) body.append(qr);
+      body.append(el('label', {}, 'Setup key'), el('code', { className: 'codebox' }, setup.secret),
+        el('label', { style: 'margin-top:8px' }, 'Code from the app'), (otp = el('input', { inputMode: 'numeric', placeholder: '000000' })));
+    }
+    if (phase === 'code') { otp = el('input', { inputMode: 'numeric', placeholder: '000000' }); body.append(el('label', {}, 'Two-factor code'), otp); }
+    const err = el('div', { className: 'modal-err' }); body.append(err);
+    const submit = el('button', { className: 'btn gold', type: 'submit' }, phase === 'password' ? 'Continue' : 'Sign in');
+    const form = el('form', { className: 'modal' },
+      el('div', { className: 'modal-head' }, el('span', { className: 'modal-kicker' }, 'Team server'), el('button', { type: 'button', className: 'modal-x', onclick: close }, icon('x'))),
+      body, el('div', { className: 'actions' }, el('button', { type: 'button', className: 'btn', onclick: close }, 'Cancel'), submit));
+    form.onsubmit = async (e) => {
+      e.preventDefault(); err.textContent = ''; submit.disabled = true;
+      try {
+        if (pw) savedPw = pw.value;
+        const r = await api('/link/login', { method: 'POST', body: { password: savedPw, otp: otp?.value || undefined } });
+        if (r.ok) { close(); if (r.recovery_codes) showRecoveryCodes(r.recovery_codes); toast('Signed in'); LINK = await api('/link'); renderSettings(); return; }
+        if (r.mfa === 'setup') { setup = { secret: r.secret, otpauth_uri: r.otpauth_uri }; phase = 'setup'; render(); return; }
+        if (r.mfa === 'required') { phase = 'code'; render(); return; }
+        err.textContent = 'Sign-in failed — try again';
+      } catch (ex) { err.textContent = ex.message; } finally { submit.disabled = false; }
+    };
+    root.replaceChildren(el('div', { className: 'overlay', onclick: (e) => { if (e.target.classList.contains('overlay')) close(); } }, form));
+    (otp || pw)?.focus();
+  }
+  render();
+}
+function showRecoveryCodes(codes) {
+  modal({
+    kicker: 'Two-factor', title: 'Save your recovery codes', cta: 'I saved them',
+    note: 'Each works once if you lose your phone. They are shown only now.',
+    build: (b) => {
+      b.append(el('div', { className: 'recovery-grid' }, ...codes.map(c => el('code', {}, c))));
+      b.append(el('div', { className: 'setcard-actions', style: 'margin-top:10px' },
+        el('button', { type: 'button', className: 'btn', onclick: () => { navigator.clipboard?.writeText(codes.join('\n')); toast('Copied'); } }, 'Copy all'),
+        el('button', { type: 'button', className: 'btn', onclick: () => downloadText('magi-recovery-codes.txt', codes.join('\n')) }, 'Download')));
+    },
+    onSubmit: async () => {},
   });
 }
 async function checkApproval() {

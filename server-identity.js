@@ -13,13 +13,25 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
-import { X509Certificate } from 'node:crypto';
+import { X509Certificate, randomBytes } from 'node:crypto';
 import { DATA_DIR, env } from './db.js';
 
 const DIR = join(DATA_DIR, 'server');
 const KEY = join(DIR, 'server.key');
 const CRT = join(DIR, 'server.crt');
 const META = join(DIR, 'identity.json');
+const JWT_SECRET = join(DIR, 'jwt.secret');
+
+// The persistent HMAC key that signs access tokens. Kept next to the cert (0600), created once,
+// reused across restarts so tokens survive a reboot. Deleting it invalidates every token at once.
+export function jwtSecret() {
+  mkdirSync(DIR, { recursive: true });
+  if (existsSync(JWT_SECRET)) { try { return readFileSync(JWT_SECRET, 'utf8').trim(); } catch { /* recreate */ } }
+  const secret = randomBytes(32).toString('hex');
+  writeFileSync(JWT_SECRET, secret);
+  try { chmodSync(JWT_SECRET, 0o600); } catch { /* best effort on non-POSIX */ }
+  return secret;
+}
 
 /** SHA-256 fingerprint the clients pin, e.g. "48:9A:04:…:A9". */
 export function certFingerprint(certPem) {

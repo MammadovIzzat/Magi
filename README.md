@@ -274,15 +274,17 @@ Admins get an **Admin** screen (in the app *and* the web UI) that auto-refreshes
 
 ### Two-factor auth (MFA)
 
-Every account uses an authenticator app (TOTP — Google Authenticator, Authy, 1Password, any
-RFC-6238 app), so a stolen or phished password alone can't sign in. On first sign-in the user
-**scans a QR code** (or types the setup key), confirms a code, and is handed **ten one-time
-recovery codes** for a lost phone. After that, sign-in is password → 6-digit code. The QR is
-generated in-app with a tiny built-in encoder — no external service ever sees the secret.
+Two-factor is a **team-server** control. A standalone/desktop workspace is already gated by its
+(optionally encrypted) local database — a second factor there just adds friction without adding
+protection, so it is **off outside server mode**. On the server, the account whose password mints
+access uses an authenticator app (TOTP — Google Authenticator, Authy, 1Password, any RFC-6238
+app), so a stolen or phished password alone can't sign in. On first sign-in the user **scans a QR
+code** (or types the setup key), confirms a code, and is handed **ten one-time recovery codes**
+for a lost phone. After that, sign-in is password → 6-digit code. The QR is generated in-app with
+a tiny built-in encoder — no external service ever sees the secret.
 
-- **Required for everyone** by default. Set `MAGI_MFA=off` to disable enforcement (a low-stakes
-  standalone install, or during initial rollout) — enrolled users then sign in with just a
-  password too.
+- **Required on the server** by default. Set `MAGI_MFA=off` to disable enforcement there (initial
+  rollout / low-stakes). Standalone installs never prompt for it.
 - **Lost phone:** use a recovery code, or an admin clears it from **Admin → Members → Reset MFA**
   (which also signs that user out everywhere). Locked-out sole admin? Reset from the box itself:
 
@@ -358,7 +360,7 @@ Uses the system Electron, so the package stays around **750 KB**.
 
 ```bash
 npm run pkg                                   # or: cd packaging && makepkg -f
-sudo pacman -U packaging/magi-0.6.5-1-any.pkg.tar.zst
+sudo pacman -U packaging/magi-0.7.0-1-any.pkg.tar.zst
 ```
 
 ### Debian / Ubuntu
@@ -367,15 +369,15 @@ Debian has no Electron package, so the `.deb` bundles its own copy — **~100 MB
 
 ```bash
 npm run build && npm run pkg:deb
-sudo apt install ./dist/installers/magi_0.6.5_amd64.deb
+sudo apt install ./dist/installers/magi_0.7.0_amd64.deb
 ```
 
 ### Any Linux — portable AppImage
 
 ```bash
 npm run build && npm run pkg:appimage
-chmod +x dist/installers/Magi-0.6.5.AppImage
-./dist/installers/Magi-0.6.5.AppImage
+chmod +x dist/installers/Magi-0.7.0.AppImage
+./dist/installers/Magi-0.7.0.AppImage
 ```
 
 ### macOS
@@ -384,8 +386,8 @@ Cross-built from Linux, both architectures:
 
 ```bash
 npm run build && npm run pkg:mac
-# dist/installers/Magi-0.6.5-mac.zip         Intel
-# dist/installers/Magi-0.6.5-arm64-mac.zip   Apple Silicon
+# dist/installers/Magi-0.7.0-mac.zip         Intel
+# dist/installers/Magi-0.7.0-arm64-mac.zip   Apple Silicon
 ```
 
 These are **unsigned and unnotarised**, and were built on Linux — I have no Mac to

@@ -256,6 +256,7 @@ CREATE TABLE IF NOT EXISTS users (
   mfa_secret      TEXT,                       -- base32 TOTP secret (candidate until enabled)
   mfa_enabled     INTEGER NOT NULL DEFAULT 0, -- 1 once the user has confirmed a code
   recovery_hashes TEXT,                       -- JSON array of sha256(one-time recovery code)
+  cred_epoch      INTEGER NOT NULL DEFAULT 0, -- bumped on password/role change to kill live tokens
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -412,6 +413,7 @@ const uCols = new Set(db.prepare(`PRAGMA table_info(users)`).all().map(r => r.na
 if (!uCols.has('mfa_secret')) db.exec(`ALTER TABLE users ADD COLUMN mfa_secret TEXT`);
 if (!uCols.has('mfa_enabled')) db.exec(`ALTER TABLE users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0`);
 if (!uCols.has('recovery_hashes')) db.exec(`ALTER TABLE users ADD COLUMN recovery_hashes TEXT`);
+if (!uCols.has('cred_epoch')) db.exec(`ALTER TABLE users ADD COLUMN cred_epoch INTEGER NOT NULL DEFAULT 0`);
 const sCols = new Set(db.prepare(`PRAGMA table_info(sessions)`).all().map(r => r.name));
 if (!sCols.has('pending')) {
   db.exec(`ALTER TABLE sessions ADD COLUMN pending INTEGER NOT NULL DEFAULT 0`);

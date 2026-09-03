@@ -23,10 +23,12 @@ const HOST = env('HOST', '127.0.0.1');
 // clients. When off, enrollment and the admin surface stay dormant — the local app is
 // unchanged. See server-identity.js for the durable cert.
 const SERVER_MODE = env('SERVER') === '1';
-// Two-factor auth is required for everyone by default. Set MAGI_MFA=off to disable enforcement
-// (e.g. a low-stakes standalone install, or during initial rollout) — enrolled users then sign
-// in with just their password too.
-const MFA_ENFORCED = env('MFA', 'on') !== 'off';
+// Two-factor is a TEAM-SERVER control only. A standalone/desktop workspace is already gated by
+// its (optionally encrypted) local database, so a second factor there is pure friction and adds
+// nothing — knowing the local DB opens the findings regardless. On the server it protects the
+// account whose password mints access, and it is the second factor for password-recovery. On by
+// default in server mode; MAGI_MFA=off opts a server out (rollout / low-stakes).
+const MFA_ENFORCED = SERVER_MODE && env('MFA', 'on') !== 'off';
 const sha256 = (s) => createHash('sha256').update(String(s)).digest('hex');
 
 app.use((req, res, next) => {
@@ -306,7 +308,8 @@ app.post('/api/change-password', (req, res) => {
   if (!verifyPassword(current || '', row.pass_hash)) return res.status(400).json({ error: 'current password is wrong' });
   if (!next || next.length < 10) return res.status(400).json({ error: 'new password must be at least 10 characters' });
   if (next === current) return res.status(400).json({ error: 'new password must differ from the current one' });
-  q(`UPDATE users SET pass_hash=? WHERE id=?`).run(hashPassword(next), u.id);
+  // Bump the credential epoch so every access token minted before this change stops verifying.
+  q(`UPDATE users SET pass_hash=?, cred_epoch=cred_epoch+1 WHERE id=?`).run(hashPassword(next), u.id);
   // a password change should end every other session, not just rotate this one
   const sid = parseCookies(req).sid;
   q(`DELETE FROM sessions WHERE user_id=? AND token<>?`).run(u.id, sid);

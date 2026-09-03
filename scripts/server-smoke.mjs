@@ -223,6 +223,34 @@ check('the team server reports encryption is not app-manageable', secStatus.json
 const secRekey = await req('POST', '/api/security/rekey', { cookie, body: { next: 'irrelevant12' } });
 check('the team server refuses an app-level rekey', secRekey.status === 400);
 
+// ── JWT access tokens: enroll WITH a password, then log in for a signed, epoch-bound token ──
+const jwtCode = (await req('POST', '/api/admin/enroll-codes', { cookie, body: { role: 'worker' } })).json.code;
+const jdev = 'cccccccc-3333-4333-8333-cccccccccccc';
+const jenroll = await req('POST', '/api/enroll', { body: { code: jwtCode, username: 'tokenuser', display_name: 'Token User', device_id: jdev, password: 'super-secret-8' } });
+check('a client can enroll with a chosen password', jenroll.status === 202 && !!jenroll.json?.request_id);
+await req('POST', `/api/admin/requests/${jenroll.json.request_id}/approve`, { cookie });
+
+const badLogin = await req('POST', '/api/auth/token', { body: { username: 'tokenuser', password: 'wrong', device_id: jdev } });
+check('a wrong password mints no token', badLogin.status === 401 && !badLogin.json?.token);
+const wrongDevLogin = await req('POST', '/api/auth/token', { body: { username: 'tokenuser', password: 'super-secret-8', device_id: 'dddddddd-4444-4444-8444-dddddddddddd' } });
+check('a login from an un-enrolled device is refused', wrongDevLogin.status === 403);
+
+const jwtLogin = await req('POST', '/api/auth/token', { body: { username: 'tokenuser', password: 'super-secret-8', device_id: jdev } });
+check('the right password mints a JWT', jwtLogin.status === 200 && typeof jwtLogin.json?.token === 'string' && jwtLogin.json?.role === 'worker');
+const jwtTok = jwtLogin.json?.token;
+
+const meJwt = await req('GET', '/api/me', { token: jwtTok, device: jdev });
+check('the JWT authenticates a request', meJwt.status === 200 && meJwt.json?.username === 'tokenuser');
+const noDevJwt = await req('GET', '/api/me', { token: jwtTok });
+check('a JWT without its device header is refused', noDevJwt.status === 401);
+
+const tuid = (await req('GET', '/api/admin/users', { cookie })).json.find(x => x.username === 'tokenuser')?.id;
+await req('POST', `/api/admin/users/${tuid}/reset-password`, { cookie, body: { password: 'a-new-one-9' } });
+const afterReset = await req('GET', '/api/me', { token: jwtTok, device: jdev });
+check('an admin password reset bumps the epoch and kills the old token', afterReset.status === 401);
+const reLogin = await req('POST', '/api/auth/token', { body: { username: 'tokenuser', password: 'a-new-one-9', device_id: jdev } });
+check('the user logs back in with the new password for a fresh token', reLogin.status === 200 && !!reLogin.json?.token);
+
 // the code was consumed on approval — a new request with it is refused
 const reuse = await req('POST', '/api/enroll', { body: { code: workerCode, username: 'eve', display_name: 'Eve', device_id: 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb' } });
 check('the code is single-use (consumed on approval)', reuse.status === 403);

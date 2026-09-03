@@ -9,6 +9,8 @@ import { exportProject as exportProjectBundle, importProject, validateProjectBun
 import { projectReportHTML } from './report-html.js';
 import { collectChanges, applyChanges, maxHlc } from './sync.js';
 import * as totp from './totp.js';
+import * as jwt from './jwt.js';
+import { jwtSecret } from './server-identity.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -29,6 +31,8 @@ const SERVER_MODE = env('SERVER') === '1';
 // account whose password mints access, and it is the second factor for password-recovery. On by
 // default in server mode; MAGI_MFA=off opts a server out (rollout / low-stakes).
 const MFA_ENFORCED = SERVER_MODE && env('MFA', 'on') !== 'off';
+// The HMAC key that signs access tokens — only the server issues/verifies them.
+const JWT_SECRET = SERVER_MODE ? jwtSecret() : null;
 const sha256 = (s) => createHash('sha256').update(String(s)).digest('hex');
 
 app.use((req, res, next) => {
@@ -95,11 +99,28 @@ function bearerDevice(req) {
   if (!claimed || claimed !== dev.id) return null;
   return { id: dev.user_id, username: dev.username, role: dev.role, display_name: dev.display_name, device_id: dev.id };
 }
+// A server-signed access token (JWT). Verifies signature + expiry, then re-checks live state the
+// token can't carry: the device must still be enrolled and not revoked, and the token's epoch must
+// still match the user's cred_epoch (a password/role change bumps it and kills the token at once).
+// Role/display come from the DB (authoritative), never the client.
+function bearerJwt(req) {
+  if (!JWT_SECRET) return null;
+  const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
+  if (!m) return null;
+  const claims = jwt.verify(m[1], JWT_SECRET);
+  if (!claims) return null;
+  if (!claims.device_id || req.headers['x-magi-device'] !== claims.device_id) return null;
+  const dev = q(`SELECT d.id, d.display_name, d.revoked, u.id AS uid, u.username, u.role, u.cred_epoch
+                 FROM devices d JOIN users u ON u.id=d.user_id WHERE d.id=?`).get(claims.device_id);
+  if (!dev || dev.revoked) return null;
+  if (dev.uid !== claims.sub || dev.cred_epoch !== claims.epoch) return null;
+  return { id: dev.uid, username: dev.username, role: dev.role, display_name: dev.display_name, device_id: dev.id };
+}
 // Resolve the acting user: bearer token first (network clients), then the session cookie
 // (local web / desktop). Cached on the request so repeat lookups in one request are free.
 function currentUser(req) {
   if (req._authUser !== undefined) return req._authUser;
-  let u = bearerDevice(req);
+  let u = bearerJwt(req) || bearerDevice(req);
   if (!u) {
     const sid = parseCookies(req).sid;
     // expiry is enforced here, not just by the cookie's Max-Age (which the client controls)
@@ -130,7 +151,7 @@ app.use('/api', (req, res, next) => {
 
 // gate every /api route except the auth / enrollment handshakes
 app.use('/api', (req, res, next) => {
-  if (['/auth/login', '/auth/mfa', '/auth/mfa/enable', '/me', '/enroll', '/enroll/poll'].includes(req.path)) return next();
+  if (['/auth/login', '/auth/token', '/auth/mfa', '/auth/mfa/enable', '/me', '/enroll', '/enroll/poll'].includes(req.path)) return next();
   if (!currentUser(req)) return res.status(401).json({ error: 'unauthorized' });
   next();
 });
@@ -209,6 +230,52 @@ app.post('/api/auth/login', (req, res) => {
   const secret = totp.generateSecret();
   q(`UPDATE users SET mfa_secret=? WHERE id=?`).run(secret, u.id); // candidate; inactive until confirmed
   res.json({ mfa: 'setup', secret, otpauth_uri: totp.otpauthURI({ account: u.username, secret }) });
+});
+
+// Client login → a short-lived JWT (server mode). Unlike /auth/login (which mints a browser
+// cookie for the server's own web UI), this authenticates a linked device: username + password
+// (+ server-side OTP) and the enrolled device_id, and returns a signed token the client presents
+// on every later sync. The role/display are NOT taken from the client — the token carries the
+// server's values and every request re-checks them.
+app.post('/api/auth/token', (req, res) => {
+  if (!SERVER_MODE) return res.status(404).json({ error: 'access tokens are issued by a Magi server' });
+  const { username, password, device_id, otp } = req.body || {};
+  const key = throttleKey(req, username);
+  const wait = lockedFor(key);
+  if (wait) return res.status(429).json({ error: `too many attempts — try again in ${Math.ceil(wait / 60)} min` });
+
+  const u = q(`SELECT * FROM users WHERE username=?`).get(username || '');
+  if (!u || !verifyPassword(password || '', u.pass_hash)) { noteFailure(key); return res.status(401).json({ error: 'invalid credentials' }); }
+  // the device must already be enrolled to THIS user (admin-approved) and not revoked
+  const dev = q(`SELECT id, revoked, user_id FROM devices WHERE id=?`).get(device_id || '');
+  if (!dev || dev.revoked || dev.user_id !== u.id) { noteFailure(key); return res.status(403).json({ error: 'this device is not enrolled for that account' }); }
+  attempts.delete(key);
+
+  const mint = (extra) => {
+    const fresh = q(`SELECT role, cred_epoch FROM users WHERE id=?`).get(u.id); // pick up a just-enabled MFA / any change
+    const token = jwt.sign({ sub: u.id, username: u.username, role: fresh.role, device_id: dev.id, epoch: fresh.cred_epoch }, JWT_SECRET);
+    q(`UPDATE devices SET last_seen=datetime('now') WHERE id=?`).run(dev.id);
+    return res.json({ token, exp: jwt.decodeUnsafe(token).exp, role: fresh.role, ...(extra || {}) });
+  };
+
+  if (!MFA_ENFORCED) return mint();
+  if (u.mfa_enabled) {
+    const okTotp = otp && totp.verifyTOTP(u.mfa_secret, String(otp));
+    const okRec = !okTotp && otp && consumeRecovery(u.id, u.recovery_hashes, otp);
+    if (!okTotp && !okRec) { noteFailure(key); return res.status(401).json({ error: otp ? 'invalid code' : 'a two-factor code is required', mfa: 'required' }); }
+    return mint();
+  }
+  // first login → enrol the second factor
+  if (!otp) {
+    const secret = u.mfa_secret || totp.generateSecret();
+    q(`UPDATE users SET mfa_secret=? WHERE id=?`).run(secret, u.id);
+    return res.json({ mfa: 'setup', secret, otpauth_uri: totp.otpauthURI({ account: u.username, secret }) });
+  }
+  if (!totp.verifyTOTP(u.mfa_secret, String(otp))) { noteFailure(key); return res.status(401).json({ error: 'that code did not match', mfa: 'setup' }); }
+  const codes = totp.recoveryCodes(10);
+  q(`UPDATE users SET mfa_enabled=1, recovery_hashes=? WHERE id=?`).run(JSON.stringify(codes.map(c => sha256(c))), u.id);
+  writeAudit(req, { id: u.id, username: u.username }, 'enrolled two-factor auth (client login)');
+  return mint({ recovery_codes: codes });
 });
 
 // The half-authenticated user behind a pending session cookie (password done, MFA not yet).
@@ -358,12 +425,16 @@ app.post('/api/security/rekey', async (req, res) => {
 // that an admin approves or rejects from the Admin panel. The client then polls until decided.
 app.post('/api/enroll', (req, res) => {
   if (!SERVER_MODE) return res.status(404).json({ error: 'enrollment is only available on a Magi server' });
-  const { code, username, display_name, device_id } = req.body || {};
+  const { code, username, display_name, device_id, password } = req.body || {};
   if (!code || !username || !display_name || !device_id)
     return res.status(400).json({ error: 'code, username, display_name and device_id are all required' });
   if (!/^[a-z0-9_.-]{2,40}$/i.test(username)) return res.status(400).json({ error: 'username must be 2-40 chars: letters, numbers, . _ -' });
   if (!/^[a-z0-9-]{16,64}$/i.test(device_id)) return res.status(400).json({ error: 'device id must look like a UUID' });
   if (String(display_name).trim().length < 1 || String(display_name).length > 60) return res.status(400).json({ error: 'display name must be 1-60 characters' });
+  // New clients pick a password now (they log in for a JWT after approval). Older clients omit it
+  // and fall back to a device token. Only the hash is ever stored.
+  if (password != null && String(password).length < 8) return res.status(400).json({ error: 'password must be at least 8 characters' });
+  const pass_hash = password != null ? hashPassword(String(password)) : null;
   if (q(`SELECT 1 FROM devices WHERE id=?`).get(device_id)) return res.status(409).json({ error: 'this device is already enrolled' });
   if (q(`SELECT 1 FROM users WHERE username=?`).get(username)) return res.status(409).json({ error: 'that username is taken — choose another' });
 
@@ -374,8 +445,8 @@ app.post('/api/enroll', (req, res) => {
   const role = ec.role === 'admin' ? 'admin' : 'worker';
 
   q(`DELETE FROM enroll_requests WHERE device_id=? AND status='pending'`).run(device_id); // one live request per device
-  const rid = q(`INSERT INTO enroll_requests (code_hash, role, username, display_name, device_id)
-                 VALUES (?,?,?,?,?)`).run(sha256(code), role, username, String(display_name).trim(), device_id).lastInsertRowid;
+  const rid = q(`INSERT INTO enroll_requests (code_hash, role, username, display_name, device_id, pass_hash)
+                 VALUES (?,?,?,?,?,?)`).run(sha256(code), role, username, String(display_name).trim(), device_id, pass_hash).lastInsertRowid;
   writeAudit(req, { username, display_name: String(display_name).trim(), device_id }, `requested to join as ${role}`);
   res.status(202).json({ status: 'pending', request_id: Number(rid) });
 });
@@ -425,8 +496,10 @@ app.post('/api/admin/requests/:id/approve', requireAdmin, (req, res) => {
     return res.status(409).json({ error: 'that username or device already exists' });
   }
   const ec = q(`SELECT id FROM enroll_codes WHERE code_hash=?`).get(rq.code_hash);
+  // New flow: the user chose a password at request time (stored hashed) → they can log in for a
+  // JWT. Legacy flow: no password → a random one, and the device token is their credential.
   const uid = q(`INSERT INTO users (username, pass_hash, role) VALUES (?,?,?)`)
-    .run(rq.username, hashPassword(randomBytes(24).toString('hex')), rq.role).lastInsertRowid;
+    .run(rq.username, rq.pass_hash || hashPassword(randomBytes(24).toString('hex')), rq.role).lastInsertRowid;
   q(`UPDATE enroll_codes SET used_by=? WHERE id=?`).run(uid, ec.id);
   const token = randomBytes(32).toString('hex');
   q(`INSERT INTO devices (id, user_id, display_name, token_hash) VALUES (?,?,?,?)`).run(rq.device_id, uid, rq.display_name, sha256(token));
@@ -484,9 +557,22 @@ app.get('/api/admin/users', requireAdmin, (req, res) => {
 app.post('/api/admin/users/:id/reset-mfa', requireAdmin, (req, res) => {
   const u = q(`SELECT id, username FROM users WHERE id=?`).get(req.params.id);
   if (!u) return res.status(404).json({ error: 'no such user' });
-  q(`UPDATE users SET mfa_enabled=0, mfa_secret=NULL, recovery_hashes=NULL WHERE id=?`).run(u.id);
+  // Bump the epoch too, so any live access token is invalidated alongside the cookie sessions.
+  q(`UPDATE users SET mfa_enabled=0, mfa_secret=NULL, recovery_hashes=NULL, cred_epoch=cred_epoch+1 WHERE id=?`).run(u.id);
   q(`DELETE FROM sessions WHERE user_id=?`).run(u.id);
   writeAudit(req, req.user, `reset MFA for ${u.username}`);
+  res.json({ ok: true });
+});
+// Admin resets a user's password (e.g. they forgot it). Bumping the epoch forces every device to
+// log in again with the new password — old tokens and sessions die immediately.
+app.post('/api/admin/users/:id/reset-password', requireAdmin, (req, res) => {
+  const u = q(`SELECT id, username FROM users WHERE id=?`).get(req.params.id);
+  if (!u) return res.status(404).json({ error: 'no such user' });
+  const next = (req.body || {}).password;
+  if (!next || String(next).length < 8) return res.status(400).json({ error: 'new password must be at least 8 characters' });
+  q(`UPDATE users SET pass_hash=?, cred_epoch=cred_epoch+1 WHERE id=?`).run(hashPassword(String(next)), u.id);
+  q(`DELETE FROM sessions WHERE user_id=?`).run(u.id);
+  writeAudit(req, req.user, `reset the password for ${u.username}`);
   res.json({ ok: true });
 });
 app.get('/api/admin/devices', requireAdmin, (req, res) => {

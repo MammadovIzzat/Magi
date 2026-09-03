@@ -305,6 +305,7 @@ CREATE TABLE IF NOT EXISTS enroll_requests (
   username     TEXT NOT NULL,
   display_name TEXT NOT NULL,
   device_id    TEXT NOT NULL,
+  pass_hash    TEXT,                              -- the user's chosen password (new JWT flow); null = legacy token flow
   status       TEXT NOT NULL DEFAULT 'pending',   -- pending | approved | rejected
   token        TEXT,                              -- raw token, handed to the client once then cleared
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
@@ -414,6 +415,8 @@ if (!uCols.has('mfa_secret')) db.exec(`ALTER TABLE users ADD COLUMN mfa_secret T
 if (!uCols.has('mfa_enabled')) db.exec(`ALTER TABLE users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0`);
 if (!uCols.has('recovery_hashes')) db.exec(`ALTER TABLE users ADD COLUMN recovery_hashes TEXT`);
 if (!uCols.has('cred_epoch')) db.exec(`ALTER TABLE users ADD COLUMN cred_epoch INTEGER NOT NULL DEFAULT 0`);
+const erCols = new Set(db.prepare(`PRAGMA table_info(enroll_requests)`).all().map(r => r.name));
+if (!erCols.has('pass_hash')) db.exec(`ALTER TABLE enroll_requests ADD COLUMN pass_hash TEXT`);
 const sCols = new Set(db.prepare(`PRAGMA table_info(sessions)`).all().map(r => r.name));
 if (!sCols.has('pending')) {
   db.exec(`ALTER TABLE sessions ADD COLUMN pending INTEGER NOT NULL DEFAULT 0`);

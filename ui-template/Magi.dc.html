@@ -1,0 +1,1017 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="fonts/fonts.css">
+<style>
+:root{
+  --bg:#0B0B0C; --panel:#101013; --panel2:#0E0E10; --void:#07070A;
+  --row:#0F0F12; --rowhi:#15151A; --rowsel:#17171D;
+  --l1:#1C1C20; --l2:#2A2A30; --l3:#3C3C44;
+  --fg:#F0F0F2; --fg2:#C6C6CC; --mid:#8C8C95; --dim:#61616A;
+  --amber:#FFB000; --amberink:#140F03; --amberwash:#1A1405;
+  --red:#FF4A3D; --redwash:#1B0D0B;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --disp:"Chakra Petch",system-ui,sans-serif;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,sans-serif;
+}
+:root[data-magi="light"]{
+  --bg:#F1F1EE; --panel:#FFFFFF; --panel2:#FAFAF7; --void:#F6F6F2;
+  --row:#FFFFFF; --rowhi:#F6F6F2; --rowsel:#F0F0EA;
+  --l1:#E3E3DE; --l2:#CFCFC8; --l3:#B2B2AA;
+  --fg:#131316; --fg2:#3A3A40; --mid:#6C6C74; --dim:#93939B;
+  --amber:#A05C00; --amberink:#FFFFFF; --amberwash:#F7EEDC;
+  --red:#BE3428; --redwash:#FAE9E7;
+}
+html,body{margin:0;padding:0;height:100%;background:var(--bg);}
+*{box-sizing:border-box;}
+button{font:inherit;color:inherit;cursor:pointer;}
+input,textarea,select{font:inherit;color:inherit;}
+a{color:var(--amber);text-decoration:none;}
+a:hover{color:var(--fg);}
+::-webkit-scrollbar{width:9px;height:9px;}
+::-webkit-scrollbar-thumb{background:var(--l2);}
+::-webkit-scrollbar-thumb:hover{background:var(--l3);}
+::-webkit-scrollbar-track{background:transparent;}
+::selection{background:var(--amber);color:var(--amberink);}
+</style>
+</helmet>
+
+<div style="height:100vh;display:flex;flex-direction:column;overflow:hidden;background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:13px;-webkit-font-smoothing:antialiased">
+
+  <div style="flex:none;display:flex;align-items:stretch;height:32px;background:var(--void);border-bottom:1px solid var(--l1)">
+    <div style="display:flex;align-items:center;padding:0 12px;font-family:var(--mono);font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:var(--dim);border-right:1px solid var(--l1)">Screens</div>
+    <div style="display:flex;align-items:stretch;overflow-x:auto">
+      <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="8">
+        <button onClick="{{ t.go }}" style="{{ t.style }}">{{ t.label }}</button>
+      </sc-for>
+    </div>
+    <div style="flex:1"></div>
+    <button onClick="{{ toggleTheme }}" style="display:flex;align-items:center;gap:7px;height:100%;padding:0 14px;background:none;border:0;border-left:1px solid var(--l1);font-family:var(--mono);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--mid)" style-hover="color:var(--fg)">
+      <span style="width:7px;height:7px;background:var(--amber);display:block"></span>{{ themeLabel }}
+    </button>
+  </div>
+
+  <div style="flex:1;min-height:0;display:flex;flex-direction:column">
+
+    <sc-if value="{{ notLogin }}" hint-placeholder-val="{{ true }}">
+      <header style="height:46px;flex:none;display:flex;align-items:center;gap:14px;padding:0 12px;background:var(--panel2);border-bottom:1px solid var(--l1)">
+        <div style="display:flex;align-items:center;gap:9px">
+          <svg viewBox="0 0 32 32" width="20" height="20" fill="none" style="display:block">
+            <circle cx="16" cy="16" r="13.5" stroke="var(--amber)" stroke-width="1.4"></circle>
+            <rect x="7.5" y="7.5" width="17" height="17" stroke="var(--amber)" stroke-width="1.4"></rect>
+            <rect x="7.5" y="7.5" width="17" height="17" stroke="var(--amber)" stroke-width="1.4" transform="rotate(45 16 16)"></rect>
+            <circle cx="16" cy="16" r="2.2" fill="var(--amber)"></circle>
+          </svg>
+          <span style="font-family:var(--disp);font-weight:700;font-size:15px;letter-spacing:.2em;color:var(--fg)">MAGI</span>
+        </div>
+        <div style="width:1px;height:18px;background:var(--l1)"></div>
+        <nav style="display:flex;align-items:center;gap:8px;min-width:0;font-family:var(--mono);font-size:11px;color:var(--dim)">
+          <sc-for list="{{ crumbs }}" as="c" hint-placeholder-count="3">
+            <span style="color:var(--l3)">/</span><span style="{{ c.style }}">{{ c.label }}</span>
+          </sc-for>
+        </nav>
+        <div style="flex:1"></div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <button style="display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 9px;background:none;border:1px solid var(--l2);color:var(--mid);font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase" style-hover="border-color:var(--l3);color:var(--fg)">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2 4h12M2 8h8M2 12h5"></path></svg>Templates
+          </button>
+          <div style="display:flex;align-items:center;gap:7px;padding-left:10px;margin-left:4px;border-left:1px solid var(--l1)">
+            <span style="display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 8px;border:1px solid var(--l2);font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--mid)">
+              <span style="width:5px;height:5px;background:var(--l3);display:block"></span>Local
+            </span>
+            <span style="width:22px;height:22px;display:grid;place-items:center;border:1px solid var(--l2);font-family:var(--mono);font-size:10px;color:var(--amber)">O</span>
+            <span style="font-family:var(--mono);font-size:10.5px;color:var(--mid)">operator</span>
+            <button style="width:24px;height:24px;display:grid;place-items:center;background:none;border:1px solid transparent;color:var(--dim)" style-hover="color:var(--fg);border-color:var(--l2)">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2.5l2.5 2.5L5.5 13H3v-2.5z"></path></svg>
+            </button>
+            <button style="width:24px;height:24px;display:grid;place-items:center;background:none;border:1px solid transparent;color:var(--dim)" style-hover="color:var(--red);border-color:var(--red)">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2H3v12h3M10 5l3 3-3 3M13 8H6"></path></svg>
+            </button>
+          </div>
+        </div>
+      </header>
+    </sc-if>
+
+    <div style="flex:1;min-height:0;display:flex">
+
+      <sc-if value="{{ showRail }}" hint-placeholder-val="{{ true }}">
+        <aside style="width:230px;flex:none;background:var(--panel2);border-right:1px solid var(--l1);display:flex;flex-direction:column;overflow:hidden">
+          <div style="padding:14px 12px 11px;border-bottom:1px solid var(--l1)">
+            <div style="font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim)">Engagement</div>
+            <div style="margin-top:6px;font-size:12.5px;line-height:1.4;color:var(--fg)">Acme Corp — External Assessment</div>
+            <div style="display:flex;align-items:center;gap:7px;margin-top:9px;font-family:var(--mono);font-size:10px;letter-spacing:.08em;color:var(--mid)">
+              <span style="width:5px;height:5px;background:var(--amber);display:block"></span>2% · 7 TARGETS
+            </div>
+          </div>
+          <button style="text-align:left;background:none;border:0;border-bottom:1px solid var(--l1);padding:9px 12px;font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)" style-hover="color:var(--amber)">← Engagement</button>
+          <div style="flex:1;overflow-y:auto;padding-bottom:10px">
+            <sc-for list="{{ railGroups }}" as="g" hint-placeholder-count="4">
+              <div style="padding:13px 12px 5px;font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim)">{{ g.label }}</div>
+              <sc-for list="{{ g.targets }}" as="t" hint-placeholder-count="2">
+                <button style="{{ t.style }}">
+                  <span style="display:flex;align-items:center;gap:8px;width:100%">
+                    <span style="{{ t.codeStyle }}">{{ t.code }}</span>
+                    <span style="flex:1;min-width:0;font-size:12px;line-height:1.35;overflow-wrap:anywhere;text-align:left;color:{{ t.nameColor }}">{{ t.name }}</span>
+                    <span style="font-family:var(--mono);font-size:10px;color:var(--dim)">{{ t.pct }}</span>
+                  </span>
+                  <span style="display:block;height:2px;background:var(--l1);width:100%;margin-top:8px"><span style="display:block;height:100%;background:var(--amber);width:{{ t.pct }}"></span></span>
+                </button>
+              </sc-for>
+            </sc-for>
+          </div>
+          <div style="padding:10px 12px;border-top:1px solid var(--l1)">
+            <button style="width:100%;padding:8px;background:none;border:1px dashed var(--l2);color:var(--mid);font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase" style-hover="border-color:var(--amber);color:var(--amber)">+ Add target</button>
+          </div>
+        </aside>
+      </sc-if>
+
+      <main style="flex:1;min-width:0;display:flex;overflow-x:auto;overflow-y:hidden">
+
+        <sc-if value="{{ sChecklist }}" hint-placeholder-val="{{ true }}">
+          <div style="flex:1;min-width:600px;overflow-y:auto" data-screen-label="Target checklist">
+            <div style="position:sticky;top:0;z-index:8;background:var(--panel2);border-bottom:1px solid var(--l1);padding:16px 20px 0">
+              <div style="display:flex;align-items:flex-start;gap:16px">
+                <div style="min-width:0;flex:1">
+                  <div style="display:flex;align-items:center;gap:9px">
+                    <span style="padding:2px 6px;border:1px solid var(--l2);font-family:var(--mono);font-size:9px;letter-spacing:.16em;color:var(--mid)">WEB</span>
+                    <span style="font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim)">Web application</span>
+                  </div>
+                  <h1 style="font-family:var(--mono);font-weight:400;font-size:19px;letter-spacing:-.01em;margin:9px 0 0;color:var(--fg);overflow-wrap:anywhere">https://app.acme.example</h1>
+                </div>
+                <div style="display:flex;gap:5px;flex:none">
+                  <button style="height:25px;padding:0 10px;background:none;border:1px solid var(--l2);color:var(--mid);font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase" style-hover="border-color:var(--l3);color:var(--fg)">Expand</button>
+                  <button style="height:25px;padding:0 10px;background:none;border:1px solid var(--l2);color:var(--mid);font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase" style-hover="border-color:var(--l3);color:var(--fg)">Collapse</button>
+                  <button style="height:25px;padding:0 11px;background:var(--amber);border:1px solid var(--amber);color:var(--amberink);font-family:var(--disp);font-weight:700;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase">+ Item</button>
+                </div>
+              </div>
+
+              <div style="display:flex;align-items:center;gap:14px;margin-top:16px">
+                <div style="flex:1;display:flex;gap:1px;height:5px">
+                  <sc-for list="{{ sections }}" as="s" hint-placeholder-count="9">
+                    <span title="{{ s.title }}" style="flex:{{ s.weight }};background:var(--l1);position:relative;overflow:hidden">
+                      <span style="position:absolute;inset:0 auto 0 0;width:{{ s.pct }};background:var(--amber)"></span>
+                    </span>
+                  </sc-for>
+                </div>
+                <span style="font-family:var(--mono);font-size:11px;color:var(--fg2);letter-spacing:.04em">5<span style="color:var(--dim)">/110</span></span>
+              </div>
+
+              <div style="display:flex;margin-top:14px">
+                <sc-for list="{{ filters }}" as="f" hint-placeholder-count="4">
+                  <button style="{{ f.style }}">{{ f.label }}<span style="margin-left:6px;color:var(--dim)">{{ f.n }}</span></button>
+                </sc-for>
+              </div>
+            </div>
+
+            <div style="padding:0 20px 80px">
+              <sc-for list="{{ groups }}" as="g" hint-placeholder-count="3">
+                <div style="margin-top:22px">
+                  <button style="{{ g.hdrStyle }}">
+                    <span style="font-family:var(--mono);font-size:10px;color:{{ g.numColor }};width:22px;flex:none;text-align:left">{{ g.num }}</span>
+                    <span style="width:10px;flex:none;font-size:8px;color:var(--dim);text-align:left">{{ g.chev }}</span>
+                    <span style="flex:1;min-width:0;text-align:left;font-family:var(--mono);font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:{{ g.titleColor }}">{{ g.title }}</span>
+                    <span style="font-family:var(--mono);font-size:10.5px;color:var(--fg2)">{{ g.done }}<span style="color:var(--dim)">/{{ g.total }}</span></span>
+                    <span style="display:block;width:56px;height:2px;background:var(--l1);flex:none"><span style="display:block;height:100%;background:var(--amber);width:{{ g.pct }}"></span></span>
+                  </button>
+
+                  <sc-if value="{{ g.open }}" hint-placeholder-val="{{ true }}">
+                    <sc-for list="{{ g.items }}" as="it" hint-placeholder-count="6">
+                      <div style="{{ it.rowStyle }}">
+                        <span style="font-family:var(--mono);font-size:10.5px;color:{{ it.numColor }};padding-top:2px;text-align:right">{{ it.num }}</span>
+                        <div style="min-width:0">
+                          <div style="display:flex;align-items:baseline;gap:9px;flex-wrap:wrap">
+                            <span style="font-size:13.5px;font-weight:500;line-height:1.45;color:{{ it.titleColor }}">{{ it.title }}</span>
+                            <sc-if value="{{ it.tag }}" hint-placeholder-val="{{ false }}">
+                              <span style="{{ it.tagStyle }}">{{ it.tag }}</span>
+                            </sc-if>
+                            <sc-if value="{{ it.payloads }}" hint-placeholder-val="{{ false }}">
+                              <button style="background:none;border:0;padding:0;font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);text-decoration:underline;text-underline-offset:3px" style-hover="color:var(--amber)">{{ it.payloads }}</button>
+                            </sc-if>
+                          </div>
+                          <sc-if value="{{ it.detail }}" hint-placeholder-val="{{ true }}">
+                            <p style="margin:6px 0 0;font-size:12.5px;line-height:1.6;color:var(--mid);max-width:66ch;text-wrap:pretty">{{ it.detail }}</p>
+                          </sc-if>
+                          <sc-if value="{{ it.chips }}" hint-placeholder-val="{{ false }}">
+                            <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:10px">
+                              <sc-for list="{{ it.chips }}" as="c" hint-placeholder-count="6">
+                                <button style="{{ c.style }}">{{ c.label }}</button>
+                              </sc-for>
+                            </div>
+                          </sc-if>
+                          <sc-if value="{{ it.code }}" hint-placeholder-val="{{ false }}">
+                            <code style="display:block;margin-top:9px;background:var(--void);border:1px solid var(--l1);border-left:2px solid var(--l3);padding:8px 11px;font-family:var(--mono);font-size:11.5px;line-height:1.6;color:var(--fg2);white-space:pre-wrap;word-break:break-word;cursor:copy">{{ it.code }}</code>
+                          </sc-if>
+                          <sc-if value="{{ it.answer }}" hint-placeholder-val="{{ false }}">
+                            <input placeholder="record answer…" style="margin-top:9px;width:100%;max-width:480px;background:var(--void);border:1px solid var(--l2);padding:8px 10px;font-family:var(--mono);font-size:11.5px;color:var(--fg);outline:none" style-focus="border-color:var(--amber)">
+                          </sc-if>
+                          <sc-if value="{{ it.spawn }}" hint-placeholder-val="{{ false }}">
+                            <button style="margin-top:10px;height:24px;padding:0 10px;background:none;border:1px solid var(--l2);color:var(--amber);font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase" style-hover="border-color:var(--amber);background:var(--amberwash)">+ Follow-up checklist</button>
+                          </sc-if>
+                        </div>
+                        <div style="display:flex;gap:0;flex:none;align-self:flex-start">
+                          <button title="Handled" style="{{ it.stDone }}">
+                            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-7"></path></svg>
+                          </button>
+                          <button title="Finding" style="{{ it.stFlag }}">
+                            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14V3l8 2.5L4 8"></path></svg>
+                          </button>
+                          <button title="Not applicable" style="{{ it.stNa }}">
+                            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 8h8"></path></svg>
+                          </button>
+                        </div>
+                        <div style="display:flex;gap:0;flex:none;align-self:flex-start">
+                          <button title="Add sub-item" style="width:23px;height:23px;display:grid;place-items:center;background:none;border:1px solid transparent;color:var(--dim)" style-hover="color:var(--fg);border-color:var(--l2)">
+                            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M8 3v10M3 8h10"></path></svg>
+                          </button>
+                          <button title="Edit" style="width:23px;height:23px;display:grid;place-items:center;background:none;border:1px solid transparent;color:var(--dim)" style-hover="color:var(--fg);border-color:var(--l2)">
+                            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2.5l2.5 2.5L5.5 13H3v-2.5z"></path></svg>
+                          </button>
+                          <button title="Delete" style="width:23px;height:23px;display:grid;place-items:center;background:none;border:1px solid transparent;color:var(--dim)" style-hover="color:var(--red);border-color:var(--red)">
+                            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"></path></svg>
+                          </button>
+                        </div>
+                      </div>
+                    </sc-for>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <div onPointerDown="{{ startResize }}" title="Drag to resize the evidence log" style="{{ resizerStyle }}"></div>
+
+          <aside style="{{ dockStyle }}">
+            <div style="padding:14px 14px 12px;border-bottom:1px solid var(--l1);display:flex;align-items:center;gap:10px">
+              <span style="font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim)">Evidence log</span>
+              <span style="font-family:var(--mono);font-size:10px;color:var(--mid)">03</span>
+              <div style="margin-left:auto;display:flex;gap:4px">
+                <button onClick="{{ cycleDock }}" title="Cycle width — narrow / default / wide" style="width:23px;height:23px;display:grid;place-items:center;background:none;border:1px solid var(--l2);color:var(--dim)" style-hover="border-color:var(--l3);color:var(--fg)">
+                  <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5L2.5 8 6 12.5M10 3.5L13.5 8 10 12.5"></path></svg>
+                </button>
+                <button style="height:23px;padding:0 9px;background:none;border:1px solid var(--l2);color:var(--amber);font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase" style-hover="border-color:var(--amber);background:var(--amberwash)">+ Capture</button>
+              </div>
+            </div>
+            <div style="flex:1;overflow-y:auto;padding:12px 14px 40px">
+              <div style="display:flex;gap:1px;margin-bottom:8px">
+                <sc-for list="{{ evTabs }}" as="e" hint-placeholder-count="4">
+                  <button style="{{ e.style }}">{{ e.label }}</button>
+                </sc-for>
+              </div>
+              <div style="display:flex;gap:5px;margin-bottom:12px">
+                <input type="search" placeholder="Search findings…" style="flex:1;min-width:0;background:var(--void);border:1px solid var(--l2);padding:7px 9px;font-size:11.5px;color:var(--fg);outline:none" style-focus="border-color:var(--amber)">
+                <select style="flex:none;background:var(--void);border:1px solid var(--l2);padding:0 6px;font-family:var(--mono);font-size:10px;color:var(--mid);outline:none;appearance:none;cursor:pointer">
+                  <option>NEWEST</option><option>SEVERITY</option><option>NAME</option>
+                </select>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:1px">
+                <sc-for list="{{ findings }}" as="f" hint-placeholder-count="3">
+                  <div style="{{ f.style }}">
+                    <div style="display:flex;align-items:center;gap:8px">
+                      <sc-if value="{{ f.sev }}" hint-placeholder-val="{{ false }}">
+                        <span style="font-family:var(--mono);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:{{ f.sevColor }}">{{ f.sev }}</span>
+                      </sc-if>
+                      <span style="font-family:var(--mono);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim)">{{ f.kind }}</span>
+                      <button style="{{ f.tickStyle }}">
+                        <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-7"></path></svg>{{ f.tickLabel }}
+                      </button>
+                    </div>
+                    <div style="margin-top:7px;font-size:13px;font-weight:500;line-height:1.4;color:var(--fg)">{{ f.title }}</div>
+                    <pre style="margin:8px 0 0;background:var(--void);border:1px solid var(--l1);padding:7px 9px;font-family:var(--mono);font-size:11px;line-height:1.6;color:var(--mid);white-space:pre-wrap;word-break:break-word;max-height:88px;overflow:hidden">{{ f.body }}</pre>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </aside>
+        </sc-if>
+
+        <sc-if value="{{ sEngagement }}" hint-placeholder-val="{{ false }}">
+          <div style="flex:1;overflow-y:auto" data-screen-label="Engagement">
+            <div style="max-width:960px;margin:0 auto;padding:30px 24px 80px">
+              <div style="display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim)">
+                <span>Engagement</span><span style="color:var(--l3)">·</span><span>Sep 1 → Sep 12, 2026</span>
+              </div>
+              <h1 style="font-family:var(--disp);font-weight:600;font-size:26px;letter-spacing:.01em;margin:8px 0 0;color:var(--fg)">Acme Corp — External Assessment</h1>
+              <p style="margin:9px 0 0;font-family:var(--mono);font-size:11.5px;line-height:1.7;color:var(--mid);max-width:70ch">Acme Corporation · *.acme.example, 203.0.113.0/24</p>
+
+              <div style="display:flex;margin:24px 0 0;border-top:1px solid var(--l1);border-bottom:1px solid var(--l1)">
+                <sc-for list="{{ stats }}" as="s" hint-placeholder-count="3">
+                  <div style="{{ s.style }}">
+                    <div style="font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim)">{{ s.label }}</div>
+                    <div style="font-family:var(--disp);font-weight:600;font-size:32px;line-height:1;margin-top:10px;color:{{ s.color }}">{{ s.value }}</div>
+                  </div>
+                </sc-for>
+              </div>
+
+              <div style="display:flex;align-items:center;gap:12px;margin:32px 0 0">
+                <span style="font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim)">Targets</span>
+                <span style="flex:1;height:1px;background:var(--l1)"></span>
+                <button style="height:24px;padding:0 10px;background:none;border:1px solid var(--l2);color:var(--amber);font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase" style-hover="border-color:var(--amber);background:var(--amberwash)">+ Add target</button>
+              </div>
+
+              <sc-for list="{{ railGroups }}" as="g" hint-placeholder-count="4">
+                <div style="display:flex;align-items:center;gap:12px;margin:26px 0 0">
+                  <span style="font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--fg2)">{{ g.label }}</span>
+                  <span style="flex:1;height:1px;background:var(--l1)"></span>
+                  <span style="font-family:var(--mono);font-size:10px;color:var(--dim)">{{ g.count }}</span>
+                </div>
+                <div style="border-top:1px solid var(--l1);margin-top:9px">
+                  <sc-for list="{{ g.targets }}" as="t" hint-placeholder-count="2">
+                    <button style="width:100%;display:grid;grid-template-columns:44px 1fr 150px 56px 24px;align-items:center;gap:14px;text-align:left;background:var(--row);border:0;border-bottom:1px solid var(--l1);padding:13px 12px" style-hover="background:var(--rowhi)">
+                      <span style="{{ t.codeStyle }}">{{ t.code }}</span>
+                      <span style="display:flex;flex-direction:column;gap:4px;min-width:0">
+                        <span style="font-family:var(--mono);font-size:12.5px;color:var(--fg);overflow-wrap:anywhere">{{ t.name }}</span>
+                        <span style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)">{{ t.meta }}</span>
+                      </span>
+                      <span style="display:flex;align-items:center;gap:10px">
+                        <span style="flex:1;display:block;height:2px;background:var(--l1)"><span style="display:block;height:100%;background:var(--amber);width:{{ t.pct }}"></span></span>
+                        <span style="font-family:var(--mono);font-size:10.5px;color:var(--fg2);width:30px;text-align:right">{{ t.pct }}</span>
+                      </span>
+                      <span style="font-family:var(--mono);font-size:10.5px;text-align:right;color:{{ t.flagColor }}">{{ t.flags }}</span>
+                      <span style="display:grid;place-items:center;color:var(--dim)">
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 8.5h5.6l.7-8.5"></path></svg>
+                      </span>
+                    </button>
+                  </sc-for>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ sHome }}" hint-placeholder-val="{{ false }}">
+          <div style="flex:1;overflow-y:auto" data-screen-label="Engagements home">
+            <div style="max-width:1060px;margin:0 auto;padding:30px 24px 80px">
+              <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:20px;padding-bottom:16px;border-bottom:1px solid var(--l1)">
+                <div>
+                  <div style="font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim)">Workspace</div>
+                  <h1 style="font-family:var(--disp);font-weight:600;font-size:26px;margin:7px 0 0;color:var(--fg)">Engagements</h1>
+                </div>
+                <div style="display:flex;gap:5px">
+                  <button style="height:28px;padding:0 11px;background:none;border:1px solid var(--l2);color:var(--mid);font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase" style-hover="border-color:var(--l3);color:var(--fg)">Import</button>
+                  <button style="height:28px;padding:0 13px;background:var(--amber);border:1px solid var(--amber);color:var(--amberink);font-family:var(--disp);font-weight:700;font-size:11px;letter-spacing:.16em;text-transform:uppercase">New engagement</button>
+                </div>
+              </div>
+              <div style="display:flex;margin-top:14px">
+                <button style="background:none;border:0;border-bottom:1px solid var(--amber);padding:8px 12px;font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--fg)">Active<span style="margin-left:6px;color:var(--dim)">3</span></button>
+                <button style="background:none;border:0;border-bottom:1px solid var(--l1);padding:8px 12px;font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim)" style-hover="color:var(--fg)">Finished<span style="margin-left:6px">2</span></button>
+                <span style="flex:1;border-bottom:1px solid var(--l1)"></span>
+              </div>
+              <input type="search" placeholder="Search 3 active engagements…" style="width:100%;margin:14px 0 18px;padding:9px 11px;background:var(--void);border:1px solid var(--l2);color:var(--fg);font-size:12.5px;outline:none" style-focus="border-color:var(--amber)">
+
+              <div style="display:grid;grid-template-columns:1fr 170px 170px 190px 24px;gap:16px;padding:0 12px 9px;font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim)">
+                <span>Engagement</span><span>Client</span><span>Coverage</span><span>Window</span><span></span>
+              </div>
+              <div style="border-top:1px solid var(--l1)">
+                <sc-for list="{{ engagements }}" as="e" hint-placeholder-count="3">
+                  <button style="width:100%;display:grid;grid-template-columns:1fr 170px 170px 190px 24px;gap:16px;align-items:center;text-align:left;background:var(--row);border:0;border-bottom:1px solid var(--l1);padding:14px 12px" style-hover="background:var(--rowhi)">
+                    <span style="display:flex;align-items:center;gap:12px;min-width:0">
+                      <span style="width:6px;height:6px;flex:none;background:{{ e.dot }}"></span>
+                      <span style="display:flex;flex-direction:column;gap:3px;min-width:0">
+                        <span style="font-size:13.5px;font-weight:500;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ e.name }}</span>
+                        <span style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)">{{ e.meta }}</span>
+                      </span>
+                    </span>
+                    <span style="font-family:var(--mono);font-size:11px;color:var(--mid)">{{ e.client }}</span>
+                    <span style="display:flex;align-items:center;gap:10px">
+                      <span style="flex:1;display:block;height:2px;background:var(--l1)"><span style="display:block;height:100%;background:var(--amber);width:{{ e.pct }}"></span></span>
+                      <span style="font-family:var(--mono);font-size:10.5px;color:var(--fg2);width:30px;text-align:right">{{ e.pct }}</span>
+                    </span>
+                    <span style="font-family:var(--mono);font-size:11px;color:var(--mid)">{{ e.window }}</span>
+                    <span style="display:grid;place-items:center;color:var(--dim)">
+                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 8.5h5.6l.7-8.5"></path></svg>
+                    </span>
+                  </button>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ sTemplates }}" hint-placeholder-val="{{ false }}">
+          <div style="flex:1;overflow-y:auto" data-screen-label="Templates">
+            <div style="max-width:1060px;margin:0 auto;padding:30px 24px 80px">
+              <div style="font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim)">Library</div>
+              <h1 style="font-family:var(--disp);font-weight:600;font-size:26px;margin:7px 0 0;color:var(--fg)">Checklist templates</h1>
+              <p style="margin:10px 0 0;font-size:12.5px;line-height:1.65;color:var(--mid);max-width:64ch;text-wrap:pretty">Every new target is seeded from its asset type. Edit once — every future engagement inherits it. Existing targets are never changed.</p>
+
+              <div style="display:flex;gap:22px;margin-top:26px;align-items:flex-start">
+                <div style="width:206px;flex:none;border-top:1px solid var(--l1)">
+                  <sc-for list="{{ tplGroups }}" as="g" hint-placeholder-count="5">
+                    <div style="padding:11px 10px 4px;font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim)">{{ g.label }}</div>
+                    <sc-for list="{{ g.types }}" as="t" hint-placeholder-count="2">
+                      <button style="{{ t.style }}">
+                        <span style="{{ t.codeStyle }}">{{ t.code }}</span>
+                        <span style="flex:1;text-align:left;font-size:12.5px;color:{{ t.nameColor }}">{{ t.label }}</span>
+                        <span style="font-family:var(--mono);font-size:10px;color:var(--dim)">{{ t.n }}</span>
+                      </button>
+                    </sc-for>
+                  </sc-for>
+                  <button style="width:100%;margin-top:10px;padding:8px;background:none;border:1px dashed var(--l2);color:var(--mid);font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase" style-hover="border-color:var(--amber);color:var(--amber)">+ New asset type</button>
+                </div>
+
+                <div style="flex:1;min-width:0;border:1px solid var(--l1);background:var(--panel)">
+                  <div style="padding:13px 14px;border-bottom:1px solid var(--l1);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                    <span style="padding:2px 6px;border:1px solid var(--l2);font-family:var(--mono);font-size:9px;letter-spacing:.16em;color:var(--mid)">NET</span>
+                    <h2 style="font-family:var(--disp);font-weight:600;font-size:14px;margin:0;color:var(--fg)">Host / Network</h2>
+                    <span style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)">49 items · 8 sections</span>
+                    <div style="display:flex;gap:4px;margin-left:auto">
+                      <button style="height:23px;padding:0 8px;background:none;border:1px solid var(--l2);color:var(--mid);font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase" style-hover="border-color:var(--l3);color:var(--fg)">Edit</button>
+                      <button style="height:23px;padding:0 8px;background:none;border:1px solid var(--l2);color:var(--mid);font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase" style-hover="border-color:var(--l3);color:var(--fg)">+ Item</button>
+                      <button style="height:23px;padding:0 8px;background:none;border:1px solid var(--l2);color:var(--mid);font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase" style-hover="border-color:var(--l3);color:var(--fg)">Export</button>
+                      <button style="height:23px;padding:0 8px;background:none;border:1px solid var(--l2);color:var(--mid);font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase" style-hover="border-color:var(--red);color:var(--red)">Delete</button>
+                    </div>
+                  </div>
+                  <div style="padding:10px 14px 6px;border-bottom:1px solid var(--l1);background:var(--panel2);font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim)">01 · Scanning &amp; Enumeration</div>
+                  <sc-for list="{{ tplRows }}" as="r" hint-placeholder-count="5">
+                    <div style="padding:11px 14px;border-bottom:1px solid var(--l1);display:grid;grid-template-columns:26px 1fr 50px 50px;gap:12px;align-items:start" style-hover="background:var(--rowhi)">
+                      <span style="font-family:var(--mono);font-size:10px;color:var(--dim);padding-top:2px">{{ r.num }}</span>
+                      <div style="min-width:0">
+                        <div style="font-size:13px;color:var(--fg)">{{ r.title }}</div>
+                        <div style="font-size:12px;color:var(--mid);margin-top:4px;line-height:1.55;max-width:64ch">{{ r.detail }}</div>
+                      </div>
+                      <span style="font-family:var(--mono);font-size:10px;color:var(--dim);text-align:right;padding-top:2px">{{ r.pl }}</span>
+                      <div style="display:flex;gap:0;justify-content:flex-end">
+                        <button style="width:22px;height:22px;display:grid;place-items:center;background:none;border:1px solid transparent;color:var(--dim)" style-hover="color:var(--fg);border-color:var(--l2)">
+                          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2.5l2.5 2.5L5.5 13H3v-2.5z"></path></svg>
+                        </button>
+                        <button style="width:22px;height:22px;display:grid;place-items:center;background:none;border:1px solid transparent;color:var(--dim)" style-hover="color:var(--red);border-color:var(--red)">
+                          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"></path></svg>
+                        </button>
+                      </div>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ sSettings }}" hint-placeholder-val="{{ false }}">
+          <div style="flex:1;overflow-y:auto" data-screen-label="Settings">
+            <div style="max-width:760px;margin:0 auto;padding:30px 24px 80px">
+              <div style="font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim)">Settings</div>
+              <h1 style="font-family:var(--disp);font-weight:600;font-size:26px;margin:7px 0 0;color:var(--fg)">Workspace</h1>
+
+              <div style="margin-top:26px;border:1px solid var(--l1);background:var(--panel)">
+                <div style="padding:13px 16px;border-bottom:1px solid var(--l1);display:flex;align-items:center;gap:10px">
+                  <span style="font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--fg2)">Operator account</span>
+                  <span style="flex:1"></span>
+                  <span style="width:22px;height:22px;display:grid;place-items:center;border:1px solid var(--l2);font-family:var(--mono);font-size:10px;color:var(--amber)">O</span>
+                  <span style="font-family:var(--mono);font-size:10.5px;color:var(--mid)">operator</span>
+                </div>
+                <div style="padding:16px">
+                  <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end">
+                    <div>
+                      <label style="display:block;font-family:var(--mono);font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:var(--dim)">Username</label>
+                      <input value="operator" style="width:100%;margin-top:7px;background:var(--void);border:1px solid var(--l2);padding:9px 11px;font-family:var(--mono);font-size:12.5px;color:var(--fg);outline:none" style-focus="border-color:var(--amber)">
+                    </div>
+                    <button style="height:34px;padding:0 13px;background:none;border:1px solid var(--l2);color:var(--amber);font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase" style-hover="border-color:var(--amber);background:var(--amberwash)">Rename</button>
+                  </div>
+                  <p style="margin:8px 0 0;font-size:12px;line-height:1.6;color:var(--dim)">The name attached to every finding you record. Changing it does not rewrite past entries.</p>
+
+                  <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--l1)">
+                    <div style="font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--fg2)">Change passphrase</div>
+                    <label style="display:block;margin-top:14px;font-family:var(--mono);font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:var(--dim)">Current passphrase</label>
+                    <input type="password" style="width:100%;margin-top:7px;background:var(--void);border:1px solid var(--l2);padding:9px 11px;font-family:var(--mono);font-size:12.5px;color:var(--fg);outline:none" style-focus="border-color:var(--amber)">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px">
+                      <div>
+                        <label style="display:block;font-family:var(--mono);font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:var(--dim)">New passphrase</label>
+                        <input type="password" style="width:100%;margin-top:7px;background:var(--void);border:1px solid var(--l2);padding:9px 11px;font-family:var(--mono);font-size:12.5px;color:var(--fg);outline:none" style-focus="border-color:var(--amber)">
+                      </div>
+                      <div>
+                        <label style="display:block;font-family:var(--mono);font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:var(--dim)">Repeat</label>
+                        <input type="password" style="width:100%;margin-top:7px;background:var(--void);border:1px solid var(--l2);padding:9px 11px;font-family:var(--mono);font-size:12.5px;color:var(--fg);outline:none" style-focus="border-color:var(--amber)">
+                      </div>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:12px;margin-top:12px">
+                      <div style="flex:1;display:flex;align-items:center;gap:9px">
+                        <span style="flex:none;display:flex;gap:2px">
+                          <sc-for list="{{ pwBars }}" as="b" hint-placeholder-count="4">
+                            <span style="{{ b.style }}"></span>
+                          </sc-for>
+                        </span>
+                        <span style="font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--mid)">Strong · 18 chars</span>
+                      </div>
+                      <button style="height:30px;padding:0 14px;background:var(--amber);border:1px solid var(--amber);color:var(--amberink);font-family:var(--disp);font-weight:700;font-size:11px;letter-spacing:.16em;text-transform:uppercase">Update passphrase</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div style="margin-top:16px;border:1px solid var(--l1);background:var(--panel)">
+                <div style="padding:14px 16px;border-bottom:1px solid var(--l1);display:flex;align-items:center;gap:10px">
+                  <span style="display:inline-flex;align-items:center;gap:7px;padding:3px 9px;border:1px solid var(--l2);font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--mid)">
+                    <span style="width:5px;height:5px;background:var(--l3);display:block"></span>Working locally
+                  </span>
+                  <span style="flex:1"></span>
+                  <span style="font-family:var(--mono);font-size:10px;color:var(--dim)">v0.7.13</span>
+                </div>
+                <div style="padding:16px">
+                  <p style="margin:0;font-size:12.5px;line-height:1.7;color:var(--mid);max-width:64ch;text-wrap:pretty">Everything you create stays in this install. Connect to a team server to share engagements — you will need the server address, a one-time code from an admin, a name and a password. The admin then approves your request.</p>
+                  <button style="margin-top:14px;height:30px;padding:0 14px;background:var(--amber);border:1px solid var(--amber);color:var(--amberink);font-family:var(--disp);font-weight:700;font-size:11px;letter-spacing:.16em;text-transform:uppercase">Connect to a server</button>
+                </div>
+              </div>
+
+              <div style="margin-top:16px;border:1px solid var(--l1);background:var(--panel)">
+                <div style="padding:13px 16px;border-bottom:1px solid var(--l1);font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--fg2)">Encryption at rest</div>
+                <div style="padding:16px">
+                  <div style="display:grid;grid-template-columns:130px 1fr;gap:9px 14px;align-items:baseline;font-size:12.5px">
+                    <span style="font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim)">Status</span>
+                    <span style="color:var(--fg)">Unencrypted</span>
+                    <span style="font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim)">Cipher</span>
+                    <span style="font-family:var(--mono);color:var(--fg)">SQLCipher · AES-256</span>
+                  </div>
+                  <p style="margin:14px 0 0;font-size:12.5px;line-height:1.7;color:var(--mid);max-width:64ch;text-wrap:pretty">Set a passphrase to encrypt the database; you then enter it each time Magi starts.</p>
+                  <button style="margin-top:14px;height:28px;padding:0 12px;background:none;border:1px solid var(--l2);color:var(--amber);font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase" style-hover="border-color:var(--amber);background:var(--amberwash)">Encrypt this workspace…</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ sAdmin }}" hint-placeholder-val="{{ false }}">
+          <div style="flex:1;overflow-y:auto" data-screen-label="Admin">
+            <div style="max-width:820px;margin:0 auto;padding:30px 24px 80px">
+              <div style="font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim)">Team server</div>
+              <h1 style="font-family:var(--disp);font-weight:600;font-size:26px;margin:7px 0 0;color:var(--fg)">Admin</h1>
+
+              <div style="margin-top:24px;border:1px solid var(--amber);background:var(--amberwash);padding:12px 14px;display:flex;align-items:center;gap:14px">
+                <span style="font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--amber)">Backup due</span>
+                <span style="flex:1;font-size:12.5px;color:var(--fg2)">No schedule set · never backed up.</span>
+                <button style="height:26px;padding:0 11px;background:var(--amber);border:1px solid var(--amber);color:var(--amberink);font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase">Back up now</button>
+              </div>
+
+              <sc-for list="{{ adminCards }}" as="c" hint-placeholder-count="3">
+                <div style="margin-top:16px;border:1px solid var(--l1);background:var(--panel)">
+                  <div style="padding:12px 16px;border-bottom:1px solid var(--l1);display:flex;align-items:center;gap:10px">
+                    <span style="font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--fg2)">{{ c.title }}</span>
+                    <span style="font-family:var(--mono);font-size:10px;color:var(--dim)">{{ c.n }}</span>
+                  </div>
+                  <sc-for list="{{ c.rows }}" as="r" hint-placeholder-count="2">
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 16px;border-bottom:1px solid var(--l1)">
+                      <div style="min-width:0">
+                        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                          <span style="font-size:13px;color:var(--fg)">{{ r.name }}</span>
+                          <span style="padding:2px 7px;border:1px solid var(--l2);font-family:var(--mono);font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--mid)">{{ r.role }}</span>
+                        </div>
+                        <div style="margin-top:4px;font-family:var(--mono);font-size:10.5px;color:var(--dim)">{{ r.meta }}</div>
+                      </div>
+                      <div style="display:flex;gap:5px;flex:none">
+                        <sc-for list="{{ r.actions }}" as="a" hint-placeholder-count="2">
+                          <button style="{{ a.style }}">{{ a.label }}</button>
+                        </sc-for>
+                      </div>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ sLogin }}" hint-placeholder-val="{{ false }}">
+          <div style="flex:1;display:grid;place-items:center;padding:40px 20px;background:var(--bg)" data-screen-label="Login">
+            <form style="width:min(380px,92vw)">
+              <div style="display:flex;flex-direction:column;align-items:center;gap:18px;margin-bottom:32px">
+                <svg viewBox="0 0 32 32" width="64" height="64" fill="none">
+                  <circle cx="16" cy="16" r="13.5" stroke="var(--amber)" stroke-width=".8"></circle>
+                  <circle cx="16" cy="16" r="10.6" stroke="var(--l3)" stroke-width=".5"></circle>
+                  <rect x="7.5" y="7.5" width="17" height="17" stroke="var(--amber)" stroke-width=".8"></rect>
+                  <rect x="7.5" y="7.5" width="17" height="17" stroke="var(--amber)" stroke-width=".8" transform="rotate(45 16 16)"></rect>
+                  <circle cx="16" cy="16" r="2" fill="var(--amber)"></circle>
+                </svg>
+                <div style="text-align:center">
+                  <div style="font-family:var(--disp);font-weight:700;font-size:26px;letter-spacing:.42em;text-indent:.42em;color:var(--fg)">MAGI</div>
+                  <div style="margin-top:10px;display:flex;align-items:center;justify-content:center;gap:10px;font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim)">
+                    <span>Melchior</span><span style="color:var(--l3)">·</span><span>Balthasar</span><span style="color:var(--l3)">·</span><span>Casper</span>
+                  </div>
+                </div>
+              </div>
+              <div style="border:1px solid var(--l2);background:var(--panel);padding:22px 20px">
+                <label style="display:block;font-family:var(--mono);font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:var(--dim)">Operator</label>
+                <input placeholder="admin" style="width:100%;margin-top:7px;background:var(--void);border:1px solid var(--l2);padding:9px 11px;font-family:var(--mono);font-size:12.5px;color:var(--fg);outline:none" style-focus="border-color:var(--amber)">
+                <label style="display:block;margin-top:16px;font-family:var(--mono);font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:var(--dim)">Passphrase</label>
+                <input type="password" style="width:100%;margin-top:7px;background:var(--void);border:1px solid var(--l2);padding:9px 11px;font-family:var(--mono);font-size:12.5px;color:var(--fg);outline:none" style-focus="border-color:var(--amber)">
+                <button type="button" style="width:100%;margin-top:20px;height:36px;background:var(--amber);border:1px solid var(--amber);color:var(--amberink);font-family:var(--disp);font-weight:700;font-size:12px;letter-spacing:.2em;text-transform:uppercase">Authenticate</button>
+              </div>
+              <div style="margin-top:14px;text-align:center;font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim)">Local workspace · v0.7.13</div>
+            </form>
+          </div>
+        </sc-if>
+
+      </main>
+    </div>
+  </div>
+
+  <sc-if value="{{ sFinding }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;inset:0;background:rgba(4,4,6,.74);display:grid;place-items:center;z-index:60;padding:20px">
+      <form style="width:min(520px,94vw);max-height:86vh;overflow:auto;background:var(--panel);border:1px solid var(--l3)">
+        <div style="padding:15px 18px;border-bottom:1px solid var(--l1);display:flex;align-items:center;gap:12px">
+          <span style="font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--amber)">Evidence</span>
+          <span style="flex:1"></span>
+          <button type="button" onClick="{{ closeModal }}" style="width:22px;height:22px;display:grid;place-items:center;background:none;border:0;color:var(--dim)" style-hover="color:var(--fg)">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"></path></svg>
+          </button>
+        </div>
+        <div style="padding:18px">
+          <h3 style="font-family:var(--disp);font-weight:600;font-size:18px;margin:0;color:var(--fg)">Capture evidence</h3>
+          <p style="margin:8px 0 0;font-size:12.5px;line-height:1.65;color:var(--mid);text-wrap:pretty">Notes, credentials and confirmed vulnerabilities — these become the findings in the report.</p>
+
+          <div style="display:flex;gap:1px;margin-top:18px">
+            <sc-for list="{{ kindTabs }}" as="k" hint-placeholder-count="3">
+              <button type="button" style="{{ k.style }}">{{ k.label }}</button>
+            </sc-for>
+          </div>
+
+          <label style="display:block;margin-top:18px;font-family:var(--mono);font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:var(--dim)">Title</label>
+          <input placeholder="What you found" style="width:100%;margin-top:7px;background:var(--void);border:1px solid var(--l2);padding:9px 11px;font-size:12.5px;color:var(--fg);outline:none" style-focus="border-color:var(--amber)">
+
+          <label style="display:block;margin-top:16px;font-family:var(--mono);font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:var(--dim)">Severity</label>
+          <div style="display:flex;gap:1px;margin-top:7px">
+            <sc-for list="{{ sevTabs }}" as="s" hint-placeholder-count="5">
+              <button type="button" style="{{ s.style }}">{{ s.label }}</button>
+            </sc-for>
+          </div>
+
+          <label style="display:block;margin-top:16px;font-family:var(--mono);font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:var(--dim)">Details</label>
+          <textarea placeholder="notes…" style="width:100%;margin-top:7px;min-height:82px;resize:vertical;background:var(--void);border:1px solid var(--l2);padding:9px 11px;font-family:var(--mono);font-size:11.5px;line-height:1.6;color:var(--fg);outline:none" style-focus="border-color:var(--amber)"></textarea>
+
+          <div style="margin-top:16px;border-top:1px solid var(--l1);padding-top:12px">
+            <div style="font-family:var(--mono);font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:var(--dim)">Attack chain</div>
+            <div style="margin-top:9px;border:1px solid var(--l1);max-height:118px;overflow-y:auto">
+              <sc-for list="{{ chain }}" as="c" hint-placeholder-count="4">
+                <label style="display:flex;align-items:center;gap:9px;padding:7px 10px;border-bottom:1px solid var(--l1);cursor:pointer" style-hover="background:var(--rowhi)">
+                  <input type="checkbox" style="width:auto;margin:0;accent-color:var(--amber)">
+                  <sc-if value="{{ c.sev }}" hint-placeholder-val="{{ false }}">
+                    <span style="font-family:var(--mono);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:{{ c.sevColor }}">{{ c.sev }}</span>
+                  </sc-if>
+                  <span style="flex:1;min-width:0;font-size:12.5px;color:var(--fg2)">{{ c.title }}</span>
+                  <span style="font-family:var(--mono);font-size:10px;color:var(--dim)">{{ c.target }}</span>
+                </label>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:6px;padding:14px 18px;border-top:1px solid var(--l1)">
+          <button type="button" onClick="{{ closeModal }}" style="height:30px;padding:0 14px;background:none;border:1px solid var(--l2);color:var(--mid);font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase" style-hover="border-color:var(--l3);color:var(--fg)">Cancel</button>
+          <button type="button" style="height:30px;padding:0 18px;background:var(--amber);border:1px solid var(--amber);color:var(--amberink);font-family:var(--disp);font-weight:700;font-size:11px;letter-spacing:.16em;text-transform:uppercase">Save</button>
+        </div>
+      </form>
+    </div>
+  </sc-if>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;default&quot;:&quot;dark&quot;,&quot;tsType&quot;:&quot;\&quot;dark\&quot;|\&quot;light\&quot;&quot;,&quot;section&quot;:&quot;Appearance&quot;},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;compact&quot;,&quot;comfortable&quot;],&quot;default&quot;:&quot;compact&quot;,&quot;tsType&quot;:&quot;\&quot;compact\&quot;|\&quot;comfortable\&quot;&quot;,&quot;section&quot;:&quot;Appearance&quot;}}">
+class Component extends DCLogic {
+  state = { screen: "checklist", theme: "dark", filter: "All", ev: "All", kind: "Vuln", sev: "High", dockW: 318, dragging: false };
+
+  beginResize = (e) => {
+    e.preventDefault();
+    const startX = e.clientX, startW = this.state.dockW;
+    this.setState({ dragging: true });
+    const move = (ev) => {
+      const w = Math.min(620, Math.max(220, startW - (ev.clientX - startX)));
+      this.setState({ dockW: w });
+    };
+    const up = () => {
+      this.setState({ dragging: false });
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
+  componentDidMount() { this.applyTheme(); }
+  componentDidUpdate() { this.applyTheme(); }
+  applyTheme() {
+    const t = this.props.theme ?? this.state.theme;
+    document.documentElement.setAttribute("data-magi", t);
+  }
+
+  btnGhost(active) {
+    return "height:100%;padding:0 13px;background:" + (active ? "var(--panel2)" : "none") +
+      ";border:0;border-right:1px solid var(--l1);font-family:var(--mono);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:" +
+      (active ? "var(--amber)" : "var(--dim)") + ";white-space:nowrap";
+  }
+  code(on) {
+    return "width:38px;flex:none;padding:2px 0;text-align:center;border:1px solid " +
+      (on ? "var(--amber)" : "var(--l2)") + ";font-family:var(--mono);font-size:8.5px;letter-spacing:.12em;color:" +
+      (on ? "var(--amber)" : "var(--mid)");
+  }
+  statusCell(kind, on) {
+    let bg = "var(--void)", bd = "var(--l2)", fg = "var(--dim)";
+    if (on && kind === "done") { bg = "var(--l3)"; bd = "var(--l3)"; fg = "var(--fg)"; }
+    if (on && kind === "flag") { bg = "var(--red)"; bd = "var(--red)"; fg = "#fff"; }
+    if (on && kind === "na") { bg = "var(--l1)"; bd = "var(--l2)"; fg = "var(--mid)"; }
+    return "width:26px;height:24px;display:grid;place-items:center;background:" + bg +
+      ";border:1px solid " + bd + ";margin-left:-1px;color:" + fg;
+  }
+  tab(active, wide) {
+    return (wide ? "flex:1;" : "") + "padding:7px 4px;background:" + (active ? "var(--amberwash)" : "none") +
+      ";border:1px solid " + (active ? "var(--amber)" : "var(--l2)") +
+      ";margin-left:-1px;font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:" +
+      (active ? "var(--amber)" : "var(--dim)");
+  }
+  smallBtn(tone) {
+    const c = tone === "primary" ? "var(--amberink)" : tone === "danger" ? "var(--red)" : "var(--mid)";
+    const bg = tone === "primary" ? "var(--amber)" : "none";
+    const bd = tone === "primary" ? "var(--amber)" : "var(--l2)";
+    return "height:25px;padding:0 10px;background:" + bg + ";border:1px solid " + bd +
+      ";color:" + c + ";font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase";
+  }
+  sevColor(s) {
+    const k = (s || "").toLowerCase();
+    if (k === "critical" || k === "high") return "var(--red)";
+    if (k === "medium") return "var(--amber)";
+    return "var(--mid)";
+  }
+
+  railData() {
+    const T = (code, name, meta, pct, flags, on) => ({ code, name, meta, pct, flags, on });
+    return [
+      { label: "External", count: "2 targets", targets: [
+        T("WEB", "https://app.acme.example", "Web app · 5/110 handled · 3 findings", "5%", "3", true),
+        T("API", "https://api.acme.example", "API · 0/28 handled", "0%", "\u2014", false) ] },
+      { label: "Internal", count: "2 targets", targets: [
+        T("NET", "10.0.0.0/24", "Host / network · 0/49 handled", "0%", "\u2014", false),
+        T("AD", "ACME.LOCAL", "AD domain · 0/37 handled", "0%", "\u2014", false) ] },
+      { label: "Additional", count: "2 targets", targets: [
+        T("CTR", "registry.acme.example/app:latest", "Container / cloud · 0/25 handled", "0%", "\u2014", false),
+        T("POC", "SSRF \u2192 cloud metadata \u2192 RCE", "PoC · 1 finding", "0%", "1", false) ] },
+      { label: "Retest", count: "1 target", targets: [
+        T("RTS", "Retest \u2014 Q2 findings", "Retest · 3 findings", "0%", "3", false) ] }
+    ];
+  }
+
+  checklistGroups() {
+    const I = (num, title, detail, o) => Object.assign({ num, title, detail, status: "open" }, o || {});
+    const g1 = [
+      I("01", "What tools / stack / CMS does it use?", "Fingerprint the server, framework, CMS and language, then select each one you identify \u2014 its specific attacks unfold below as a checklist to tick clean or flag.",
+        { tag: "select", payloads: "3 payloads", chips: [
+          { label: "Nginx", on: true }, { label: "Apache" }, { label: "IIS" }, { label: "Tomcat" },
+          { label: "Laravel/PHP" }, { label: "Next.js", on: true }, { label: "Angular/SPA" },
+          { label: "WordPress" }, { label: "Spring/Java" }, { label: "Node/Express" },
+          { label: "Django" }, { label: "Ruby on Rails" }, { label: "ASP.NET / MVC" }, { label: "GraphQL endpoint" } ] }),
+      I("02", "Grab HTTP response headers", "Server, X-Powered-By, Set-Cookie flags, security headers (CSP, HSTS, X-Frame-Options).",
+        { status: "done", payloads: "2 payloads", code: "curl -sSI https://app.acme.example | tee headers.txt" }),
+      I("03", "WAF / CDN in front? Which one?", "Detect the WAF/CDN, then select it to unfold bypass patterns tailored to it.",
+        { tag: "select", payloads: "1 payload", chips: [
+          { label: "Cloudflare", on: true }, { label: "Akamai" }, { label: "AWS WAF" },
+          { label: "ModSecurity/CRS" }, { label: "Imperva" }, { label: "F5 BIG-IP ASM" }, { label: "Generic / unknown" } ] }),
+      I("04", "Favicon / JS bundle fingerprinting", "Favicon hash and source maps can reveal framework and internal routes.", { status: "done", payloads: "2 payloads" }),
+      I("05", "TLS / cert inspection", "Cert SANs reveal extra hostnames/subdomains; check weak protocols/ciphers.", { payloads: "2 payloads" }),
+      I("06", "robots.txt / sitemap.xml / security.txt?", "Disallowed paths are often the interesting ones.", { tag: "question", payloads: "3 payloads", answer: true }),
+      I("07", "Allowed HTTP methods / verb tampering", "PUT/DELETE/TRACE/PATCH; some frameworks treat an unknown verb as GET but skip the auth filter.", { status: "na", payloads: "3 payloads" }),
+      I("08", "Host header handling", "Routing, password-reset links and cache keys built from Host are all attack surface.", { status: "done", payloads: "2 payloads" }),
+      I("09", "Record the base tech stack and versions you confirmed", "Anchor the rest of the test on this: server, framework, language, CMS, front-end, CDN.", { tag: "input", answer: true }),
+      I("10", "Authenticated testing in scope? Which roles/accounts?", "Note every role you were issued \u2014 access-control testing needs at least two accounts at the same level.", { tag: "question", answer: true }),
+      I("11", "Subdomain takeover", "Dangling CNAMEs pointing at unclaimed cloud services.", { status: "flag", payloads: "2 payloads" }),
+      I("12", "Find the origin IP behind the CDN/WAF", "Historical DNS, cert SANs, non-proxied subdomains \u2014 then hit origin directly with the Host header to skip the WAF.", { payloads: "2 payloads" })
+    ];
+    const g2 = [
+      I("01", "Directory / file enumeration \u2014 unauthenticated", "As an anonymous attacker, with no session. This is the baseline of what is exposed to the internet: hidden dirs, admin panels, backups, dev endpoints.", { payloads: "3 payloads" }),
+      I("02", "Directory / file enumeration \u2014 authenticated", "Repeat with a valid session \u2014 it surfaces user- and admin-only routes, API endpoints and account pages the anonymous run never sees.", { payloads: "3 payloads" }),
+      I("03", "Did dir enum find anything interesting?", "admin, /api, /backup, /.git, /uploads, /debug, /actuator \u2014 from either pass.", { tag: "trigger", spawn: true }),
+      I("04", "Exposed VCS / config / backups", "Source disclosure via .git, .svn, .env, .DS_Store, *.bak, *.zip.", { payloads: "3 payloads" })
+    ];
+    return [
+      { num: "01", title: "Recon & Fingerprinting", done: 5, total: 18, open: true, items: g1 },
+      { num: "02", title: "Content Discovery", done: 0, total: 14, open: true, items: g2 },
+      { num: "03", title: "Authentication", done: 0, total: 15 },
+      { num: "04", title: "Input Handling & Injection", done: 0, total: 19 },
+      { num: "05", title: "File Upload & Handling", done: 0, total: 4 },
+      { num: "06", title: "Access Control & Logic", done: 0, total: 13 },
+      { num: "07", title: "Session, Cookies & Client-Side", done: 0, total: 13 },
+      { num: "08", title: "Protocol, Cache & Infrastructure", done: 0, total: 8 },
+      { num: "09", title: "Cryptography & Secrets", done: 0, total: 6 }
+    ];
+  }
+
+  renderVals() {
+    const screen = this.state.screen;
+    const theme = this.props.theme ?? this.state.theme;
+    const dense = (this.props.density ?? "compact") === "compact";
+    const pad = dense ? "12px 12px" : "17px 12px";
+
+    const screens = [
+      ["checklist", "Checklist"], ["engagement", "Engagement"], ["home", "Home"],
+      ["finding", "Finding"], ["templates", "Templates"], ["settings", "Settings"],
+      ["admin", "Admin"], ["login", "Login"]
+    ];
+    const tabs = screens.map(pair => ({
+      id: pair[0], label: pair[1],
+      style: this.btnGhost(screen === pair[0]),
+      go: () => this.setState({ screen: pair[0] })
+    }));
+
+    const crumbMap = {
+      checklist: ["engagements", "Acme Corp \u2014 External Assessment", "https://app.acme.example"],
+      finding: ["engagements", "Acme Corp \u2014 External Assessment", "https://app.acme.example"],
+      engagement: ["engagements", "Acme Corp \u2014 External Assessment"],
+      home: ["engagements"], templates: ["templates"], settings: ["settings"], admin: ["team server", "admin"]
+    };
+    const cs = crumbMap[screen] || ["engagements"];
+    const crumbs = cs.map((label, i) => ({
+      label,
+      style: "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:250px;color:" +
+        (i === cs.length - 1 ? "var(--amber)" : "var(--mid)")
+    }));
+
+    const railGroups = this.railData().map(g => ({
+      label: g.label, count: g.count,
+      targets: g.targets.map(t => ({
+        code: t.code, name: t.name, meta: t.meta, pct: t.pct, flags: t.flags,
+        flagColor: t.flags === "\u2014" ? "var(--dim)" : "var(--red)",
+        nameColor: t.on ? "var(--fg)" : "var(--fg2)",
+        codeStyle: this.code(t.on),
+        style: "display:block;width:100%;text-align:left;background:" + (t.on ? "var(--rowsel)" : "none") +
+          ";border:0;border-left:2px solid " + (t.on ? "var(--amber)" : "transparent") + ";padding:9px 12px 10px"
+      }))
+    }));
+
+    const secs = this.checklistGroups();
+    const sections = secs.map(s => ({
+      title: s.num + ". " + s.title + " \u2014 " + s.done + "/" + s.total,
+      weight: s.total, pct: Math.round((s.done / s.total) * 100) + "%"
+    }));
+
+    const groups = secs.map(s => {
+      const pct = Math.round((s.done / s.total) * 100) + "%";
+      return {
+        num: s.num, title: s.title, done: s.done, total: s.total, pct,
+        open: !!s.open, chev: s.open ? "\u25BC" : "\u25B6",
+        numColor: s.open ? "var(--amber)" : "var(--dim)",
+        titleColor: s.open ? "var(--fg)" : "var(--fg2)",
+        hdrStyle: "width:100%;display:flex;align-items:center;gap:11px;background:none;border:0;border-bottom:1px solid " +
+          (s.open ? "var(--l2)" : "var(--l1)") + ";padding:10px 2px",
+        items: (s.items || []).map(it => {
+          const st = it.status;
+          return {
+            num: it.num, title: it.title, detail: it.detail, tag: it.tag || "",
+            payloads: it.payloads || "", code: it.code || "", answer: !!it.answer, spawn: !!it.spawn,
+            chips: (it.chips || []).map(c => ({
+              label: c.label,
+              style: "padding:4px 9px;background:" + (c.on ? "var(--amberwash)" : "var(--void)") +
+                ";border:1px solid " + (c.on ? "var(--amber)" : "var(--l2)") +
+                ";font-family:var(--mono);font-size:11px;color:" + (c.on ? "var(--amber)" : "var(--mid)")
+            })),
+            numColor: st === "flag" ? "var(--red)" : st === "open" ? "var(--mid)" : "var(--dim)",
+            titleColor: st === "flag" ? "var(--red)" : st === "open" ? "var(--fg)" : "var(--dim)",
+            tagStyle: "padding:2px 6px;border:1px solid " +
+              (it.tag === "trigger" ? "var(--amber)" : "var(--l2)") +
+              ";font-family:var(--mono);font-size:8.5px;letter-spacing:.16em;text-transform:uppercase;color:" +
+              (it.tag === "trigger" ? "var(--amber)" : "var(--mid)"),
+            rowStyle: "display:grid;grid-template-columns:34px 1fr auto auto;gap:14px;padding:" + pad +
+              ";border-bottom:1px solid var(--l1);border-left:2px solid " +
+              (st === "flag" ? "var(--red)" : "transparent") + ";background:" +
+              (st === "flag" ? "var(--redwash)" : st === "na" ? "var(--panel2)" : "transparent") +
+              (st === "na" ? ";opacity:.62" : ""),
+            stDone: this.statusCell("done", st === "done"),
+            stFlag: this.statusCell("flag", st === "flag"),
+            stNa: this.statusCell("na", st === "na")
+          };
+        })
+      };
+    });
+
+    const filters = [["All", 110], ["Open", 105], ["Findings", 1], ["Handled", 5]].map(f => ({
+      label: f[0], n: f[1],
+      style: "background:none;border:0;border-bottom:1px solid " +
+        (this.state.filter === f[0] ? "var(--amber)" : "var(--l1)") +
+        ";padding:8px 13px;font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:" +
+        (this.state.filter === f[0] ? "var(--fg)" : "var(--dim)")
+    }));
+
+    const evTabs = ["All", "Notes", "Creds", "Vulns"].map(label => ({ label, style: this.tab(this.state.ev === label, true) }));
+
+    const xss = "GET /search?q=" + "\u003cscript\u003e" + "alert(document.domain)" + "\u003c/script\u003e" + " reflects unencoded.";
+    const findingData = [
+      { sev: "High", kind: "vuln", title: "Reflected XSS in /search", body: xss, done: false },
+      { sev: "", kind: "credential", title: "Weak admin credentials", body: "admin : Password1!  (portal /admin)", done: true },
+      { sev: "", kind: "note", title: "Verbose 500 stack trace", body: "Leaks framework version and absolute paths.", done: false }
+    ];
+    const findings = findingData.map(f => ({
+      sev: f.sev, kind: f.kind, title: f.title, body: f.body,
+      sevColor: this.sevColor(f.sev),
+      style: "background:var(--panel);border:1px solid var(--l1);border-left:2px solid " +
+        (f.sev ? this.sevColor(f.sev) : f.done ? "var(--l3)" : "var(--l2)") + ";padding:11px 12px",
+      tickLabel: f.done ? "In report" : "Mark done",
+      tickStyle: "margin-left:auto;display:inline-flex;align-items:center;gap:5px;padding:3px 8px;background:" +
+        (f.done ? "var(--amberwash)" : "none") + ";border:1px solid " + (f.done ? "var(--amber)" : "var(--l2)") +
+        ";font-family:var(--mono);font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;color:" +
+        (f.done ? "var(--amber)" : "var(--dim)")
+    }));
+
+    const stats = [
+      { label: "Coverage", value: "2%", color: "var(--amber)" },
+      { label: "Findings", value: "7", color: "var(--red)" },
+      { label: "Targets", value: "7", color: "var(--fg)" }
+    ].map((s, i) => Object.assign({}, s, {
+      style: "flex:1;padding:16px 18px" + (i ? ";border-left:1px solid var(--l1)" : "")
+    }));
+
+    const engagements = [
+      { name: "Acme Corp \u2014 External Assessment", meta: "7 targets · 7 findings", client: "Acme Corporation", pct: "2%", window: "Sep 1 \u2192 Sep 12, 2026", dot: "var(--amber)" },
+      { name: "Northwind \u2014 Internal / AD", meta: "12 targets · 21 findings", client: "Northwind Traders", pct: "64%", window: "Aug 11 \u2192 Sep 5, 2026", dot: "var(--amber)" },
+      { name: "Kestrel Mobile \u2014 iOS + API", meta: "4 targets · 3 findings", client: "Kestrel Labs", pct: "0%", window: "Sep 8 \u2192 Sep 19, 2026", dot: "var(--l3)" }
+    ];
+
+    const tplGroups = [
+      { label: "Internal", types: [{ code: "NET", label: "Host / Network", n: 49, on: true }, { code: "AD", label: "AD Domain", n: 37 }] },
+      { label: "External", types: [{ code: "WEB", label: "Web App", n: 112 }, { code: "API", label: "API", n: 28 }] },
+      { label: "Mobile", types: [{ code: "MOB", label: "Mobile App", n: 39 }] },
+      { label: "Wireless / OT", types: [{ code: "WIFI", label: "Wi-Fi", n: 27 }, { code: "IOT", label: "IoT Device", n: 34 }, { code: "ICS", label: "OT / ICS", n: 29 }] },
+      { label: "Additional", types: [{ code: "CTR", label: "Container / Cloud", n: 25 }, { code: "POC", label: "PoC", n: 0 }, { code: "RTS", label: "Retest", n: 0 }] }
+    ].map(g => ({
+      label: g.label,
+      types: g.types.map(t => ({
+        code: t.code, label: t.label, n: t.n,
+        codeStyle: this.code(!!t.on),
+        nameColor: t.on ? "var(--fg)" : "var(--fg2)",
+        style: "width:100%;display:flex;align-items:center;gap:9px;background:" + (t.on ? "var(--rowsel)" : "none") +
+          ";border:0;border-left:2px solid " + (t.on ? "var(--amber)" : "transparent") + ";padding:8px 10px"
+      }))
+    }));
+
+    const tplRows = [
+      { num: "01", title: "Full TCP port scan", detail: "Find every open port before going deep.", pl: "2 pl" },
+      { num: "02", title: "Service/version + default scripts", detail: "On discovered open ports.", pl: "1 pl" },
+      { num: "03", title: "UDP scan (top ports)", detail: "SNMP, DNS, TFTP, IKE, NetBIOS often hide here.", pl: "1 pl" },
+      { num: "04", title: "Host discovery across the range", detail: "Live hosts, then per-host service sweeps.", pl: "2 pl" },
+      { num: "05", title: "SMB / NetBIOS enumeration", detail: "Shares, null sessions, signing, OS build.", pl: "3 pl" }
+    ];
+
+    const A = (label, tone) => ({ label, style: this.smallBtn(tone) });
+    const adminCards = [
+      { title: "Join requests", n: "01", rows: [
+        { name: "Ana Rivera", role: "worker", meta: "username ana · device 11111111\u2026 · 9/3/2026, 13:53", actions: [A("Approve", "primary"), A("Reject", "danger")] } ] },
+      { title: "Devices", n: "02", rows: [
+        { name: "Ben Carter", role: "editor", meta: "ben · last seen never", actions: [A("Revoke", "danger")] },
+        { name: "Cara Singh", role: "worker", meta: "cara · last seen never", actions: [A("Revoke", "danger")] } ] },
+      { title: "Members", n: "03", rows: [
+        { name: "lead", role: "admin", meta: "two-factor not set up yet", actions: [A("Manage")] },
+        { name: "ben", role: "editor", meta: "two-factor not set up yet", actions: [A("Manage")] },
+        { name: "cara", role: "worker", meta: "two-factor not set up yet", actions: [A("Manage")] } ] },
+      { title: "Enrollment codes", n: "02", rows: [
+        { name: "Spare", role: "worker", meta: "minted 9/3/2026, 13:53", actions: [A("Kill", "danger")] },
+        { name: "Ana laptop", role: "worker", meta: "minted 9/3/2026, 13:53", actions: [A("Kill", "danger")] } ] }
+    ];
+
+    const kindTabs = ["Note", "Credential", "Vuln"].map(label => ({
+      label, style: this.tab(this.state.kind === label, true) + ";cursor:pointer"
+    }));
+    const sevTabs = ["Info", "Low", "Medium", "High", "Critical"].map(label => ({
+      label, style: this.tab(this.state.sev === label, true) + ";cursor:pointer"
+    }));
+    const chain = [
+      { sev: "High", title: "Reflected XSS in /search", target: "app.acme" },
+      { sev: "", title: "Weak admin credentials", target: "app.acme" },
+      { sev: "Critical", title: "Full chain: SSRF \u2192 IMDS \u2192 RCE", target: "poc" },
+      { sev: "Medium", title: "ACME-2 IDOR on /invoices", target: "retest" }
+    ].map(c => Object.assign({}, c, { sevColor: this.sevColor(c.sev) }));
+
+    const dockW = this.state.dockW;
+    const pwBars = [1, 2, 3, 4].map(i => ({
+      style: "display:block;width:16px;height:3px;background:" + (i <= 3 ? "var(--amber)" : "var(--l2)")
+    }));
+
+    return {
+      pwBars,
+      dockStyle: "width:" + dockW + "px;flex:none;border-left:1px solid var(--l1);background:var(--panel2);display:flex;flex-direction:column;overflow:hidden",
+      resizerStyle: "flex:none;width:7px;align-self:stretch;cursor:col-resize;background:linear-gradient(90deg,transparent 3px,var(--l1) 3px,var(--l1) 4px,transparent 4px)" +
+        (this.state.dragging ? ";background:linear-gradient(90deg,transparent 3px,var(--amber) 3px,var(--amber) 4px,transparent 4px)" : ""),
+      startResize: this.beginResize,
+      cycleDock: () => this.setState({ dockW: dockW >= 460 ? 240 : dockW >= 300 ? 470 : 318 }),
+      tabs, crumbs, railGroups, sections, groups, filters, evTabs, findings,
+      stats, engagements, tplGroups, tplRows, adminCards, kindTabs, sevTabs, chain,
+      sChecklist: screen === "checklist" || screen === "finding",
+      sEngagement: screen === "engagement",
+      sHome: screen === "home",
+      sTemplates: screen === "templates",
+      sSettings: screen === "settings",
+      sAdmin: screen === "admin",
+      sLogin: screen === "login",
+      sFinding: screen === "finding",
+      notLogin: screen !== "login",
+      showRail: screen === "checklist" || screen === "finding",
+      themeLabel: theme === "dark" ? "Dark" : "Light",
+      toggleTheme: () => this.setState({ theme: theme === "dark" ? "light" : "dark" }),
+      closeModal: () => this.setState({ screen: "checklist" })
+    };
+  }
+}
+
+</script>
+</body>
+</html>

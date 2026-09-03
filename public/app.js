@@ -1805,6 +1805,7 @@ async function renderSettings() {
       el('div', { className: 'kv' }, el('span', { className: 'k' }, 'Token at rest'), el('span', { className: 'v' }, atRest)),
       kv('Connected', L.connected_at ? new Date(L.connected_at).toLocaleString() : '—'),
       kv('Last sync', L.last_sync ? new Date(L.last_sync).toLocaleString() : 'not yet'),
+      (() => { const s = el('span', {}, 'checking…'); api('/link/ping').then(hb => { s.textContent = hb?.who?.version ? 'v' + hb.who.version : (hb?.online ? 'unknown' : 'offline'); }).catch(() => { s.textContent = 'offline'; }); return kv('Server version', s); })(),
       el('p', { className: 'muted' }, 'Your work saves locally and syncs in the background. Offline changes are kept and sent when the server is reachable again.'),
       el('div', { className: 'setcard-actions' },
         el('button', { className: 'btn gold', onclick: syncNowUI }, icon('down'), 'Sync now'),
@@ -1818,6 +1819,9 @@ async function renderSettings() {
     try { const sec = await api('/security'); if (sec.manageable) page.append(securityCard(sec)); }
     catch { /* an older server without the endpoint — just omit the card */ }
   }
+  // This install's version — on the server's own web UI this IS the server version, so it's the
+  // quickest way to confirm an update took.
+  page.append(el('p', { className: 'muted small', style: 'margin-top:24px;text-align:center' }, 'Magi v' + (ME?.version || '?')));
   view.replaceChildren(page);
 }
 function securityCard(sec) {
@@ -2363,9 +2367,13 @@ async function pollData() {
   let rev;
   try { rev = (await api('/rev')).rev; } catch { return; }
   if (LAST_REV !== null && rev !== LAST_REV) {
-    const y = $('#view')?.scrollTop || 0;
+    // Preserve scroll across the redraw. The engagement/home views scroll in #view; the target
+    // checklist scrolls in .target-col — restore whichever applies so a refresh never jumps to top.
+    const viewY = $('#view')?.scrollTop || 0;
+    const colY = $('.target-col')?.scrollTop || 0;
     await route();
-    if ($('#view')) $('#view').scrollTop = y;
+    if ($('#view')) $('#view').scrollTop = viewY;
+    if ($('.target-col')) $('.target-col').scrollTop = colY;
   }
   LAST_REV = rev;
 }
@@ -2390,7 +2398,7 @@ function onAuthed(me) {
   LINK_POLL = setInterval(() => { if (CURRENT_USER) refreshLink(); }, 12000);
   // …and live-refresh the engagement view as changes sync in.
   clearInterval(DATA_POLL);
-  DATA_POLL = setInterval(() => { pollData().catch(() => {}); }, 4000);
+  DATA_POLL = setInterval(() => { pollData().catch(() => {}); }, 10000);
 }
 async function logout() { await api('/auth/logout', { method: 'POST' }); showLogin(); }
 function changePassword() {

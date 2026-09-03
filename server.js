@@ -11,6 +11,7 @@ import { collectChanges, applyChanges, maxHlc } from './sync.js';
 import * as totp from './totp.js';
 import * as jwt from './jwt.js';
 import { jwtSecret } from './server-identity.js';
+import { VERSION } from './version.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -363,7 +364,7 @@ app.get('/api/me', (req, res) => {
     const hint = process.env.MAGI_EMBED === '1' && usingDefaultPassword() ? 'admin / admin' : undefined;
     return res.status(401).json({ error: 'unauthorized', hint });
   }
-  res.json({ username: u.username, role: u.role, display_name: u.display_name, device: u.device_id ? true : false, server: SERVER_MODE });
+  res.json({ username: u.username, role: u.role, display_name: u.display_name, device: u.device_id ? true : false, server: SERVER_MODE, version: VERSION });
 });
 // A cheap "has anything changed" marker: the highest row clock. The SPA polls it and
 // live-refreshes the current view when background sync brings a teammate's changes in.

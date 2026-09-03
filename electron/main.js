@@ -88,23 +88,6 @@ function keyOpens(dbPath, passphrase) {
   } catch { return false; }
   finally { try { d?.close(); } catch { /* already gone */ } }
 }
-const UNLOCK_HTML = 'data:text/html;charset=utf-8,' + encodeURIComponent(`<!doctype html><meta charset="utf-8">
-<style>:root{color-scheme:dark}html,body{height:100%;margin:0}body{background:#08090E;color:#E7E9EF;font:14px system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:grid;place-items:center}
-.card{width:320px;padding:8px 26px 22px;text-align:center}.mark{font-family:ui-monospace,monospace;letter-spacing:.4em;color:#E8B65A;font-weight:600;font-size:15px;margin-bottom:16px}
-h1{font-size:16px;margin:0 0 4px}p{color:#A7AFC2;margin:0 0 16px;font-size:12.5px;line-height:1.5}
-input{width:100%;box-sizing:border-box;background:#05060A;border:1px solid #232734;border-radius:4px;color:#E7E9EF;padding:10px 12px;font-size:13px;outline:none}input:focus{border-color:#3D6FF0}
-.err{color:#E2453C;min-height:16px;font-size:12px;margin:8px 0 0}
-button[type=submit]{width:100%;margin-top:12px;padding:10px;border-radius:4px;border:1px solid #E8B65A;background:#E8B65A;color:#08090E;font-weight:600;cursor:pointer;font-size:13px}
-.link{margin-top:8px;background:none;border:none;color:#6A7288;cursor:pointer;font-size:12px}</style>
-<form class="card" id="f"><div class="mark">MAGI</div><h1>Encrypted workspace</h1>
-<p>Enter the passphrase to unlock your local data.</p>
-<input id="pw" type="password" placeholder="Passphrase" autocomplete="off" autofocus>
-<div class="err" id="err"></div><button type="submit">Unlock</button><br><button type="button" class="link" id="q">Quit</button></form>
-<script>const pw=document.getElementById('pw'),err=document.getElementById('err');
-document.getElementById('f').addEventListener('submit',e=>{e.preventDefault();err.textContent='';window.magiUnlock.submit(pw.value);});
-document.getElementById('q').addEventListener('click',()=>window.magiUnlock.quit());
-window.magiUnlock.onError(m=>{err.textContent=m;pw.value='';pw.focus();});pw.focus();</script>`);
-
 // Returns true to proceed, false if the user chose to quit (the app is exiting).
 async function ensureUnlocked() {
   if (process.env.MAGI_DB_KEY || process.env.MAGI_KEY_FILE) return true;   // keyed by env already
@@ -114,8 +97,14 @@ async function ensureUnlocked() {
     const w = new BrowserWindow({
       width: 380, height: 340, resizable: false, backgroundColor: '#08090E',
       title: 'Magi — Unlock', autoHideMenuBar: true,
-      webPreferences: { preload: join(HERE, 'unlock-preload.js'), contextIsolation: true, sandbox: false },
+      // The unlock page is a shipped static file (unlock.html) with no remote/user content, so it
+      // runs with nodeIntegration and talks to the main process directly. This is deliberately
+      // simpler than a preload+contextBridge, which silently failed to attach on the old data: URL.
+      webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false },
     });
+    // Surface anything the page logs or fails on, so a broken unlock is never silent again.
+    w.webContents.on('console-message', (_e, _lvl, message) => console.error('[unlock]', message));
+    w.webContents.on('did-fail-load', (_e, code, desc) => console.error('[unlock] load failed', code, desc));
     let settled = false;
     const cleanup = () => { ipcMain.removeAllListeners('magi-unlock:submit'); ipcMain.removeAllListeners('magi-unlock:quit'); };
     const finish = (v) => { if (settled) return; settled = true; cleanup(); if (!w.isDestroyed()) w.destroy(); resolve(v); };
@@ -125,7 +114,7 @@ async function ensureUnlocked() {
     });
     ipcMain.on('magi-unlock:quit', () => finish(null));
     w.on('closed', () => { if (!settled) { settled = true; cleanup(); resolve(null); } });
-    w.loadURL(UNLOCK_HTML);
+    w.loadFile(join(HERE, 'unlock.html'));
   });
   if (passphrase == null) { app.exit(0); return false; }
   process.env.MAGI_DB_KEY = passphrase;

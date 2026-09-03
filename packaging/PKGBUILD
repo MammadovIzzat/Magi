@@ -1,6 +1,6 @@
 # Maintainer: MammadovIzzat <izzatmmmdv@gmail.com>
 pkgname=magi
-pkgver=0.6.3
+pkgver=0.6.4
 pkgrel=1
 pkgdesc="The pentester's familiar — engagement checklists, target tracker and evidence log"
 arch=('any')
@@ -74,9 +74,9 @@ package() {
   cd "$_srcdir"
 
   # desktop app: electron main + the embeddable server + the UI on disk
-  install -Dm644 electron/main.js          "$pkgdir/usr/lib/magi/electron/main.js"
-  install -Dm644 electron/dispatch.js      "$pkgdir/usr/lib/magi/electron/dispatch.js"
-  install -Dm644 electron/unlock-preload.js "$pkgdir/usr/lib/magi/electron/unlock-preload.js"
+  install -Dm644 electron/main.js       "$pkgdir/usr/lib/magi/electron/main.js"
+  install -Dm644 electron/dispatch.js   "$pkgdir/usr/lib/magi/electron/dispatch.js"
+  install -Dm644 electron/unlock.html   "$pkgdir/usr/lib/magi/electron/unlock.html"
   install -Dm644 dist/magi-server.cjs   "$pkgdir/usr/lib/magi/magi-server.cjs"
   install -Dm644 packaging/app-package.json "$pkgdir/usr/lib/magi/package.json"
   for f in $(cd public && find . -type f); do

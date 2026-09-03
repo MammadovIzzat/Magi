@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { color-scheme: dark }
+  html, body { height: 100%; margin: 0 }
+  body { background: #08090E; color: #E7E9EF; font: 14px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; display: grid; place-items: center }
+  .card { width: 320px; padding: 8px 26px 22px; text-align: center }
+  .mark { font-family: ui-monospace, monospace; letter-spacing: .4em; color: #E8B65A; font-weight: 600; font-size: 15px; margin-bottom: 16px }
+  h1 { font-size: 16px; margin: 0 0 4px }
+  p { color: #A7AFC2; margin: 0 0 16px; font-size: 12.5px; line-height: 1.5 }
+  input { width: 100%; box-sizing: border-box; background: #05060A; border: 1px solid #232734; border-radius: 4px; color: #E7E9EF; padding: 10px 12px; font-size: 13px; outline: none }
+  input:focus { border-color: #3D6FF0 }
+  .err { color: #E2453C; min-height: 16px; font-size: 12px; margin: 8px 0 0 }
+  button[type=submit] { width: 100%; margin-top: 12px; padding: 10px; border-radius: 4px; border: 1px solid #E8B65A; background: #E8B65A; color: #08090E; font-weight: 600; cursor: pointer; font-size: 13px }
+  .link { margin-top: 8px; background: none; border: none; color: #6A7288; cursor: pointer; font-size: 12px }
+</style>
+</head>
+<body>
+  <form class="card" id="f">
+    <div class="mark">MAGI</div>
+    <h1>Encrypted workspace</h1>
+    <p>Enter the passphrase to unlock your local data.</p>
+    <input id="pw" type="password" placeholder="Passphrase" autocomplete="off" autofocus>
+    <div class="err" id="err"></div>
+    <button type="submit">Unlock</button>
+    <br><button type="button" class="link" id="q">Quit</button>
+  </form>
+  <script>
+    // This window is a shipped, static file with no remote or user-generated HTML, so it runs
+    // with nodeIntegration and talks to the main process directly — no preload/contextBridge to
+    // silently fail (which it did on a data: URL).
+    const pw = document.getElementById('pw');
+    const err = document.getElementById('err');
+    let ipc = null;
+    try { ipc = require('electron').ipcRenderer; }
+    catch (e) { err.textContent = 'Unlock bridge failed to load: ' + e.message; }
+    document.getElementById('f').addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (!ipc) return;
+      err.textContent = '';
+      ipc.send('magi-unlock:submit', pw.value);
+    });
+    document.getElementById('q').addEventListener('click', () => ipc && ipc.send('magi-unlock:quit'));
+    if (ipc) ipc.on('magi-unlock:error', (_e, m) => { err.textContent = m; pw.value = ''; pw.focus(); });
+    pw.focus();
+  </script>
+</body>
+</html>

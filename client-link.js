@@ -17,10 +17,16 @@ import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
 import https from 'node:https';
 import tls from 'node:tls';
-import { DATA_DIR, db } from './db.js';
+import { DATA_DIR, db, hashPassword, verifyPassword } from './db.js';
 import * as sync from './sync.js';
+import * as jwt from './jwt.js';
 import { exportProject } from './projects-io.js';
 import { importProject } from './projects-io.js';
+
+// The password is held in memory only during connect→approval, so the background poll can log in
+// for a token the moment an admin approves — without re-prompting and without persisting it. Lost
+// on restart (the user just logs in), never written to disk.
+let pendingSecret = null;
 
 const LINK_FILE = join(DATA_DIR, 'link.json');
 const TIMEOUT = 8000;
@@ -130,9 +136,10 @@ export function remoteFetch(path, { method = 'GET', body, headers = {}, link } =
  * starts a background poll that finalizes the link once approved. Local data is only set aside
  * on approval, not now — so a request that is never approved changes nothing.
  */
-export async function connect({ server_url, fingerprint, code, username, display_name }) {
-  if (!server_url || !code || !username || !display_name)
-    return { ok: false, error: 'server address, code, username and display name are all required' };
+export async function connect({ server_url, fingerprint, code, username, display_name, password }) {
+  if (!server_url || !code || !username || !display_name || !password)
+    return { ok: false, error: 'server address, code, username, display name and password are all required' };
+  if (String(password).length < 8) return { ok: false, error: 'password must be at least 8 characters' };
   linkGen++; // invalidate any in-flight sync from a previous link state
   stopSyncLoop();
   let cert;
@@ -142,44 +149,72 @@ export async function connect({ server_url, fingerprint, code, username, display
   const device_id = randomUUID();
   const pending = {
     server_url, fingerprint: cert.fingerprint, cert_pem: cert.pem, device_id,
-    req_username: username, display_name, pending: true,
+    req_username: username, username, display_name, pending: true,
   };
   let res;
-  try { res = await remoteFetch('/api/enroll', { method: 'POST', link: pending, body: { code, username, display_name, device_id } }); }
+  try { res = await remoteFetch('/api/enroll', { method: 'POST', link: pending, body: { code, username, display_name, device_id, password } }); }
   catch (e) { return { ok: false, error: `could not reach the server: ${e.message}` }; }
-  // A server without the approval flow would hand back a token directly — support both.
-  if (res.status === 201 && res.json?.token) return finalizeApproval(pending, res.json);
   if (res.status !== 202 || res.json?.status !== 'pending')
     return { ok: false, error: res.json?.error || `could not request access (${res.status})` };
 
   pending.request_id = res.json.request_id;
   pending.requested_at = new Date().toISOString();
-  saveLink(pending); // stored without a token; the poll upgrades it when approved
+  saveLink(pending); // no token yet — the poll logs in for one once an admin approves
+  pendingSecret = { username, password };
   startApprovalPoll();
   return { ok: true, pending: true, link: publicLink(pending) };
 }
 
-// Once an admin approves, actually become linked: set local engagements aside (atomic db
-// stash), start from a clean mirror, store the device-bound token, and begin syncing.
-function finalizeApproval(pending, approved) {
-  let stash_id = null;
-  try { stash_id = stashLocalProjects(); }
-  catch (e) { return { ok: false, error: `could not set local data aside: ${e.message}` }; }
-  sync.setWatermarks(db, { pull: '', push: '' });
+// Ask the server for a fresh access token with a password (+ optional OTP). Returns the raw
+// response so callers can handle an MFA setup/required step.
+async function requestToken(link, password, otp) {
+  try {
+    return await remoteFetch('/api/auth/token', { method: 'POST', link,
+      body: { username: link.username || link.req_username, password, device_id: link.device_id, otp } });
+  } catch (e) { return { status: 0, json: { error: e.message } }; }
+}
+
+// Persist a freshly-minted token and go fully linked. The password is used only to compute an
+// offline-login verifier and is then discarded — the JWT and the verifier are what we keep.
+function storeToken(link, password, loginJson) {
+  const claims = jwt.decodeUnsafe(loginJson.token) || {};
   const full = {
-    server_url: pending.server_url, fingerprint: pending.fingerprint, cert_pem: pending.cert_pem,
-    device_id: pending.device_id, token: approved.token, username: approved.username,
-    display_name: approved.display_name || pending.display_name, role: approved.role,
-    connected_at: new Date().toISOString(), stash_id,
+    server_url: link.server_url, fingerprint: link.fingerprint, cert_pem: link.cert_pem,
+    device_id: link.device_id, username: link.username || link.req_username, display_name: link.display_name,
+    token: loginJson.token, jwt_exp: loginJson.exp || claims.exp || null, role: loginJson.role || claims.role || null,
+    pass_verifier: hashPassword(String(password)),
+    connected_at: link.connected_at || new Date().toISOString(), stash_id: link.stash_id ?? null,
+    needs_reauth: 0,
   };
   linkGen++;
   stopApprovalPoll();
   saveLink(full);
+  pendingSecret = null;
   startSyncLoop();
-  return { ok: true, link: publicLink(full) };
+  return { ok: true, link: publicLink(full), recovery_codes: loginJson.recovery_codes };
 }
 
-// One poll of a pending request. Approves -> finalizes; rejected -> clears the pending link.
+// Log in for a token, storing it on success. Surfaces { mfa } when the server wants a second
+// factor (first-time setup or a required code) so the UI can collect it and call again.
+async function attemptLogin(link, password, otp) {
+  const r = await requestToken(link, password, otp);
+  if (r.status === 200 && r.json?.token) return storeToken(link, password, r.json);
+  if (r.json?.mfa) return { ok: false, mfa: r.json.mfa, secret: r.json.secret, otpauth_uri: r.json.otpauth_uri };
+  return { ok: false, error: r.json?.error || `login failed (${r.status})` };
+}
+
+// The UI calls this to finish a just-approved link (auto-login couldn't, e.g. it needs an OTP)
+// or to re-authenticate after the token expired / was revoked (epoch bump). On success the
+// mirror is untouched — we're already linked and only refreshing the token.
+export async function login({ password, otp } = {}) {
+  const link = loadLink();
+  if (!link) return { ok: false, error: 'not linked' };
+  if (!password) return { ok: false, error: 'a password is required' };
+  return attemptLogin(link, password, otp);
+}
+
+// One poll of a pending request. On approval the device is registered server-side; we then log in
+// (auto, using the in-memory password) for a token. rejected -> clears the pending link.
 export async function pollApproval() {
   const link = loadLink();
   if (!link || !link.pending || !link.request_id) return { pending: false };
@@ -188,9 +223,20 @@ export async function pollApproval() {
   catch { return { pending: true, waiting: true }; } // server unreachable — keep waiting
   if (r.status === 404) { stopApprovalPoll(); try { rmSync(LINK_FILE, { force: true }); } catch {} return { pending: false, gone: true }; }
   const st = r.json?.status;
-  if (st === 'approved' && r.json.token) { finalizeApproval(link, r.json); return { pending: false, approved: true }; }
   if (st === 'rejected') { stopApprovalPoll(); try { rmSync(LINK_FILE, { force: true }); } catch {} return { pending: false, rejected: true }; }
-  return { pending: true };
+  if (st !== 'approved') return { pending: true };
+
+  // Approved. Set local data aside once, then log in for a token.
+  if (link.stash_id === undefined) {
+    try { link.stash_id = stashLocalProjects() ?? null; } catch (e) { return { pending: true, error: `could not set local data aside: ${e.message}` }; }
+    sync.setWatermarks(db, { pull: '', push: '' });
+    saveLink(link); // remember we've stashed, so a retry can't stash again
+  }
+  stopApprovalPoll();
+  if (!pendingSecret?.password) return { pending: false, approved: true, needs_login: true };
+  const res = await attemptLogin({ ...link, pending: undefined }, pendingSecret.password);
+  if (res.ok) return { pending: false, approved: true, linked: true };
+  return { pending: false, approved: true, ...res }; // mfa or error → UI completes via login()
 }
 
 let approvalTimer = null;
@@ -215,6 +261,24 @@ const payloadMax = (p) => {
 let syncing = false;
 let linkGen = 0; // bumped by connect()/disconnect() so an in-flight sync can't write after the link changes
 
+// The token expired or was revoked (epoch bump). Pause syncing and flag it so the UI prompts for
+// a fresh login; local work continues offline meanwhile.
+function markNeedsReauth() {
+  stopSyncLoop();
+  const link = loadLink();
+  if (link && !link.pending && !link.needs_reauth) { link.needs_reauth = 1; saveLink(link); }
+}
+
+/** Offline identity check against the cached verifier — lets a linked user open the app while the
+ *  server is unreachable. Grants no token; sync stays paused until an online login refreshes it. */
+export function offlineLogin(password) {
+  const link = loadLink();
+  if (!link || link.pending) return { ok: false, error: 'not linked' };
+  if (!link.pass_verifier) return { ok: false, error: 'no cached credential — log in once while online' };
+  if (!verifyPassword(String(password || ''), link.pass_verifier)) return { ok: false, error: 'wrong password' };
+  return { ok: true, link: publicLink(link) };
+}
+
 /** One push+pull cycle against the linked server. Safe to call often; self-serialises. */
 export async function syncOnce() {
   const link = loadLink();
@@ -233,6 +297,7 @@ export async function syncOnce() {
     if (local.rows.length || local.tombstones.length) {
       const r = await remoteFetch('/api/sync/push', { method: 'POST', link, body: local });
       if (stale()) return { ok: false, error: 'link changed' };
+      if (r.status === 401) { markNeedsReauth(); return { ok: false, needs_reauth: true }; }
       if (r.status !== 200) return { ok: false, error: r.json?.error || `push failed (${r.status})` };
       // Advance the push watermark — but never past a row the server had to defer (parent not
       // yet present), or that row would never be re-sent. Stop just below the earliest deferred.
@@ -248,6 +313,7 @@ export async function syncOnce() {
     // pull everything newer than our pull watermark, merge locally
     const pr = await remoteFetch('/api/sync/pull?since=' + encodeURIComponent(wm.pull), { link });
     if (stale()) return { ok: false, error: 'link changed' };
+    if (pr.status === 401) { markNeedsReauth(); return { ok: false, needs_reauth: true }; }
     if (pr.status !== 200) return { ok: false, error: pr.json?.error || `pull failed (${pr.status})` };
     const merged = sync.applyChanges(db, pr.json);
     const pm = payloadMax(pr.json);
@@ -265,7 +331,8 @@ export async function syncOnce() {
 let loopTimer = null;
 export function startSyncLoop(intervalMs = 5000) {
   stopSyncLoop();
-  if (!loadLink()?.token) return;
+  const link = loadLink();
+  if (!link?.token || link.needs_reauth) return; // no token, or waiting for the user to re-authenticate
   const tick = () => { syncOnce().catch(() => {}); };
   tick();
   loopTimer = setInterval(tick, intervalMs);
@@ -364,8 +431,10 @@ function publicLink(link) {
   if (!link) return null;
   return {
     server_url: link.server_url, fingerprint: link.fingerprint, device_id: link.device_id,
-    username: link.username || link.req_username, display_name: link.display_name, role: link.role || null,
+    username: link.username || link.req_username, display_name: link.display_name,
+    role: link.role || (link.token ? jwt.decodeUnsafe(link.token)?.role : null) || null,
     pending: !!link.pending, request_id: link.request_id || null,
+    needs_reauth: !!link.needs_reauth, jwt_exp: link.jwt_exp || null,
     connected_at: link.connected_at || null, last_ok: link.last_ok || null, last_sync: link.last_sync || null,
     // How the token is (or will be) stored: keyed off the actual encryptor, so this is right
     // both for a freshly-connected link and one just loaded from disk.

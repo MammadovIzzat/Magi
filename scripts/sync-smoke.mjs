@@ -82,7 +82,7 @@ const sName = (uid) => serverDb.prepare('SELECT name FROM projects WHERE uid=?')
 // connect (a pending request), admin-approve it, poll to finalize the link — then drive sync
 // deterministically for the test.
 async function connectApprove(username, display_name) {
-  const r = await link.connect({ server_url: `https://127.0.0.1:${PORT}`, code: await mkCode(), username, display_name });
+  const r = await link.connect({ server_url: `https://127.0.0.1:${PORT}`, code: await mkCode(), username, display_name, password: username + '-secret-8' });
   if (!r.ok) return { ok: false, error: r.error };
   const pending = (await req('GET', '/api/admin/requests', { cookie })).json;
   const rid = (pending || []).find(x => x.display_name === display_name)?.id;

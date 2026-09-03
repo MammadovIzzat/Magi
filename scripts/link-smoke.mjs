@@ -80,7 +80,7 @@ const code2 = (await req('POST', '/api/admin/enroll-codes', { cookie, body: { ro
 const link = await import('../client-link.js');
 
 // 1) a wrong fingerprint must be refused (MITM defence) — code stays unused
-const bad = await link.connect({ server_url: serverUrl, fingerprint: 'AA:BB:CC', code: code1, username: 'x', display_name: 'X' });
+const bad = await link.connect({ server_url: serverUrl, fingerprint: 'AA:BB:CC', code: code1, username: 'x', display_name: 'X', password: 'wrongfp-secret' });
 check('wrong fingerprint is refused as MITM', bad.ok === false && /fingerprint/i.test(bad.error || ''));
 
 // 2) request access -> pending; an admin approves -> the client links. Token is encrypted at
@@ -89,7 +89,7 @@ const secret = [];
 link.setEncryptor({ available: true,
   encrypt: (s) => { secret.push(s); return 'ENC(' + Buffer.from(s).toString('base64') + ')'; },
   decrypt: (b) => Buffer.from(String(b).replace(/^ENC\(|\)$/g, ''), 'base64').toString() });
-const reqres = await link.connect({ server_url: serverUrl, code: code1, username: 'ana', display_name: 'Ana R.' });
+const reqres = await link.connect({ server_url: serverUrl, code: code1, username: 'ana', display_name: 'Ana R.', password: 'ana-secret-8' });
 if (!reqres.ok) die('connect() failed: ' + reqres.error);
 check('request is pending until an admin approves', reqres.ok === true && reqres.pending === true && link.status().pending === true);
 const pending = (await req('GET', '/api/admin/requests', { cookie })).json;
@@ -111,8 +111,22 @@ check('authenticated request via link works', created.status === 201);
 const hb = await link.heartbeat();
 check('heartbeat reports online', hb.online === true && hb.who?.display_name === 'Ana R.');
 
+// 3b) an admin resets the password -> epoch bump -> the token dies -> the client must re-auth,
+// works offline against the cached verifier meanwhile, and logs back in with the new password.
+const anaId = (await req('GET', '/api/admin/users', { cookie })).json.find(u => u.username === 'ana').id;
+await req('POST', `/api/admin/users/${anaId}/reset-password`, { cookie, body: { password: 'ana-new-pass-9' } });
+const syncDead = await link.syncOnce();
+check('a bumped epoch forces the client to re-authenticate', syncDead.needs_reauth === true && link.status().link?.needs_reauth === true);
+check('offline login still accepts the cached (old) password', link.offlineLogin('ana-secret-8').ok === true && link.offlineLogin('wrong').ok === false);
+const relog = await link.login({ password: 'ana-new-pass-9' });
+link.stopSyncLoop();
+check('logging in with the new password clears re-auth and refreshes the token', relog.ok === true && link.status().link?.needs_reauth === false);
+check('the cached verifier now matches the new password', link.offlineLogin('ana-new-pass-9').ok === true && link.offlineLogin('ana-secret-8').ok === false);
+const afterRelog = await link.remoteFetch('/api/me', {});
+check('sync works again after re-authentication', afterRelog.status === 200 && afterRelog.json?.username === 'ana');
+
 // 4) the code was consumed on approval — requesting again with it is refused
-const reuse = await link.connect({ server_url: serverUrl, code: code1, username: 'zzz', display_name: 'Z' });
+const reuse = await link.connect({ server_url: serverUrl, code: code1, username: 'zzz', display_name: 'Z', password: 'zzz-secret-8' });
 check('the code was single-use (reuse refused)', reuse.ok === false);
 
 // 5) disconnect clears the local link

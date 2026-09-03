@@ -104,6 +104,11 @@ function migrateToEncrypted(path, key) {
 }
 
 const DB_KEY = resolveDbKey();
+// The passphrase is now held in this module's memory. Drop it from the process environment so it
+// is not exposed via /proc/<pid>/environ to other same-user processes for the rest of the run.
+// (A key FILE path is not itself secret, so MAGI_KEY_FILE is left alone.)
+delete process.env.MAGI_DB_KEY;
+delete process.env.CHECKLISTER_DB_KEY;
 export const ENCRYPTED = !!DB_KEY;
 if (DB_KEY && existsSync(DB_PATH) && isPlaintextSqlite(DB_PATH)) migrateToEncrypted(DB_PATH, DB_KEY);
 
@@ -127,14 +132,15 @@ let liveEncrypted = !!DB_KEY;
 export const isEncrypted = () => liveEncrypted;
 // Does `passphrase` open THIS database? Used to confirm the current passphrase before a change.
 export function verifyKey(passphrase) {
+  let d;
   try {
-    const d = new Database(DB_PATH);
+    d = new Database(DB_PATH);
     d.pragma("cipher='sqlcipher'");
     d.pragma('key=' + sqlStr(passphrase));
     d.prepare('SELECT count(*) FROM sqlite_master').get();
-    d.close();
     return true;
   } catch { return false; }
+  finally { try { d?.close(); } catch { /* already gone */ } }
 }
 // Encrypt a plaintext database in place, or change the key of an already-encrypted one, on the
 // LIVE connection (the app keeps running). The passphrase is never persisted — it must be

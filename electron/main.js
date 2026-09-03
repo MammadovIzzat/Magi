@@ -77,15 +77,16 @@ const isPlaintextSqlite = (p) => {
   catch { return false; }
 };
 function keyOpens(dbPath, passphrase) {
+  let d;
   try {
     const Database = require('better-sqlite3-multiple-ciphers');
-    const d = new Database(dbPath);
+    d = new Database(dbPath);
     d.pragma("cipher='sqlcipher'");
     d.pragma("key='" + String(passphrase).replace(/'/g, "''") + "'");
     d.prepare('SELECT count(*) FROM sqlite_master').get();
-    d.close();
     return true;
   } catch { return false; }
+  finally { try { d?.close(); } catch { /* already gone */ } }
 }
 const UNLOCK_HTML = 'data:text/html;charset=utf-8,' + encodeURIComponent(`<!doctype html><meta charset="utf-8">
 <style>:root{color-scheme:dark}html,body{height:100%;margin:0}body{background:#08090E;color:#E7E9EF;font:14px system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:grid;place-items:center}

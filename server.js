@@ -32,10 +32,11 @@ const SERVER_MODE = env('SERVER') === '1';
 // account whose password mints access, and it is the second factor for password-recovery. On by
 // default in server mode; MAGI_MFA=off opts a server out (rollout / low-stakes).
 const MFA_ENFORCED = SERVER_MODE && env('MFA', 'on') !== 'off';
-// The HMAC key that signs access tokens. Present in every mode now: the web UI (standalone or
-// team server) authenticates with a device-less JWT, and linked clients with a device-bound one —
-// one credential format everywhere, no session cookies.
-const JWT_SECRET = jwtSecret();
+// The HMAC key that signs access tokens — SERVER MODE ONLY. A JWT carries trust across a boundary
+// (the server issues it, verifies it later, for many separate clients); standalone/client mode has
+// no such boundary — the one local process both issues and checks its login — so it uses a plain
+// opaque session token instead and never creates this key. (See localSession below.)
+const JWT_SECRET = SERVER_MODE ? jwtSecret() : null;
 const sha256 = (s) => createHash('sha256').update(String(s)).digest('hex');
 
 app.use((req, res, next) => {
@@ -117,11 +118,22 @@ function bearerJwt(req) {
   if (!u || u.cred_epoch !== claims.epoch) return null;
   return { id: u.id, username: u.username, role: u.role, display_name: u.username, device_id: null };
 }
-// Resolve the acting user from the JWT: a device-bound token for linked clients, a device-less one
-// for the web UI. One credential format, cached on the request so repeat lookups are free.
+// Standalone / linked-client local login: a plain opaque bearer token, minted at login and kept in
+// the local (encrypted) DB. No signing key — the same process issues and checks it, so a JWT would
+// add nothing. Expiry is enforced here, not by anything the client controls.
+function localSession(req) {
+  if (SERVER_MODE) return null; // the server signs JWTs; it never mints an opaque local session
+  const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
+  if (!m) return null;
+  const row = q(`SELECT u.id, u.username, u.role FROM sessions s JOIN users u ON u.id=s.user_id
+    WHERE s.token=? AND s.created_at > datetime('now', '-${SESSION_TTL_DAYS} days')`).get(m[1]);
+  return row ? { ...row, display_name: row.username, device_id: null } : null;
+}
+// Resolve the acting user: a JWT (server: device-bound clients + the web UI), else the opaque local
+// session (standalone/client). Cached on the request so repeat lookups are free.
 function currentUser(req) {
   if (req._authUser !== undefined) return req._authUser;
-  req._authUser = bearerJwt(req) || bearerDevice(req) || null;
+  req._authUser = bearerJwt(req) || bearerDevice(req) || localSession(req) || null;
   return req._authUser;
 }
 
@@ -210,11 +222,21 @@ app.post('/api/auth/login', (req, res) => {
   }
   attempts.delete(key);
 
+  const ttl = 60 * 60 * 24 * SESSION_TTL_DAYS;
   const mint = (extra) => {
     const fresh = q(`SELECT role, cred_epoch FROM users WHERE id=?`).get(u.id); // pick up a just-enabled MFA
-    const token = jwt.sign({ sub: u.id, username: u.username, role: fresh.role, epoch: fresh.cred_epoch, kind: 'web' },
-      JWT_SECRET, { ttlSeconds: 60 * 60 * 24 * SESSION_TTL_DAYS });
-    return res.json({ token, exp: jwt.decodeUnsafe(token).exp, username: u.username, role: fresh.role, ...(extra || {}) });
+    let token, exp;
+    if (SERVER_MODE) {
+      // a real trust boundary → a signed JWT (dies on a cred-epoch change)
+      token = jwt.sign({ sub: u.id, username: u.username, role: fresh.role, epoch: fresh.cred_epoch, kind: 'web' }, JWT_SECRET, { ttlSeconds: ttl });
+      exp = jwt.decodeUnsafe(token).exp;
+    } else {
+      // standalone/client → an opaque session token in the local (encrypted) DB; no signing key
+      token = randomBytes(32).toString('hex');
+      q(`INSERT INTO sessions (token, user_id) VALUES (?,?)`).run(token, u.id);
+      exp = Math.floor(Date.now() / 1000) + ttl;
+    }
+    return res.json({ token, exp, username: u.username, role: fresh.role, ...(extra || {}) });
   };
 
   // MFA turned off (or standalone, which never enforces it) is a full kill switch: sign straight in.
@@ -300,10 +322,16 @@ function consumeRecovery(userId, hashesJson, code) {
   q(`UPDATE users SET recovery_hashes=? WHERE id=?`).run(JSON.stringify(hashes), userId);
   return true;
 }
-// Logout is client-side now: the browser discards its JWT — there is no server session to delete.
-// A discarded token still verifies until it expires (SESSION_DAYS) unless the credential epoch
-// changes (a password reset kills it at once). Kept as an endpoint so the client has one call.
-app.post('/api/auth/logout', (req, res) => res.json({ ok: true }));
+// Logout. Server mode: the JWT is stateless, so the browser just discards it (nothing to delete
+// here — it dies at expiry, or at once on a cred-epoch change). Standalone/client: delete the
+// opaque local session so it stops working immediately.
+app.post('/api/auth/logout', (req, res) => {
+  if (!SERVER_MODE) {
+    const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
+    if (m) q(`DELETE FROM sessions WHERE token=?`).run(m[1]);
+  }
+  res.json({ ok: true });
+});
 // Structural changes — engagements, their scope/dates, assets, targets, and checklist
 // *templates* — are an admin-only, team-level responsibility; workers work the checklists and
 // record findings. On the server the device/session role decides; on a linked client the TEAM
@@ -345,13 +373,18 @@ app.post('/api/change-password', (req, res) => {
   if (!verifyPassword(current || '', row.pass_hash)) return res.status(400).json({ error: 'current password is wrong' });
   if (!next || next.length < 10) return res.status(400).json({ error: 'new password must be at least 10 characters' });
   if (next === current) return res.status(400).json({ error: 'new password must differ from the current one' });
-  // Bump the credential epoch so every token minted before this change stops verifying — that ends
-  // every OTHER session at once. Then mint a fresh token for THIS one so the user stays signed in.
   q(`UPDATE users SET pass_hash=?, cred_epoch=cred_epoch+1 WHERE id=?`).run(hashPassword(next), u.id);
-  const fresh = q(`SELECT role, cred_epoch FROM users WHERE id=?`).get(u.id);
-  const token = jwt.sign({ sub: u.id, username: u.username, role: fresh.role, epoch: fresh.cred_epoch, kind: 'web' },
-    JWT_SECRET, { ttlSeconds: 60 * 60 * 24 * SESSION_TTL_DAYS });
-  res.json({ ok: true, token });
+  if (SERVER_MODE) {
+    // the epoch bump kills every JWT (incl. this one) → mint a fresh one so THIS session survives
+    const fresh = q(`SELECT role, cred_epoch FROM users WHERE id=?`).get(u.id);
+    const token = jwt.sign({ sub: u.id, username: u.username, role: fresh.role, epoch: fresh.cred_epoch, kind: 'web' },
+      JWT_SECRET, { ttlSeconds: 60 * 60 * 24 * SESSION_TTL_DAYS });
+    return res.json({ ok: true, token });
+  }
+  // standalone/client: opaque sessions aren't epoch-bound — drop every OTHER local session, keep this one
+  const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
+  q(`DELETE FROM sessions WHERE user_id=? AND token<>?`).run(u.id, m ? m[1] : '');
+  res.json({ ok: true });
 });
 // Change your own sign-in name (confirmed with your current password).
 app.post('/api/change-username', (req, res) => {

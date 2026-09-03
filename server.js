@@ -32,8 +32,10 @@ const SERVER_MODE = env('SERVER') === '1';
 // account whose password mints access, and it is the second factor for password-recovery. On by
 // default in server mode; MAGI_MFA=off opts a server out (rollout / low-stakes).
 const MFA_ENFORCED = SERVER_MODE && env('MFA', 'on') !== 'off';
-// The HMAC key that signs access tokens — only the server issues/verifies them.
-const JWT_SECRET = SERVER_MODE ? jwtSecret() : null;
+// The HMAC key that signs access tokens. Present in every mode now: the web UI (standalone or
+// team server) authenticates with a device-less JWT, and linked clients with a device-bound one —
+// one credential format everywhere, no session cookies.
+const JWT_SECRET = jwtSecret();
 const sha256 = (s) => createHash('sha256').update(String(s)).digest('hex');
 
 app.use((req, res, next) => {
@@ -72,18 +74,7 @@ function assetSummary(row) { return { ...row, metadata: JSON.parse(row.metadata 
 function blank(next, cur) { return next === undefined ? cur : (next || null); }
 
 // ---- auth ----
-function parseCookies(req) {
-  const out = {};
-  for (const p of (req.headers.cookie || '').split(';')) {
-    const i = p.indexOf('='); if (i < 0) continue;
-    // An unrelated cookie with invalid %-encoding must not throw and take down auth for the
-    // whole request; fall back to the raw value like standard cookie parsers do.
-    let v = p.slice(i + 1).trim();
-    try { v = decodeURIComponent(v); } catch { /* keep raw */ }
-    out[p.slice(0, i).trim()] = v;
-  }
-  return out;
-}
+// Auth is a bearer JWT on every request — no cookies. See bearerJwt / currentUser below.
 // A network client authenticates with the per-device bearer token it got at enrollment.
 // The token is device-bound: the client also states its device id, and a token presented
 // from a different device id is refused — a copied token is useless elsewhere and shows up.
@@ -110,35 +101,33 @@ function bearerJwt(req) {
   if (!m) return null;
   const claims = jwt.verify(m[1], JWT_SECRET);
   if (!claims) return null;
-  if (!claims.device_id || req.headers['x-magi-device'] !== claims.device_id) return null;
-  const dev = q(`SELECT d.id, d.display_name, d.revoked, u.id AS uid, u.username, u.role, u.cred_epoch
-                 FROM devices d JOIN users u ON u.id=d.user_id WHERE d.id=?`).get(claims.device_id);
-  if (!dev || dev.revoked) return null;
-  if (dev.uid !== claims.sub || dev.cred_epoch !== claims.epoch) return null;
-  return { id: dev.uid, username: dev.username, role: dev.role, display_name: dev.display_name, device_id: dev.id };
+  // A device-bound token (a linked client): the device must still be enrolled, not revoked, and
+  // matched by the x-magi-device header, and the token's epoch must equal the user's live one.
+  if (claims.device_id) {
+    if (req.headers['x-magi-device'] !== claims.device_id) return null;
+    const dev = q(`SELECT d.id, d.display_name, d.revoked, u.id AS uid, u.username, u.role, u.cred_epoch
+                   FROM devices d JOIN users u ON u.id=d.user_id WHERE d.id=?`).get(claims.device_id);
+    if (!dev || dev.revoked) return null;
+    if (dev.uid !== claims.sub || dev.cred_epoch !== claims.epoch) return null;
+    return { id: dev.uid, username: dev.username, role: dev.role, display_name: dev.display_name, device_id: dev.id };
+  }
+  // A device-less token (the web UI, standalone or server): validated against the user's live
+  // credential epoch, so a password change / reset kills it at once. Role/display come from the DB.
+  const u = q(`SELECT id, username, role, cred_epoch FROM users WHERE id=?`).get(claims.sub);
+  if (!u || u.cred_epoch !== claims.epoch) return null;
+  return { id: u.id, username: u.username, role: u.role, display_name: u.username, device_id: null };
 }
-// Resolve the acting user: bearer token first (network clients), then the session cookie
-// (local web / desktop). Cached on the request so repeat lookups in one request are free.
+// Resolve the acting user from the JWT: a device-bound token for linked clients, a device-less one
+// for the web UI. One credential format, cached on the request so repeat lookups are free.
 function currentUser(req) {
   if (req._authUser !== undefined) return req._authUser;
-  let u = bearerJwt(req) || bearerDevice(req);
-  if (!u) {
-    const sid = parseCookies(req).sid;
-    // expiry is enforced here, not just by the cookie's Max-Age (which the client controls)
-    const row = sid ? q(`SELECT u.id, u.username, u.role FROM sessions s JOIN users u ON u.id=s.user_id
-              WHERE s.token=? AND s.pending=0 AND s.created_at > datetime('now', '-${SESSION_TTL_DAYS} days')`).get(sid) : null;
-    if (row) u = { ...row, display_name: row.username, device_id: null };
-  }
-  req._authUser = u || null;
+  req._authUser = bearerJwt(req) || bearerDevice(req) || null;
   return req._authUser;
 }
-function sessionCookie(req, token, maxAge) {
-  const secure = req.secure || req.headers['x-forwarded-proto'] === 'https' ? ' Secure;' : '';
-  return `sid=${token}; HttpOnly;${secure} SameSite=Strict; Path=/; Max-Age=${maxAge}`;
-}
 
-// Defence in depth against CSRF alongside SameSite=Strict: a cross-site form post
-// carries an Origin header, and a same-origin XHR from our own page matches Host.
+// Defence in depth: a cross-site request from another origin carries an Origin header that will
+// not match our Host. (Bearer auth is already immune to classic CSRF — the browser never attaches
+// the token automatically — but this stays as belt-and-braces for any state-changing call.)
 app.use('/api', (req, res, next) => {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
   const origin = req.headers.origin;
@@ -152,7 +141,7 @@ app.use('/api', (req, res, next) => {
 
 // gate every /api route except the auth / enrollment handshakes
 app.use('/api', (req, res, next) => {
-  if (['/auth/login', '/auth/token', '/auth/mfa', '/auth/mfa/enable', '/me', '/enroll', '/enroll/poll'].includes(req.path)) return next();
+  if (['/auth/login', '/auth/token', '/me', '/enroll', '/enroll/poll'].includes(req.path)) return next();
   if (!currentUser(req)) return res.status(401).json({ error: 'unauthorized' });
   next();
 });
@@ -204,8 +193,12 @@ function noteFailure(key) {
   attempts.set(key, a);
 }
 
+// Web-UI login → a device-less JWT the browser keeps and sends as `Authorization: Bearer` on
+// every call (no session cookie). MFA is folded in exactly like /auth/token: password (+ OTP) in
+// one flow — a returning user is asked for a code, a new one is walked through setup. The token
+// lives as long as SESSION_DAYS and dies the moment the credential epoch changes (password reset).
 app.post('/api/auth/login', (req, res) => {
-  const { username, password } = req.body || {};
+  const { username, password, otp } = req.body || {};
   const key = throttleKey(req, username);
   const wait = lockedFor(key);
   if (wait) return res.status(429).json({ error: `too many attempts — try again in ${Math.ceil(wait / 60)} min` });
@@ -216,21 +209,39 @@ app.post('/api/auth/login', (req, res) => {
     return res.status(401).json({ error: 'invalid credentials' });
   }
   attempts.delete(key);
-  const token = randomBytes(32).toString('hex');
-  // MFA turned off is a full kill switch: sign straight in, even for accounts that had enrolled.
-  if (!MFA_ENFORCED) {
-    q(`INSERT INTO sessions (token, user_id) VALUES (?,?)`).run(token, u.id);
-    res.setHeader('Set-Cookie', sessionCookie(req, token, 60 * 60 * 24 * SESSION_TTL_DAYS));
-    return res.json({ username: u.username });
+
+  const mint = (extra) => {
+    const fresh = q(`SELECT role, cred_epoch FROM users WHERE id=?`).get(u.id); // pick up a just-enabled MFA
+    const token = jwt.sign({ sub: u.id, username: u.username, role: fresh.role, epoch: fresh.cred_epoch, kind: 'web' },
+      JWT_SECRET, { ttlSeconds: 60 * 60 * 24 * SESSION_TTL_DAYS });
+    return res.json({ token, exp: jwt.decodeUnsafe(token).exp, username: u.username, role: fresh.role, ...(extra || {}) });
+  };
+
+  // MFA turned off (or standalone, which never enforces it) is a full kill switch: sign straight in.
+  if (!MFA_ENFORCED) return mint();
+  // Enrolled → require a TOTP or one-time recovery code alongside the password.
+  if (u.mfa_enabled) {
+    const okTotp = otp && totp.verifyTOTP(u.mfa_secret, String(otp));
+    const okRec = !okTotp && otp && consumeRecovery(u.id, u.recovery_hashes, otp);
+    if (!okTotp && !okRec) { noteFailure(key); return res.status(401).json({ error: otp ? 'invalid code' : 'a two-factor code is required', mfa: 'required' }); }
+    if (okRec) {
+      const left = (JSON.parse(q(`SELECT recovery_hashes FROM users WHERE id=?`).get(u.id).recovery_hashes || '[]')).length;
+      writeAudit(req, { id: u.id, username: u.username }, `signed in with a recovery code (${left} left)`);
+      return mint({ recovery_used: true, recovery_left: left });
+    }
+    return mint();
   }
-  // Otherwise the session is PENDING until the second factor is satisfied. MFA is required for
-  // everyone: an enrolled user gets a code prompt; a new one is sent into first-time setup.
-  q(`INSERT INTO sessions (token, user_id, pending) VALUES (?,?,1)`).run(token, u.id);
-  res.setHeader('Set-Cookie', sessionCookie(req, token, 60 * 60 * 24 * SESSION_TTL_DAYS));
-  if (u.mfa_enabled) return res.json({ mfa: 'required' });
-  const secret = totp.generateSecret();
-  q(`UPDATE users SET mfa_secret=? WHERE id=?`).run(secret, u.id); // candidate; inactive until confirmed
-  res.json({ mfa: 'setup', secret, otpauth_uri: totp.otpauthURI({ account: u.username, secret }) });
+  // Not yet enrolled → first login walks through TOTP setup, then returns recovery codes.
+  if (!otp) {
+    const secret = u.mfa_secret || totp.generateSecret();
+    q(`UPDATE users SET mfa_secret=? WHERE id=?`).run(secret, u.id); // candidate; inactive until confirmed
+    return res.json({ mfa: 'setup', secret, otpauth_uri: totp.otpauthURI({ account: u.username, secret }) });
+  }
+  if (!totp.verifyTOTP(u.mfa_secret, String(otp))) { noteFailure(key); return res.status(401).json({ error: 'that code did not match — check your phone’s clock is on automatic time', mfa: 'setup' }); }
+  const codes = totp.recoveryCodes(10);
+  q(`UPDATE users SET mfa_enabled=1, recovery_hashes=? WHERE id=?`).run(JSON.stringify(codes.map(c => sha256(c))), u.id);
+  writeAudit(req, { id: u.id, username: u.username }, 'enrolled two-factor auth');
+  return mint({ recovery_codes: codes });
 });
 
 // Client login → a short-lived JWT (server mode). Unlike /auth/login (which mints a browser
@@ -279,14 +290,6 @@ app.post('/api/auth/token', (req, res) => {
   return mint({ recovery_codes: codes });
 });
 
-// The half-authenticated user behind a pending session cookie (password done, MFA not yet).
-function pendingSession(req) {
-  const sid = parseCookies(req).sid;
-  if (!sid) return null;
-  const row = q(`SELECT s.token, u.* FROM sessions s JOIN users u ON u.id=s.user_id
-    WHERE s.token=? AND s.pending=1 AND s.created_at > datetime('now','-1 hours')`).get(sid);
-  return row || null;
-}
 function consumeRecovery(userId, hashesJson, code) {
   const norm = String(code || '').trim().toLowerCase();
   if (!totp.RECOVERY_RE.test(norm)) return false;
@@ -297,53 +300,10 @@ function consumeRecovery(userId, hashesJson, code) {
   q(`UPDATE users SET recovery_hashes=? WHERE id=?`).run(JSON.stringify(hashes), userId);
   return true;
 }
-const promoteSession = (req) => q(`UPDATE sessions SET pending=0 WHERE token=?`).run(parseCookies(req).sid);
-
-// Second factor for an already-enrolled account: a TOTP code, or a one-time recovery code.
-app.post('/api/auth/mfa', (req, res) => {
-  const s = pendingSession(req);
-  if (!s) return res.status(401).json({ error: 'no sign-in in progress — start over' });
-  const key = 'mfa|' + s.id;
-  const wait = lockedFor(key);
-  if (wait) return res.status(429).json({ error: `too many attempts — try again in ${Math.ceil(wait / 60)} min` });
-  if (!s.mfa_enabled || !s.mfa_secret) return res.status(400).json({ error: 'MFA is not set up on this account' });
-  const code = (req.body || {}).code;
-  const okTotp = totp.verifyTOTP(s.mfa_secret, code);
-  const okRecovery = !okTotp && consumeRecovery(s.id, s.recovery_hashes, code);
-  if (!okTotp && !okRecovery) { noteFailure(key); return res.status(401).json({ error: 'invalid code' }); }
-  attempts.delete(key); promoteSession(req);
-  const left = okRecovery ? (JSON.parse(q(`SELECT recovery_hashes FROM users WHERE id=?`).get(s.id).recovery_hashes || '[]')).length : null;
-  if (okRecovery) writeAudit(req, { id: s.id, username: s.username }, `signed in with a recovery code (${left} left)`);
-  res.json({ username: s.username, ...(okRecovery ? { recovery_used: true, recovery_left: left } : {}) });
-});
-
-// First-time enrolment: confirm a code for the candidate secret, then hand back recovery codes.
-app.post('/api/auth/mfa/enable', (req, res) => {
-  const s = pendingSession(req);
-  if (!s) return res.status(401).json({ error: 'no sign-in in progress — start over' });
-  const key = 'mfa|' + s.id;
-  const wait = lockedFor(key);
-  if (wait) return res.status(429).json({ error: `too many attempts — try again in ${Math.ceil(wait / 60)} min` });
-  if (!s.mfa_secret) return res.status(400).json({ error: 'start sign-in again to get a fresh setup key' });
-  if (!totp.verifyTOTP(s.mfa_secret, (req.body || {}).code)) {
-    noteFailure(key);
-    return res.status(401).json({ error: 'that code did not match — check your phone’s clock is on automatic time' });
-  }
-  attempts.delete(key);
-  const codes = totp.recoveryCodes(10);
-  q(`UPDATE users SET mfa_enabled=1, recovery_hashes=? WHERE id=?`).run(JSON.stringify(codes.map(c => sha256(c))), s.id);
-  promoteSession(req);
-  // Audit enrolment: if a leaked password were ever used to bind MFA to an attacker's phone
-  // before the real user enrols, this line (plus the victim's lockout) makes it visible.
-  writeAudit(req, { id: s.id, username: s.username }, 'enrolled two-factor auth');
-  res.json({ username: s.username, recovery_codes: codes });
-});
-app.post('/api/auth/logout', (req, res) => {
-  const sid = parseCookies(req).sid;
-  if (sid) q(`DELETE FROM sessions WHERE token=?`).run(sid);
-  res.setHeader('Set-Cookie', sessionCookie(req, '', 0));
-  res.json({ ok: true });
-});
+// Logout is client-side now: the browser discards its JWT — there is no server session to delete.
+// A discarded token still verifies until it expires (SESSION_DAYS) unless the credential epoch
+// changes (a password reset kills it at once). Kept as an endpoint so the client has one call.
+app.post('/api/auth/logout', (req, res) => res.json({ ok: true }));
 // Structural changes — engagements, their scope/dates, assets, targets, and checklist
 // *templates* — are an admin-only, team-level responsibility; workers work the checklists and
 // record findings. On the server the device/session role decides; on a linked client the TEAM
@@ -385,12 +345,13 @@ app.post('/api/change-password', (req, res) => {
   if (!verifyPassword(current || '', row.pass_hash)) return res.status(400).json({ error: 'current password is wrong' });
   if (!next || next.length < 10) return res.status(400).json({ error: 'new password must be at least 10 characters' });
   if (next === current) return res.status(400).json({ error: 'new password must differ from the current one' });
-  // Bump the credential epoch so every access token minted before this change stops verifying.
+  // Bump the credential epoch so every token minted before this change stops verifying — that ends
+  // every OTHER session at once. Then mint a fresh token for THIS one so the user stays signed in.
   q(`UPDATE users SET pass_hash=?, cred_epoch=cred_epoch+1 WHERE id=?`).run(hashPassword(next), u.id);
-  // a password change should end every other session, not just rotate this one
-  const sid = parseCookies(req).sid;
-  q(`DELETE FROM sessions WHERE user_id=? AND token<>?`).run(u.id, sid);
-  res.json({ ok: true });
+  const fresh = q(`SELECT role, cred_epoch FROM users WHERE id=?`).get(u.id);
+  const token = jwt.sign({ sub: u.id, username: u.username, role: fresh.role, epoch: fresh.cred_epoch, kind: 'web' },
+    JWT_SECRET, { ttlSeconds: 60 * 60 * 24 * SESSION_TTL_DAYS });
+  res.json({ ok: true, token });
 });
 // Change your own sign-in name (confirmed with your current password).
 app.post('/api/change-username', (req, res) => {
@@ -565,26 +526,23 @@ app.get('/api/admin/users', requireAdmin, (req, res) => {
     (SELECT COUNT(*) FROM devices d WHERE d.user_id=users.id AND d.revoked=0) AS devices
     FROM users ORDER BY id`).all());
 });
-// Lost-phone recovery: clear a user's MFA so they re-enrol at next sign-in. Their sessions are
-// dropped, so a device that was already signed in is booted too.
+// Lost-phone recovery: clear a user's MFA so they re-enrol at next sign-in. Bumping the epoch
+// invalidates every live token, so a device/browser that was already signed in is booted too.
 app.post('/api/admin/users/:id/reset-mfa', requireAdmin, (req, res) => {
   const u = q(`SELECT id, username FROM users WHERE id=?`).get(req.params.id);
   if (!u) return res.status(404).json({ error: 'no such user' });
-  // Bump the epoch too, so any live access token is invalidated alongside the cookie sessions.
   q(`UPDATE users SET mfa_enabled=0, mfa_secret=NULL, recovery_hashes=NULL, cred_epoch=cred_epoch+1 WHERE id=?`).run(u.id);
-  q(`DELETE FROM sessions WHERE user_id=?`).run(u.id);
   writeAudit(req, req.user, `reset MFA for ${u.username}`);
   res.json({ ok: true });
 });
 // Admin resets a user's password (e.g. they forgot it). Bumping the epoch forces every device to
-// log in again with the new password — old tokens and sessions die immediately.
+// log in again with the new password — old tokens die immediately.
 app.post('/api/admin/users/:id/reset-password', requireAdmin, (req, res) => {
   const u = q(`SELECT id, username FROM users WHERE id=?`).get(req.params.id);
   if (!u) return res.status(404).json({ error: 'no such user' });
   const next = (req.body || {}).password;
   if (!next || String(next).length < 8) return res.status(400).json({ error: 'new password must be at least 8 characters' });
   q(`UPDATE users SET pass_hash=?, cred_epoch=cred_epoch+1 WHERE id=?`).run(hashPassword(String(next)), u.id);
-  q(`DELETE FROM sessions WHERE user_id=?`).run(u.id);
   writeAudit(req, req.user, `reset the password for ${u.username}`);
   res.json({ ok: true });
 });

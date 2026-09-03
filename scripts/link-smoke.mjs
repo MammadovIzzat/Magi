@@ -38,10 +38,10 @@ function die(msg) {
 // Never leave a stray server holding the port, even if a check throws unexpectedly.
 process.on('exit', () => { try { child?.kill(); } catch {} });
 process.on('uncaughtException', (e) => die('uncaught: ' + (e?.stack || e?.message || e)));
-function req(method, path, { cookie, body } = {}) {
+function req(method, path, { token, body } = {}) {
   const data = body != null ? JSON.stringify(body) : null;
   const headers = { 'content-type': 'application/json' };
-  if (cookie) headers.cookie = cookie;
+  if (token) headers.authorization = `Bearer ${token}`;
   if (data) headers['content-length'] = Buffer.byteLength(data);
   return new Promise((resolve, reject) => {
     const r = https.request({ host: '127.0.0.1', port: PORT, method, path, agent, headers }, res => {
@@ -72,9 +72,9 @@ const fingerprint = new (await import('node:crypto')).X509Certificate(cert).fing
 // admin logs in and mints codes: code1 is an admin code (so the linked device can exercise a
 // structural write below — RBAC itself is covered in server-smoke), code2 for the mismatch path.
 const login = await req('POST', '/api/auth/login', { body: { username: 'admin', password: PASS } });
-const cookie = (login.headers['set-cookie'] || []).map(c => c.split(';')[0]).join('; ');
-const code1 = (await req('POST', '/api/admin/enroll-codes', { cookie, body: { role: 'admin' } })).json?.code;
-const code2 = (await req('POST', '/api/admin/enroll-codes', { cookie, body: { role: 'worker' } })).json?.code;
+const adminTok = login.json?.token;
+const code1 = (await req('POST', '/api/admin/enroll-codes', { token: adminTok, body: { role: 'admin' } })).json?.code;
+const code2 = (await req('POST', '/api/admin/enroll-codes', { token: adminTok, body: { role: 'worker' } })).json?.code;
 
 // The client runs an ENCRYPTED workspace, so the token is protected at rest by the same passphrase
 // (there is no separate link file any more). Set the key BEFORE importing the module that opens the DB.
@@ -91,10 +91,10 @@ check('wrong fingerprint is refused as MITM', bad.ok === false && /fingerprint/i
 const reqres = await link.connect({ server_url: serverUrl, code: code1, username: 'ana', display_name: 'Ana R.', password: 'ana-secret-8' });
 if (!reqres.ok) die('connect() failed: ' + reqres.error);
 check('request is pending until an admin approves', reqres.ok === true && reqres.pending === true && link.status().pending === true);
-const pending = (await req('GET', '/api/admin/requests', { cookie })).json;
+const pending = (await req('GET', '/api/admin/requests', { token: adminTok })).json;
 const rid = pending.find(r => r.display_name === 'Ana R.')?.id;
 check('the request is visible to the admin', !!rid);
-await req('POST', `/api/admin/requests/${rid}/approve`, { cookie, body: { role: 'admin' } });
+await req('POST', `/api/admin/requests/${rid}/approve`, { token: adminTok, body: { role: 'admin' } });
 await link.pollApproval();
 link.stopSyncLoop(); // finalize started the sync loop; stop it so the test drives things
 check('client links once approved', link.status().linked === true && link.status().link?.username === 'ana');
@@ -120,8 +120,8 @@ check('heartbeat reports online', hb.online === true && hb.who?.display_name ===
 
 // 3b) an admin resets the password -> epoch bump -> the token dies -> the client must re-auth,
 // works offline against the cached verifier meanwhile, and logs back in with the new password.
-const anaId = (await req('GET', '/api/admin/users', { cookie })).json.find(u => u.username === 'ana').id;
-await req('POST', `/api/admin/users/${anaId}/reset-password`, { cookie, body: { password: 'ana-new-pass-9' } });
+const anaId = (await req('GET', '/api/admin/users', { token: adminTok })).json.find(u => u.username === 'ana').id;
+await req('POST', `/api/admin/users/${anaId}/reset-password`, { token: adminTok, body: { password: 'ana-new-pass-9' } });
 const syncDead = await link.syncOnce();
 check('a bumped epoch forces the client to re-authenticate', syncDead.needs_reauth === true && link.status().link?.needs_reauth === true);
 check('offline login still accepts the cached (old) password', link.offlineLogin('ana-secret-8').ok === true && link.offlineLogin('wrong').ok === false);

@@ -51,15 +51,44 @@ function magiMark(size) {
   return s;
 }
 
+// The one credential: a JWT kept in localStorage and sent as `Authorization: Bearer` on every
+// call (no cookies). Cleared on logout or a genuine 401.
+const AUTH_KEY = 'magi.jwt';
+function authToken() { try { return localStorage.getItem(AUTH_KEY) || ''; } catch { return ''; } }
+function setAuthToken(t) { try { if (t) localStorage.setItem(AUTH_KEY, t); } catch { /* private mode */ } }
+function clearAuthToken() { try { localStorage.removeItem(AUTH_KEY); } catch { /* ignore */ } }
+function authHeaders(extra) { const t = authToken(); return { ...(t ? { authorization: 'Bearer ' + t } : {}), ...(extra || {}) }; }
+
+// Attachments are auth-gated, but an <img src> can't carry the Bearer header — so fetch the bytes
+// with auth and show them via an object URL. Cached by id (attachment bytes are immutable per id)
+// so the live-refresh re-render reuses the same URL instead of leaking a new one each cycle.
+const IMG_CACHE = new Map(); // attachment id -> object URL
+function attachmentSrc(id) {
+  if (IMG_CACHE.has(id)) return Promise.resolve(IMG_CACHE.get(id));
+  return fetch('/api/attachments/' + id, { headers: authHeaders() })
+    .then(r => r.ok ? r.blob() : Promise.reject(new Error(r.statusText)))
+    .then(b => { const u = URL.createObjectURL(b); IMG_CACHE.set(id, u); return u; });
+}
+function attachmentImg(id, attrs = {}) {
+  const img = el('img', attrs);
+  attachmentSrc(id).then(u => { img.src = u; }).catch(() => { /* leave broken-image; a reload retries */ });
+  return img;
+}
+function openLightbox(im) {
+  attachmentSrc(im.id).then(src => lightbox(src, im.filename, () => downloadAttachment(im))).catch(() => toast('Could not load the image'));
+}
+
 async function api(path, opts) {
   // opts.timeout (ms) fails fast instead of hanging when a linked server is unreachable — the
   // request is proxied to the remote, which can otherwise stall for a long TCP timeout.
   const signal = opts?.timeout ? AbortSignal.timeout(opts.timeout) : opts?.signal;
+  const token = authToken();
   let r;
   try {
     r = await fetch('/api' + path, {
-      headers: { 'content-type': 'application/json' },
-      ...opts, body: opts?.body ? JSON.stringify(opts.body) : undefined, signal,
+      ...opts,
+      headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}), ...(opts?.headers || {}) },
+      body: opts?.body ? JSON.stringify(opts.body) : undefined, signal,
     });
   } catch (e) {
     if (e?.name === 'TimeoutError' || e?.name === 'AbortError') throw new Error('the server did not respond');
@@ -68,7 +97,7 @@ async function api(path, opts) {
   // A 401 from a /link/* call is the remote SERVER rejecting our device token (e.g. it was
   // revoked) — NOT our local session expiring. Only a genuine local 401 sends us to login,
   // otherwise a revoked device would trap the app in a login loop.
-  if (r.status === 401 && path !== '/me' && path !== '/auth/login' && !path.startsWith('/link')) { showLogin(); throw new Error('Session expired'); }
+  if (r.status === 401 && path !== '/me' && path !== '/auth/login' && !path.startsWith('/link')) { clearAuthToken(); showLogin(); throw new Error('Session expired'); }
   if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error || r.statusText); }
   return r.headers.get('content-type')?.includes('json') ? r.json() : r.text();
 }
@@ -1094,8 +1123,8 @@ function findingCard(f, id) {
     el('button', { className: 'ibtn del', title: 'Delete', onclick: async () => { if (confirm('Delete this finding and its images?')) { await api('/findings/' + f.id, { method: 'DELETE' }); renderTarget(id); } } }, icon('x', 11)));
   const shots = el('div', { className: 'f-shots', onclick: stop });
   for (const im of (f.attachments || [])) {
-    const thumb = el('img', { src: '/api/attachments/' + im.id, title: im.filename, loading: 'lazy' });
-    thumb.onclick = (e) => { e.stopPropagation(); lightbox('/api/attachments/' + im.id, im.filename, () => downloadAttachment(im)); };
+    const thumb = attachmentImg(im.id, { title: im.filename, loading: 'lazy' });
+    thumb.onclick = (e) => { e.stopPropagation(); openLightbox(im); };
     const dl = el('button', { className: 'shotdl', title: 'Download image', onclick: (e) => { e.stopPropagation(); downloadAttachment(im); } }, icon('down', 10));
     const x = el('button', { className: 'shotx', title: 'Remove image', onclick: async (e) => { e.stopPropagation(); await api('/attachments/' + im.id, { method: 'DELETE' }); renderTarget(id); } }, '✕');
     shots.append(el('span', { className: 'f-shot' }, thumb, dl, x));
@@ -1132,7 +1161,7 @@ function findingDetail(f, id) {
       if ((f.attachments || []).length) {
         b.append(el('label', {}, `Screenshots (${f.attachments.length})`));
         const g = el('div', { className: 'fd-shots' });
-        for (const im of f.attachments) { const img = el('img', { src: '/api/attachments/' + im.id, title: im.filename, loading: 'lazy' }); img.onclick = () => lightbox('/api/attachments/' + im.id, im.filename, () => downloadAttachment(im)); g.append(img); }
+        for (const im of f.attachments) { const img = attachmentImg(im.id, { title: im.filename, loading: 'lazy' }); img.onclick = () => openLightbox(im); g.append(img); }
         b.append(g);
       }
     },
@@ -1150,7 +1179,7 @@ async function saveFinding(editing, finding, assetId, payload, images) {
     if (!file.type || !file.type.startsWith('image/')) { failed.push(`${name} — not an image file`); continue; }
     try {
       const r = await fetch(`/api/findings/${f.id}/attachments`, { method: 'POST',
-        headers: { 'content-type': file.type, 'x-filename': encodeURIComponent(name) }, body: await file.arrayBuffer() });
+        headers: authHeaders({ 'content-type': file.type, 'x-filename': encodeURIComponent(name) }), body: await file.arrayBuffer() });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
     } catch (e) { failed.push(`${name} — ${e.message}`); }
   }
@@ -1302,7 +1331,7 @@ function uploadToFinding(findingId, assetId) {
         if (!f.type.startsWith('image/')) { toast(`${f.name}: not an image, skipped`); continue; }
         const r = await fetch(`/api/findings/${findingId}/attachments`, {
           method: 'POST',
-          headers: { 'content-type': f.type || 'application/octet-stream', 'x-filename': encodeURIComponent(f.name) },
+          headers: authHeaders({ 'content-type': f.type || 'application/octet-stream', 'x-filename': encodeURIComponent(f.name) }),
           body: await f.arrayBuffer(),
         });
         if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
@@ -1318,7 +1347,7 @@ function uploadToFinding(findingId, assetId) {
 // browser/Electron download, forcing a save even though the server serves it inline.
 async function downloadAttachment(im) {
   try {
-    const r = await fetch('/api/attachments/' + im.id);
+    const r = await fetch('/api/attachments/' + im.id, { headers: authHeaders() });
     if (!r.ok) throw new Error(r.statusText);
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
@@ -2315,16 +2344,17 @@ function loginPasswordStep() {
     e.preventDefault(); err.textContent = ''; p.style.borderColor = '';
     try {
       const r = await api('/auth/login', { method: 'POST', body: { username: u.value, password: p.value } });
-      if (r.mfa === 'setup') return loginSetupStep(r);
-      if (r.mfa === 'required') return loginCodeStep();
-      await afterAuth();
+      if (r.mfa === 'setup') return loginSetupStep(u.value, p.value, r);
+      if (r.mfa === 'required') return loginCodeStep(u.value, p.value);
+      setAuthToken(r.token); await afterAuth();
     } catch (ex) { showLoginErr(err, ex.message.toUpperCase().startsWith('TOO MANY') ? ex.message : `AUTH REJECTED — ${ex.message}.`); p.style.borderColor = 'var(--red)'; }
   };
   u.focus();
 }
 
-// Enrolled account: enter the rolling code (or a one-time recovery code).
-function loginCodeStep() {
+// Enrolled account: enter the rolling code (or a one-time recovery code). The password from the
+// first step is carried in memory so we can complete the login in one call.
+function loginCodeStep(username, password) {
   let recovery = false;
   const label = el('label', {}, 'Authenticator code');
   const code = el('input', { inputMode: 'numeric', autocomplete: 'one-time-code', placeholder: '000000', maxLength: 6, className: 'mfa-code' });
@@ -2346,8 +2376,10 @@ function loginCodeStep() {
     el('div', { className: 'login-row' }, toggle, el('button', { type: 'button', className: 'linklike', onclick: showLogin }, 'Back'))));
   box.onsubmit = async (e) => {
     e.preventDefault(); err.textContent = '';
-    try { await api('/auth/mfa', { method: 'POST', body: { code: code.value } }); await afterAuth(); }
-    catch (ex) { showLoginErr(err, ex.message); code.select(); }
+    try {
+      const r = await api('/auth/login', { method: 'POST', body: { username, password, otp: code.value } });
+      setAuthToken(r.token); await afterAuth();
+    } catch (ex) { showLoginErr(err, ex.message); code.select(); }
   };
   code.focus();
 }
@@ -2372,7 +2404,7 @@ function qrEl(text) {
   svg.append(path);
   return svg;
 }
-function loginSetupStep(r) {
+function loginSetupStep(username, password, r) {
   const grouped = r.secret.replace(/(.{4})/g, '$1 ').trim();
   const code = el('input', { inputMode: 'numeric', autocomplete: 'one-time-code', placeholder: '000000', maxLength: 6, className: 'mfa-code' });
   const err = el('div', { className: 'loginerr' });
@@ -2388,8 +2420,11 @@ function loginSetupStep(r) {
     el('div', { className: 'login-row' }, el('button', { type: 'button', className: 'linklike', onclick: showLogin }, 'Back'))));
   box.onsubmit = async (e) => {
     e.preventDefault(); err.textContent = '';
-    try { const res = await api('/auth/mfa/enable', { method: 'POST', body: { code: code.value } }); loginRecoveryStep(res.recovery_codes); }
-    catch (ex) { showLoginErr(err, ex.message); code.select(); }
+    try {
+      const res = await api('/auth/login', { method: 'POST', body: { username, password, otp: code.value } });
+      setAuthToken(res.token);
+      loginRecoveryStep(res.recovery_codes);
+    } catch (ex) { showLoginErr(err, ex.message); code.select(); }
   };
   code.focus();
 }
@@ -2452,7 +2487,7 @@ function onAuthed(me) {
   clearInterval(DATA_POLL);
   DATA_POLL = setInterval(() => { pollData().catch(() => {}); }, 10000);
 }
-async function logout() { await api('/auth/logout', { method: 'POST' }); showLogin(); }
+async function logout() { try { await api('/auth/logout', { method: 'POST' }); } catch { /* best effort */ } clearAuthToken(); showLogin(); }
 function changePassword() {
   modal({
     kicker: 'Account', title: 'Change passphrase', cta: 'Change',
@@ -2462,7 +2497,8 @@ function changePassword() {
       field(b, 'New passphrase', 'next', { type: 'password' });
     },
     onSubmit: async (fd) => {
-      await api('/change-password', { method: 'POST', body: Object.fromEntries(fd) });
+      const r = await api('/change-password', { method: 'POST', body: Object.fromEntries(fd) });
+      if (r?.token) setAuthToken(r.token); // keep THIS session alive; the epoch bump killed the rest
       toast('Passphrase changed — other sessions signed out');
     },
   });

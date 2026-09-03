@@ -8,22 +8,8 @@ import { IncomingMessage, ServerResponse } from 'node:http';
 import { Socket } from 'node:net';
 
 export function createDispatcher(app) {
-  // Express authenticates with a session cookie. Custom schemes have patchy cookie
-  // support, so the main process keeps the jar instead of relying on the renderer.
-  const jar = new Map();
-
-  function absorbSetCookie(values) {
-    for (const line of [].concat(values || [])) {
-      const [pair, ...attrs] = line.split(';');
-      const i = pair.indexOf('=');
-      if (i < 0) continue;
-      const name = pair.slice(0, i).trim();
-      const value = pair.slice(i + 1).trim();
-      const expired = attrs.some(a => /^\s*max-age\s*=\s*0\s*$/i.test(a));
-      if (expired || value === '') jar.delete(name); else jar.set(name, value);
-    }
-  }
-
+  // Auth is a bearer JWT the renderer keeps in localStorage and sends as `Authorization`, which we
+  // forward below — no cookies, so there is no jar to manage.
   return async function dispatch(request) {
     const url = new URL(request.url);
     const method = request.method || 'GET';
@@ -39,7 +25,6 @@ export function createDispatcher(app) {
     // never let the renderer forge one.
     req.headers.host = url.host;
     delete req.headers.origin;
-    if (jar.size) req.headers.cookie = [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
     if (body) req.headers['content-length'] = String(body.length);
     if (body) req.push(body);
     req.push(null);
@@ -62,7 +47,6 @@ export function createDispatcher(app) {
         collect(chunk, enc);
         const out = new Headers();
         for (const [k, v] of Object.entries(res.getHeaders())) {
-          if (k.toLowerCase() === 'set-cookie') { absorbSetCookie(v); continue; }
           if (v != null) out.set(k, String(v));
         }
         resolve(new Response(Buffer.concat(chunks), { status: res.statusCode, headers: out }));

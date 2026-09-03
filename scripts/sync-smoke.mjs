@@ -42,10 +42,10 @@ process.on('exit', () => { try { child?.kill(); } catch {} });
 process.on('uncaughtException', (e) => { console.error('\n  SYNC SMOKE crashed:', e?.stack || e); if (stderr.trim()) console.error(stderr); cleanup(); process.exit(1); });
 function die(msg) { console.error(`\n  SYNC SMOKE FAILED: ${msg}`); if (stderr.trim()) console.error(stderr.split('\n').map(l => '   ' + l).join('\n')); cleanup(); process.exit(1); }
 
-function req(method, path, { cookie, body } = {}) {
+function req(method, path, { token, body } = {}) {
   const data = body != null ? JSON.stringify(body) : null;
   const headers = { 'content-type': 'application/json' };
-  if (cookie) headers.cookie = cookie;
+  if (token) headers.authorization = `Bearer ${token}`;
   if (data) headers['content-length'] = Buffer.byteLength(data);
   return new Promise((resolve, reject) => {
     const r = https.request({ host: '127.0.0.1', port: PORT, method, path, agent, headers }, res => {
@@ -68,8 +68,8 @@ agent = new https.Agent({ ca: cert, checkServerIdentity: () => undefined });
 await waitAnswering();
 const fingerprint = new (await import('node:crypto')).X509Certificate(cert).fingerprint256;
 const login = await req('POST', '/api/auth/login', { body: { username: 'admin', password: PASS } });
-const cookie = (login.headers['set-cookie'] || []).map(c => c.split(';')[0]).join('; ');
-const mkCode = async () => (await req('POST', '/api/admin/enroll-codes', { cookie, body: { role: 'worker' } })).json.code;
+const adminTok = login.json?.token;
+const mkCode = async () => (await req('POST', '/api/admin/enroll-codes', { token: adminTok, body: { role: 'worker' } })).json.code;
 
 const link = await import('../client-link.js');
 const { db } = await import('../db.js');
@@ -84,9 +84,9 @@ const sName = (uid) => serverDb.prepare('SELECT name FROM projects WHERE uid=?')
 async function connectApprove(username, display_name) {
   const r = await link.connect({ server_url: `https://127.0.0.1:${PORT}`, code: await mkCode(), username, display_name, password: username + '-secret-8' });
   if (!r.ok) return { ok: false, error: r.error };
-  const pending = (await req('GET', '/api/admin/requests', { cookie })).json;
+  const pending = (await req('GET', '/api/admin/requests', { token: adminTok })).json;
   const rid = (pending || []).find(x => x.display_name === display_name)?.id;
-  if (rid) await req('POST', `/api/admin/requests/${rid}/approve`, { cookie });
+  if (rid) await req('POST', `/api/admin/requests/${rid}/approve`, { token: adminTok });
   await link.pollApproval();
   link.stopSyncLoop();
   return { ok: link.status().linked === true };
@@ -118,9 +118,9 @@ check('engagement dates replicate to the server', sProj && sProj.start_date === 
 check('a worker cannot finish an engagement through sync', sProj && sProj.status !== 'finished');
 
 // ---- 2) server -> client ----
-const sp = await req('POST', '/api/projects', { cookie, body: { name: 'Server Made' } });
-const sAsset = await req('POST', `/api/projects/${sp.json.id}/assets`, { cookie, body: { grp: 'external', label: 'Ext' } });
-const sTarget = await req('POST', `/api/assets/${sAsset.json.id}/targets`, { cookie, body: { type: 'web', label: 'https://srv.test' } });
+const sp = await req('POST', '/api/projects', { token: adminTok, body: { name: 'Server Made' } });
+const sAsset = await req('POST', `/api/projects/${sp.json.id}/assets`, { token: adminTok, body: { grp: 'external', label: 'Ext' } });
+const sTarget = await req('POST', `/api/assets/${sAsset.json.id}/targets`, { token: adminTok, body: { type: 'web', label: 'https://srv.test' } });
 await syncNow();
 const localServerProj = db.prepare("SELECT id,uid FROM projects WHERE name='Server Made'").get();
 check('client received the server-made project', !!localServerProj);
@@ -140,7 +140,7 @@ check('malicious tombstone table is rejected (no SQL injection / no mass delete)
 const sharedItem = db.prepare(`SELECT i.uid FROM items i JOIN assets a ON a.id=i.asset_id JOIN folders f ON f.id=a.folder_id WHERE f.project_id=? LIMIT 1`).get(localServerProj.id).uid;
 const sItemId = serverDb.prepare('SELECT id FROM items WHERE uid=?').get(sharedItem).id;
 // server sets it 'done' (a later clock), client had it 'todo'
-await req('PATCH', `/api/items/${sItemId}`, { cookie, body: { status: 'done' } });
+await req('PATCH', `/api/items/${sItemId}`, { token: adminTok, body: { status: 'done' } });
 await syncNow();
 const afterPull = db.prepare('SELECT status FROM items WHERE uid=?').get(sharedItem).status;
 check('LWW server->client: newer server status wins', afterPull === 'done');
@@ -152,7 +152,7 @@ check('LWW client->server: newer client status wins', afterPush === 'na');
 
 // ---- 4) tombstones both ways ----
 // server deletes its project -> client should drop it
-await req('DELETE', `/api/projects/${sp.json.id}`, { cookie });
+await req('DELETE', `/api/projects/${sp.json.id}`, { token: adminTok });
 await syncNow();
 check('server delete propagates to client', !db.prepare("SELECT 1 FROM projects WHERE name='Server Made'").get());
 // client deletes its project -> server should drop it

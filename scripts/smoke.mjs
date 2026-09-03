@@ -80,6 +80,18 @@ checks.push(['sign in works', await ev(`
   f.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
   await new Promise(r => setTimeout(r, 1500));
   return !!document.querySelector(".acct")`)]);
+// Auth is now a Bearer JWT the app keeps in localStorage — no cookie. Verify it was stored, and
+// make the test's own raw fetch() calls carry it too (the app's api() already does).
+checks.push(['login stores a bearer token + requests carry it', await ev(`
+  const t = localStorage.getItem("magi.jwt");
+  if (!t) return false;
+  const _f = window.fetch.bind(window);
+  window.fetch = (u, o = {}) => {
+    const h = new Headers(o.headers || {});
+    if (!h.has("authorization")) h.set("authorization", "Bearer " + localStorage.getItem("magi.jwt"));
+    return _f(u, { ...o, headers: h });
+  };
+  return (await _f("/api/me", { headers: { authorization: "Bearer " + t } })).status === 200`)]);
 checks.push(['engagements screen paints', await ev(`
   const j = async (u, o) => (await fetch(u, { headers: { "content-type": "application/json" }, ...o })).json();
   const p = await j("/api/projects", { method: "POST", body: JSON.stringify({ name: "smoke" }) });

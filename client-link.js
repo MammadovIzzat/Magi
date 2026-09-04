@@ -335,13 +335,22 @@ export async function syncOnce() {
       }
       if (pm && pm > wm.push) sync.setWatermarks(db, { push: pm });
     }
-    // pull everything newer than our pull watermark, merge locally
-    const pr = await remoteFetch('/api/sync/pull?since=' + encodeURIComponent(wm.pull), { link });
+    // pull everything newer than our pull watermark, merge locally. We tell the server our node id
+    // so it omits our own writes from the response (see /api/sync/pull).
+    const nd = sync.node(db);
+    const pr = await remoteFetch('/api/sync/pull?since=' + encodeURIComponent(wm.pull) + '&node=' + encodeURIComponent(nd), { link });
     if (stale()) return { ok: false, error: 'link changed' };
     if (pr.status === 401) { markNeedsReauth(); return { ok: false, needs_reauth: true }; }
     if (pr.status !== 200) return { ok: false, error: pr.json?.error || `pull failed (${pr.status})` };
     const merged = sync.applyChanges(db, pr.json);
-    const pm = payloadMax(pr.json);
+    // Advance the pull watermark using only rows we did NOT author. An older server may still echo
+    // our own rows back; those carry our clock and must never move the cursor, or a server row with
+    // a lower (correct-time) hlc would be starved forever. We still APPLY everything above — only the
+    // watermark math skips our echoes.
+    const own = '-' + nd;
+    const foreign = { rows: (pr.json?.rows || []).filter(r => !String(r.hlc).endsWith(own)),
+                      tombstones: (pr.json?.tombstones || []).filter(t => !String(t.hlc).endsWith(own)) };
+    const pm = payloadMax(foreign);
     if (pm && pm > wm.pull) sync.setWatermarks(db, { pull: pm });
     const now = new Date().toISOString();
     link.last_sync = now; link.last_ok = now; saveLink(link);
@@ -351,6 +360,23 @@ export async function syncOnce() {
   } finally {
     syncing = false;
   }
+}
+
+// One-time repair for clients upgraded from a version before the exceptNode pull fix. That bug
+// let a client's OWN (clock-skewed) writes advance its pull watermark into the future, after
+// which every real server update sorted below the watermark and was never pulled — sync kept
+// reporting "up to date" while silently receiving nothing. Resetting the pull watermark once
+// makes the next pull re-read the server from scratch and rebuild a correct watermark from
+// server-authored rows only (own rows are now excluded from the pull, so it can't recur). Marked
+// done in the link row so it runs exactly once; local edits are preserved (the merge is LWW).
+export function healPullWatermarkOnce() {
+  try {
+    const link = loadLink();
+    if (!link || link.pending || link.wm_reset_v1) return;
+    sync.setWatermarks(db, { pull: '' });
+    link.wm_reset_v1 = 1;
+    saveLink(link);
+  } catch { /* best effort — a failed heal just means the next launch tries again */ }
 }
 
 let loopTimer = null;

@@ -638,7 +638,11 @@ if (SERVER_MODE) {
   // the web UI doesn't log a 404 and doesn't offer client-only "connect" controls.
   app.get('/api/link', (req, res) => res.json({ linked: false, server: true, unavailable: true }));
   app.get('/api/sync/pull', (req, res) => {
-    res.json(collectChanges(db, String(req.query.since || '')));
+    // Don't send a client back its own writes: it already has them, and echoing them lets its
+    // (possibly clock-skewed) hlc poison its pull watermark. `node` is the client's node id — a
+    // 16-hex string; anything else is ignored (a bound LIKE param, so no injection either way).
+    const exceptNode = /^[0-9a-f]{8,32}$/i.test(String(req.query.node || '')) ? String(req.query.node) : null;
+    res.json(collectChanges(db, String(req.query.since || ''), { exceptNode }));
   });
   app.post('/api/sync/push', (req, res) => {
     let { rows, tombstones } = req.body || {};
@@ -719,7 +723,7 @@ if (!SERVER_MODE) {
   // At boot: recover any stash orphaned by an interrupted connect, then (if linked) start
   // replicating in the background — covers the desktop app (dispatched, never calls listen)
   // and `magi serve` alike.
-  import('./client-link.js').then(m => { try { m.reconcileStash(); m.startSyncLoop(); m.startApprovalPoll(); } catch { /* not linked / no creds */ } }).catch(() => {});
+  import('./client-link.js').then(m => { try { m.reconcileStash(); m.healPullWatermarkOnce(); m.startSyncLoop(); m.startApprovalPoll(); } catch { /* not linked / no creds */ } }).catch(() => {});
 }
 
 const insertItem = q(`INSERT INTO items

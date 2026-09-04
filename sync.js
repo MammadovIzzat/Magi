@@ -152,9 +152,13 @@ const idOf = (db, table, uid) => (uid == null ? null : db.prepare(`SELECT id FRO
 
 /**
  * Collect all changes with hlc greater than `since`.
- * @param onlyLocal when true, only rows this node authored (for a client push).
+ * @param onlyLocal  when true, only rows this node authored (for a client push).
+ * @param exceptNode when set, EXCLUDE rows this node authored (for a pull — a client already
+ *   has its own writes, so echoing them back is pure waste AND it poisons the client's pull
+ *   watermark: an echoed own row carries the client's clock, and if that runs ahead of the
+ *   server every later server row sorts BELOW the advanced watermark and is never sent again).
  */
-export function collectChanges(db, since = '', { onlyLocal = false } = {}) {
+export function collectChanges(db, since = '', { onlyLocal = false, exceptNode = null } = {}) {
   const rows = [];
   const nd = node(db);
   for (const t of TABLES) {
@@ -163,6 +167,7 @@ export function collectChanges(db, since = '', { onlyLocal = false } = {}) {
     let sql = `SELECT ${sel.join(',')} FROM ${t} WHERE hlc > ? AND uid IS NOT NULL`;
     const args = [since];
     if (onlyLocal) { sql += ` AND hlc LIKE ?`; args.push('%-' + nd); }
+    else if (exceptNode) { sql += ` AND hlc NOT LIKE ?`; args.push('%-' + exceptNode); }
     for (const r of db.prepare(sql).all(...args)) {
       const fields = {};
       for (const c of spec.cols) fields[c] = r[c];
@@ -175,6 +180,7 @@ export function collectChanges(db, since = '', { onlyLocal = false } = {}) {
   let ts = `SELECT tbl, uid, hlc FROM tombstones WHERE hlc > ?`;
   const targs = [since];
   if (onlyLocal) { ts += ` AND hlc LIKE ?`; targs.push('%-' + nd); }
+  else if (exceptNode) { ts += ` AND hlc NOT LIKE ?`; targs.push('%-' + exceptNode); }
   const tombstones = db.prepare(ts).all(...targs);
   return { rows, tombstones };
 }

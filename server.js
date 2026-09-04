@@ -407,7 +407,9 @@ app.get('/api/security', (req, res) => {
 });
 app.post('/api/security/rekey', async (req, res) => {
   if (SERVER_MODE) return res.status(400).json({ error: 'the server database is keyed by its secret file, not through the app' });
-  if (!(await canManage(req))) return res.status(403).json({ error: 'not allowed' });
+  // No team-role gate: this rekeys the LOCAL database on the operator's own machine, not a server
+  // resource. A linked worker owns their laptop's copy (token + synced data) as much as an admin
+  // does. The global /api guard already required an authenticated user; SERVER_MODE is handled above.
   const { current, next } = req.body || {};
   if (!next || String(next).length < 8) return res.status(400).json({ error: 'passphrase must be at least 8 characters' });
   const wasEncrypted = isEncrypted();

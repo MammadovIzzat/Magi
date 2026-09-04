@@ -1902,9 +1902,11 @@ async function renderSettings() {
         el('button', { className: 'btn danger', onclick: disconnectDialog }, icon('exit'), 'Disconnect'))));
   }
 
-  // Local at-rest encryption — offered on a standalone / desktop workspace (the team server is
-  // keyed by its own secret file, so its web UI never lands here anyway).
-  if (!ME?.server && (!LINK?.linked || isAdmin())) {
+  // Local at-rest encryption is a property of THIS machine's own database file — the cached link
+  // token, the passphrase verifier and every synced finding live in it — so every operator manages
+  // it regardless of their team role. Offered on any non-server install (the team server keys its
+  // own DB by a secret file, so its web UI never lands here anyway; sec.manageable enforces that).
+  if (!ME?.server) {
     try { const sec = await api('/security'); if (sec.manageable) page.append(securityCard(sec)); }
     catch { /* an older server without the endpoint — just omit the card */ }
   }

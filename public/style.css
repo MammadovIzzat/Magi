@@ -57,6 +57,8 @@
   --jade-bg:   #1C1C20;
   --violet:    #FFB000;   /* triggers / follow-ups → amber */
   --violet-hi: #FFC63D;
+  --rail-bg:   #0B0D13;   /* left rail — a shade off the app background */
+  --danger-line:#3A1C1C; --danger-bg:#140C0E;  /* destructive-action box */
 
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --display: "Chakra Petch", system-ui, sans-serif;
@@ -78,6 +80,7 @@
   --red:#BE3428; --red-ink:#FFFFFF; --red-bg:#FAE9E7;
   --jade:#B2B2AA; --jade-text:#3A3A40; --jade-bg:#EDEDE7;
   --violet:#A05C00; --violet-hi:#8A4E00;
+  --rail-bg:#EAEAE3; --danger-line:#E7C4BF; --danger-bg:#FBEDEB;
 }
 
 /* The new design is fully squared — no rounded corners anywhere. */
@@ -219,7 +222,7 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 
 /* ── left rail ─────────────────────────────────────────── */
 .rail {
-  width: 236px; flex: none; background: #0B0D13; border-right: 1px solid var(--line);
+  width: 236px; flex: none; background: var(--rail-bg); border-right: 1px solid var(--line);
   display: flex; flex-direction: column; overflow: hidden;
 }
 .rail-head { padding: 16px 14px 10px; border-bottom: 1px solid var(--line); }
@@ -711,7 +714,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 .modal .actions { display: flex; justify-content: flex-end; gap: 6px; padding: 14px 18px; margin-top: 16px; border-top: 1px solid var(--line); }
 .modal .actions .btn { padding: 9px 14px; }
 
-.dangerbox { margin-top: 16px; border: 1px solid #3A1C1C; background: #140C0E; padding: 12px 14px; }
+.dangerbox { margin-top: 16px; border: 1px solid var(--danger-line); background: var(--danger-bg); padding: 12px 14px; }
 .dangerbox .kicker { color: var(--red); letter-spacing: .14em; font-size: 10.5px; }
 .dellist { margin: 8px 0 0; padding-left: 18px; font-size: 12.5px; line-height: 1.75; color: var(--muted); }
 

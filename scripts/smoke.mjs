@@ -123,6 +123,34 @@ checks.push(['connect-to-server dialog opens', await ev(`
   [...document.querySelectorAll(".setcard-actions .btn")].find(b => /connect to a server/i.test(b.textContent))?.click();
   await new Promise(r => setTimeout(r, 400));
   return ["server_url","code","username","display_name"].every(n => document.querySelector(".modal input[name="+n+"]"))`)]);
+// Admin is split into tabbed pages; the Ranking page renders a leaderboard. This standalone
+// install isn't a server, so force admin context (ME.role is already 'admin' here) and stub the
+// admin API, then verify the tab nav and the ranking table actually paint.
+checks.push(['admin tabs + ranking page paint', await ev(`
+  const real = window.fetch;
+  const stub = {
+    "/api/link": { unavailable: true },
+    "/api/admin/ranking": { ranking: [
+      { author: "ana", role: "worker", findings: 7, poc: 3, projects: 2, types: { web: 4, poc: 3 }, topType: "web" },
+      { author: "bob", role: "editor", findings: 2, poc: 0, projects: 1, types: { ad: 2 }, topType: "ad" }],
+      totals: { operators: 2, findings: 9, unattributed: 1 } },
+    "/api/admin/requests": [], "/api/admin/users": [], "/api/admin/enroll-codes": [],
+    "/api/admin/devices": [], "/api/admin/audit": [], "/api/admin/backup": { config: {}, backups: [] },
+  };
+  window.fetch = (u, o) => {
+    const p = (typeof u === "string" ? u : u.url || "").split("?")[0];
+    for (const k in stub) if (p.endsWith(k)) return Promise.resolve(new Response(JSON.stringify(stub[k]), { status: 200, headers: { "content-type": "application/json" } }));
+    return real(u, o);
+  };
+  LINK = { unavailable: true };
+  location.hash = "#/admin/ranking"; await new Promise(r => setTimeout(r, 1000));
+  const rankRows = document.querySelectorAll(".ranktable .rankrow").length;
+  const tabs = document.querySelectorAll(".admtabs .admtab").length;
+  const activeIsRanking = /ranking/i.test(document.querySelector(".admtab.on")?.textContent || "");
+  location.hash = "#/admin/users"; await new Promise(r => setTimeout(r, 700));
+  const usersActive = /users/i.test(document.querySelector(".admtab.on")?.textContent || "");
+  window.fetch = real;
+  return rankRows === 2 && tabs === 5 && activeIsRanking && usersActive`)]);
 // Regression: an MFA-enabled account returns 401 {mfa:'required'} on password-only login. The
 // login flow must READ that challenge and show the code screen — not treat the 401 as a hard error.
 // (This standalone server never enforces MFA, so stub fetch to return the challenge just for the login.)

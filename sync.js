@@ -25,7 +25,7 @@ export const SPEC = {
     parents: { asset_id: 'assets', parent_id: 'items' },
     cols: ['group_key', 'group_title', 'title', 'detail', 'payloads', 'kind', 'spawns', 'catalog', 'options', 'opt_key', 'status', 'answer', 'sort', 'is_custom', 'created_at'],
   },
-  findings: { parents: { asset_id: 'assets' }, cols: ['title', 'kind', 'severity', 'body', 'refs', 'fix_status', 'in_report', 'created_at'] },
+  findings: { parents: { asset_id: 'assets' }, cols: ['title', 'kind', 'severity', 'body', 'refs', 'fix_status', 'in_report', 'author', 'created_at'] },
   attachments: { parents: { finding_id: 'findings' }, cols: ['filename', 'mime', 'size', 'created_at'], blobs: ['data'] },
 };
 const TABLES = Object.keys(SPEC);

@@ -191,6 +191,18 @@ check('a PoC target can be created in Additional', pocT.status === 201 && !!pocT
 check('a PoC target carries no checklist', (await req('GET', `/api/targets/${pocT.json.id}`, { token: adminTok })).json.items.length === 0);
 const pocFind = await req('POST', `/api/targets/${pocT.json.id}/findings`, { token: adminTok, body: { title: 'Chained RCE', kind: 'vuln', severity: 'critical' } });
 check('a PoC target records normal findings', pocFind.status === 201 && !!pocFind.json?.id);
+
+// ---- worker ranking: findings attributed to whoever recorded them ----
+const wPoc = await req('POST', `/api/targets/${pocT.json.id}/findings`, { token: workerToken, device: dev1, body: { title: 'IDOR PoC', kind: 'vuln', severity: 'high' } });
+check('a worker can record a PoC finding', wPoc.status === 201);
+const rank = await req('GET', '/api/admin/ranking', { token: adminTok });
+check('ranking endpoint returns attributed operators', rank.status === 200 && Array.isArray(rank.json?.ranking) && rank.json.ranking.length >= 2);
+const anaRank = (rank.json?.ranking || []).find(r => r.author === 'ana');
+check('ranking attributes findings to the worker who recorded them', !!anaRank && anaRank.findings >= 2 && anaRank.projects >= 1);
+check('ranking counts the worker’s PoC finding and reports role + focus', !!anaRank && anaRank.poc >= 1 && anaRank.role === 'worker' && !!anaRank.topType && anaRank.types?.poc >= 1);
+const adminRank = (rank.json?.ranking || []).find(r => r.author === 'admin');
+check('ranking attributes admin-recorded findings too (web + poc)', !!adminRank && adminRank.findings >= 3 && adminRank.poc >= 1 && adminRank.types?.web >= 2);
+check('ranking totals count attributed findings and operators', rank.json?.totals?.findings >= 5 && rank.json?.totals?.operators >= 2);
 const rf = await req('POST', `/api/targets/${rT.json.id}/findings`, { token: adminTok, body: { title: 'ACME-1', kind: 'vuln', fix_status: 'half_fixed' } });
 check('a retest finding stores its fix status', rf.status === 201 && rf.json?.fix_status === 'half_fixed');
 const badFix = await req('POST', `/api/targets/${rT.json.id}/findings`, { token: adminTok, body: { title: 'x', fix_status: 'nonsense' } });

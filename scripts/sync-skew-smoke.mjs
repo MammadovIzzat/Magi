@@ -15,7 +15,7 @@ const BASE = `
   CREATE TABLE folders  (id INTEGER PRIMARY KEY, project_id INTEGER, grp TEXT, label TEXT, created_at TEXT);
   CREATE TABLE assets   (id INTEGER PRIMARY KEY, project_id INTEGER, folder_id INTEGER, type TEXT, label TEXT, metadata TEXT, created_at TEXT);
   CREATE TABLE items    (id INTEGER PRIMARY KEY, asset_id INTEGER, parent_id INTEGER, group_key TEXT, group_title TEXT, title TEXT, detail TEXT, payloads TEXT, kind TEXT, spawns TEXT, catalog TEXT, options TEXT, opt_key TEXT, status TEXT, answer TEXT, sort INTEGER, is_custom INTEGER, created_at TEXT);
-  CREATE TABLE findings (id INTEGER PRIMARY KEY, asset_id INTEGER, title TEXT, kind TEXT, severity TEXT, body TEXT, refs TEXT, fix_status TEXT, in_report INTEGER, created_at TEXT);
+  CREATE TABLE findings (id INTEGER PRIMARY KEY, asset_id INTEGER, title TEXT, kind TEXT, severity TEXT, body TEXT, refs TEXT, fix_status TEXT, in_report INTEGER, author TEXT, created_at TEXT);
   CREATE TABLE attachments (id INTEGER PRIMARY KEY, finding_id INTEGER, filename TEXT, mime TEXT, size INTEGER, created_at TEXT, data BLOB);
 `;
 const mkdb = () => { const d = new DatabaseSync(':memory:'); d.exec(BASE); setupSchema(d); return d; };

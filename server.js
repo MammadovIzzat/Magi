@@ -701,6 +701,36 @@ app.get('/api/admin/audit', requireAdmin, (req, res) => {
     FROM audit ORDER BY id DESC LIMIT ?`).all(limit));
 });
 
+// Worker ranking: how much each operator has produced, so a lead can see who is finding things.
+// Attribution is findings.author (the username set when a finding is recorded), joined to its
+// asset for the target TYPE (web/api/ad/poc/…) and the engagement it belongs to. Findings from
+// before author-tracking (author NULL) are simply not counted. Returns rows sorted by volume plus
+// a couple of totals for the page header.
+app.get('/api/admin/ranking', requireAdmin, (req, res) => {
+  const rows = q(`SELECT f.author AS author, a.type AS type, a.project_id AS project_id
+    FROM findings f JOIN assets a ON a.id = f.asset_id
+    WHERE f.author IS NOT NULL AND f.author <> ''`).all();
+  const roles = {};
+  for (const u of q(`SELECT username, role FROM users`).all()) roles[u.username] = u.role;
+  const by = new Map();
+  for (const r of rows) {
+    let e = by.get(r.author);
+    if (!e) { e = { author: r.author, role: roles[r.author] || null, findings: 0, poc: 0, projects: new Set(), types: {} }; by.set(r.author, e); }
+    e.findings++;
+    if (r.type === 'poc') e.poc++;
+    if (r.project_id != null) e.projects.add(r.project_id);
+    if (r.type) e.types[r.type] = (e.types[r.type] || 0) + 1;
+  }
+  const ranking = [...by.values()].map(e => {
+    const types = Object.entries(e.types).sort((a, b) => b[1] - a[1]);
+    return { author: e.author, role: e.role, findings: e.findings, poc: e.poc,
+      projects: e.projects.size, types: Object.fromEntries(types), topType: types[0]?.[0] || null };
+  }).sort((a, b) => b.findings - a.findings || b.projects - a.projects);
+  const attributed = rows.length;
+  const unattributed = q(`SELECT COUNT(*) c FROM findings WHERE author IS NULL OR author=''`).get().c;
+  res.json({ ranking, totals: { operators: ranking.length, findings: attributed, unattributed } });
+});
+
 // ---- replication: clients pull server changes and push their own ----
 // Any enrolled device may sync. Each row carries its own clock and author, so this is not
 // separately audited. Only offered when this instance is a server.
@@ -1339,8 +1369,11 @@ app.post('/api/targets/:id/findings', (req, res) => {
   if (!a) return res.status(404).json({ error: 'asset not found' });
   const { title, kind, severity, body, refs, fix_status } = req.body || {};
   if (!title) return res.status(400).json({ error: 'title required' });
-  const info = q(`INSERT INTO findings (asset_id, title, kind, severity, body, refs, fix_status) VALUES (?,?,?,?,?,?,?)`)
-    .run(req.params.id, title, kind || 'note', severity || null, body || null, cleanRefs(refs), cleanFix(fix_status));
+  // Attribute the finding to whoever recorded it — the team identity (username) so it stays
+  // stable as the row syncs between a client and the server. Powers the admin ranking.
+  const author = currentUser(req)?.username || null;
+  const info = q(`INSERT INTO findings (asset_id, title, kind, severity, body, refs, fix_status, author) VALUES (?,?,?,?,?,?,?,?)`)
+    .run(req.params.id, title, kind || 'note', severity || null, body || null, cleanRefs(refs), cleanFix(fix_status), author);
   res.status(201).json(q(`SELECT * FROM findings WHERE id=?`).get(info.lastInsertRowid));
 });
 // Other findings in the same engagement, to link as an attack chain (or a retest reference).

@@ -339,7 +339,7 @@ async function route() {
   try {
     // Settings holds the account (username / passphrase) in every mode, plus linking on clients.
     if (h === '/settings') return renderSettings();
-    if (h === '/admin') return renderAdmin();
+    if (h === '/admin' || h.startsWith('/admin/')) return renderAdmin(h.slice('/admin'.length).replace(/^\//, '') || 'users');
     // Template editing is admin-only; workers are bounced back to their engagements.
     if (h === '/editor' || h.startsWith('/editor/') || h.startsWith('/group/')) {
       if (!isAdmin()) { location.hash = ''; return; }
@@ -2104,133 +2104,215 @@ function disconnectDialog() {
 
 // ---------- admin panel (server web + linked admin clients) ----------
 let LAST_CODE = null; // a just-minted code to show once at the top of the panel
-async function renderAdmin() {
+// The Admin area is split into focused pages (a single scroll of everything didn't scale for a
+// larger team): Users, Devices, Ranking, Logs, Backup. Each is its own hash (#/admin/<key>) and
+// loads only its own data, so a page stays light. A shared shell draws the header + tab nav.
+const ADMIN_TAB_LIST = [
+  { key: 'users', label: 'Users' },
+  { key: 'devices', label: 'Devices' },
+  { key: 'ranking', label: 'Ranking' },
+  { key: 'logs', label: 'Logs' },
+  { key: 'backup', label: 'Backup' },
+];
+const admCard = (title, sub) => el('div', { className: 'setcard' },
+  el('div', { className: 'setcard-hd', style: sub ? 'display:flex;align-items:baseline;justify-content:space-between;gap:12px' : '' },
+    el('h3', {}, title), sub ? el('span', { className: 'muted small' }, sub) : null));
+const admRow = (info, ...actions) => el('div', { className: 'reqrow' },
+  el('div', { className: 'reqinfo' }, ...info), el('div', { className: 'reqactions' }, ...actions.filter(Boolean)));
+
+async function renderAdmin(section) {
   const ctx = adminCtx();
   if (!ctx) { location.hash = '/settings'; return; } // not an admin here
+  if (!section) section = (location.hash.match(/^#\/admin\/(\w+)/) || [])[1] || 'users';
+  if (!ADMIN_SECTIONS[section]) section = 'users';
   setRail(null);
-  setCrumbs([{ label: 'engagements', go: () => location.hash = '' }, { label: 'admin' }]);
-  topActions(
-    el('button', { className: 'btn', onclick: renderAdmin }, icon('down', 12), el('span', { className: 'lbl' }, 'Refresh')),
-    el('button', { className: 'btn gold', onclick: () => mintCodeDialog(ctx) }, icon('plus', 12), el('span', { className: 'lbl' }, 'New code')));
-  const view = $('#view');
-  const savedY = view.scrollTop;                          // preserve scroll across the 5s live-refresh
-  const isRefresh = !!view.querySelector('.setcard');     // already showing the admin panel
-  const page = el('div', { className: 'page' });
-  page.append(el('div', { className: 'page-head' }, el('div', {}, el('div', { className: 'kicker' }, 'Team server'), el('h1', {}, 'Admin'))));
-  // On the FIRST paint, show a shell immediately so the body matches the header even if the server
-  // hangs. On a background refresh, don't swap in a loading state (that flashed the page to the top
-  // every few seconds) — build the new page off-screen and swap it in at the end instead.
-  const loading = el('div', { className: 'empty' }, 'Loading team data…');
-  if (!isRefresh) { page.append(loading); view.replaceChildren(page); }
-  const A = (p, o) => api(ctx.base + p, { ...o, timeout: 8000 });
+  setCrumbs([{ label: 'engagements', go: () => location.hash = '' }, { label: 'admin' }, { label: section }]);
+  const acts = [el('button', { className: 'btn', onclick: () => renderAdmin(section) }, icon('down', 12), el('span', { className: 'lbl' }, 'Refresh'))];
+  if (section === 'users') acts.push(el('button', { className: 'btn gold', onclick: () => mintCodeDialog(ctx) }, icon('plus', 12), el('span', { className: 'lbl' }, 'New code')));
+  topActions(...acts);
 
-  let requests = [], devices = [], codes = [], audit = [], users = [];
-  try { [requests, devices, codes, audit, users] = await Promise.all([A('/requests'), A('/devices'), A('/enroll-codes'), A('/audit?limit=10'), A('/users')]); }
+  const view = $('#view');
+  const same = view.dataset.adminSection === section && !!view.querySelector('.admbody'); // a live-refresh of the same page
+  const savedY = same ? view.scrollTop : 0;
+  const shell = (content) => {
+    const page = el('div', { className: 'page' });
+    page.append(el('div', { className: 'page-head' }, el('div', {}, el('div', { className: 'kicker' }, 'Team server'), el('h1', {}, 'Admin'))));
+    page.append(el('nav', { className: 'admtabs' }, ...ADMIN_TAB_LIST.map(t =>
+      el('a', { className: 'admtab' + (t.key === section ? ' on' : ''), href: '#/admin/' + t.key },
+        t.label, (t.key === 'users' && ADMIN_PENDING) ? el('span', { className: 'tabcount' }, String(ADMIN_PENDING)) : null))));
+    page.append(el('div', { className: 'admbody' }, ...(Array.isArray(content) ? content : [content])));
+    return page;
+  };
+  if (!same) { view.replaceChildren(shell(el('div', { className: 'empty' }, 'Loading…'))); view.dataset.adminSection = section; }
+
+  const A = (p, o) => api(ctx.base + p, { ...o, timeout: 8000 });
+  let nodes;
+  try { nodes = await ADMIN_SECTIONS[section](ctx, A); }
   catch (e) {
-    if (isRefresh) return;                                // a refresh failed — keep what's shown, retry next tick
-    loading.textContent = 'Could not load team data: ' + e.message + '. Check the connection, then press Refresh.';
+    if (same) return; // a failed refresh — keep what's shown, retry next tick
+    view.replaceChildren(shell(el('div', { className: 'empty' }, 'Could not load: ' + e.message + '. Check the connection, then press Refresh.')));
     return;
   }
-  loading.remove();
+  view.replaceChildren(shell(nodes));
+  view.dataset.adminSection = section;
+  if (same) view.scrollTop = savedY; // stay where the reader was on a live-refresh
+  // Only the Users page live-refreshes (join requests are time-sensitive); it won't yank the view
+  // out from under an open dialog.
+  clearTimeout(window.__adminPoll);
+  if (section === 'users') window.__adminPoll = setTimeout(() => { if (location.hash.startsWith('#/admin') && !$('#modalRoot').hasChildNodes()) renderAdmin(section); }, 5000);
+}
+
+// Users page: who can join (requests + codes) and who has (members).
+async function adminUsers(ctx, A) {
+  const [requests, users, codes] = await Promise.all([A('/requests'), A('/users'), A('/enroll-codes')]);
   ADMIN_PENDING = requests.length; renderAccount();
+  const out = [];
 
-  const card = (title) => el('div', { className: 'setcard' }, el('div', { className: 'setcard-hd' }, el('h3', {}, title)));
-  const row = (info, ...actions) => el('div', { className: 'reqrow' }, el('div', { className: 'reqinfo' }, ...info), el('div', { className: 'reqactions' }, ...actions.filter(Boolean)));
-
-  // Join requests
-  const reqCard = card(`Join requests (${requests.length})`);
+  const reqCard = admCard(`Join requests (${requests.length})`);
   if (!requests.length) reqCard.append(el('p', { className: 'muted' }, 'No pending requests.'));
-  for (const r of requests) reqCard.append(row(
+  for (const r of requests) reqCard.append(admRow(
     [el('strong', {}, r.display_name), el('span', { className: 'muted' }, ' wants to join as '), el('span', { className: 'pill' }, r.role),
       el('div', { className: 'muted small' }, `username ${r.username} · device ${String(r.device_id).slice(0, 8)}… · ${new Date(r.created_at).toLocaleString()}`)],
     el('button', { className: 'btn gold', onclick: () => approveDialog(ctx, r.id, r.display_name) }, icon('check', 12), 'Approve'),
     el('button', { className: 'btn danger', onclick: () => decide(ctx, r.id, 'reject', r.display_name) }, icon('x', 12), 'Reject')));
-  page.append(reqCard);
+  out.push(reqCard);
 
-  // Devices
-  const devCard = card(`Devices (${devices.filter(d => !d.revoked).length})`);
-  if (!devices.length) devCard.append(el('p', { className: 'muted' }, 'No devices enrolled yet.'));
-  for (const d of devices) devCard.append(row(
-    [el('strong', { style: d.revoked ? 'text-decoration:line-through;opacity:.55' : '' }, d.display_name),
-      el('span', { className: 'muted' }, ` · ${d.username} · `), el('span', { className: 'pill' }, d.role),
-      el('div', { className: 'muted small' }, `last seen ${d.last_seen ? new Date(d.last_seen).toLocaleString() : 'never'}`)],
-    ...(d.revoked
-      ? [el('span', { className: 'pill warn' }, 'revoked'), el('button', { className: 'btn danger', onclick: () => removeDevice(ctx, d.id, d.display_name) }, icon('trash', 12), 'Remove')]
-      : [el('button', { className: 'btn danger', onclick: () => revokeDevice(ctx, d.id, d.display_name) }, 'Revoke')])));
-  page.append(devCard);
-
-  // Members — accounts, roles, and MFA status (with lost-phone reset)
-  const memCard = card(`Members (${users.length})`);
-  for (const m of users) memCard.append(row(
+  const memCard = admCard(`Members (${users.length})`);
+  for (const m of users) memCard.append(admRow(
     [el('strong', {}, m.username), el('span', { className: 'muted' }, ' · '), el('span', { className: 'pill' }, m.role),
-      el('div', { className: 'muted small' }, m.mfa_enabled ? '🔒 two-factor on' : 'two-factor not set up yet')],
+      el('div', { className: 'muted small' }, m.mfa_enabled ? 'two-factor on' : 'two-factor not set up yet')],
     el('button', { className: 'btn', onclick: () => manageUserDialog(ctx, m) }, icon('edit', 12), 'Manage')));
-  page.append(memCard);
+  out.push(memCard);
 
-  // Codes
-  const codeCard = card('Enrollment codes');
+  const codeCard = admCard('Enrollment codes');
   const now = Date.now();
   const active = codes.filter(c => !c.used_at && !(c.expires_at && new Date(c.expires_at).getTime() < now));
   const usedCount = codes.length - active.length;
-  // The "copy it now" banner is only relevant while the code is still active — once it has been
-  // redeemed, killed or expired, drop it so a stale, already-used code stops showing.
   if (LAST_CODE && !active.some(c => c.id === LAST_CODE.id)) LAST_CODE = null;
-  if (LAST_CODE) {
-    codeCard.append(el('div', { className: 'codebanner' },
-      el('div', {}, el('div', { className: 'muted small' }, 'New enrollment code — copy it now, it is not shown again'), el('code', { className: 'codebox' }, LAST_CODE.code)),
-      el('div', { style: 'display:flex;gap:7px' },
-        el('button', { className: 'btn', onclick: () => { navigator.clipboard?.writeText(LAST_CODE.code); toast('Code copied'); } }, 'Copy'),
-        el('button', { className: 'btn', title: 'Dismiss', onclick: () => { LAST_CODE = null; renderAdmin(); } }, icon('x', 12)))));
-  }
+  if (LAST_CODE) codeCard.append(el('div', { className: 'codebanner' },
+    el('div', {}, el('div', { className: 'muted small' }, 'New enrollment code — copy it now, it is not shown again'), el('code', { className: 'codebox' }, LAST_CODE.code)),
+    el('div', { style: 'display:flex;gap:7px' },
+      el('button', { className: 'btn', onclick: () => { navigator.clipboard?.writeText(LAST_CODE.code); toast('Code copied'); } }, 'Copy'),
+      el('button', { className: 'btn', title: 'Dismiss', onclick: () => { LAST_CODE = null; renderAdmin('users'); } }, icon('x', 12)))));
   codeCard.append(el('p', { className: 'muted' }, `${active.length} active code${active.length === 1 ? '' : 's'}. Codes are stored hashed — a value shows once when minted (above, or in the terminal). Mint with “New code”, then approve the request here.`));
-  for (const c of active) codeCard.append(row(
+  for (const c of active) codeCard.append(admRow(
     [el('strong', {}, c.role), c.note ? el('span', { className: 'muted' }, ` · ${c.note}`) : null,
       el('div', { className: 'muted small' }, `minted ${new Date(c.created_at).toLocaleString()}${c.expires_at ? ' · expires ' + new Date(c.expires_at).toLocaleString() : ''}`)],
     el('button', { className: 'btn danger', onclick: () => killCode(ctx, c.id) }, icon('trash', 12), 'Kill')));
   if (!active.length) codeCard.append(el('p', { className: 'muted small' }, 'No active codes right now.'));
   if (usedCount) codeCard.append(el('div', { className: 'setcard-actions', style: 'margin-top:10px' },
     el('button', { className: 'btn', onclick: () => clearUsedCodes(ctx, usedCount) }, icon('trash', 12), `Clear ${usedCount} used/expired`)));
-  page.append(codeCard);
-
-  // Backups (server feature — absent on a purely local install)
-  try {
-    const bk = await A('/backup');
-    const bc = bk.config || {};
-    const bcard = card('Backups');
-    if (bc.due) bcard.append(el('div', { className: 'duebanner' },
-      el('div', {}, el('strong', {}, '⏰ Scheduled backup is due'), el('div', { className: 'muted small' }, 'Enter your backup password to run it now — the password is never stored, so a backup only happens when you do this.')),
-      el('button', { className: 'btn gold', onclick: () => backupNow(ctx) }, 'Back up now')));
-    bcard.append(el('p', { className: 'muted' },
-      `${bc.enabled ? `Reminds you every ${bc.interval_hours}h` : 'No schedule set'}${bc.last_backup_at ? ' · last backup ' + new Date(bc.last_backup_at).toLocaleString() : ' · never backed up'}. Each backup is a full, self-contained snapshot (findings’ screenshots included), encrypted with a password you type each time — nothing is stored. Only the newest ${bc.retain || 5} are kept.`));
-    bcard.append(el('div', { className: 'setcard-actions' },
-      el('button', { className: 'btn gold', onclick: () => backupNow(ctx) }, icon('down', 12), 'Back up now'),
-      el('button', { className: 'btn', onclick: () => backupConfigDialog(ctx, bc) }, bc.enabled ? 'Schedule…' : 'Set reminder…'),
-      el('button', { className: 'btn', onclick: () => restoreDialog(ctx) }, icon('up', 12), 'Restore…')));
-    // Per-file download, so an admin can keep a snapshot off-box and upload it back later.
-    for (const f of bk.backups) bcard.append(row(
-      [el('strong', {}, f.file), el('div', { className: 'muted small' }, `${(f.size / 1024).toFixed(1)} KB · ${new Date(f.at).toLocaleString()}`)],
-      el('button', { className: 'btn', onclick: () => downloadBackup(ctx, f.file) }, icon('down', 12), 'Download')));
-    page.append(bcard);
-    BACKUP_DUE = !!bc.due; // keep the top-bar Admin badge in sync while the panel is open
-  } catch { /* backups only exist on a server */ }
-
-  // Recent activity (last 10; full history is kept in the database)
-  const auditCard = card('Recent activity');
-  if (!audit.length) auditCard.append(el('p', { className: 'muted' }, 'Nothing yet.'));
-  for (const a of audit.slice(0, 10)) auditCard.append(el('div', { className: 'auditrow' },
-    el('span', { className: 'muted small' }, new Date(a.at).toLocaleTimeString()),
-    el('span', { className: 'aud-who' }, ` ${a.display_name || a.username || '—'} `),
-    el('span', { className: 'muted' }, a.action || `${a.method} ${a.path}`)));
-  if (audit.length) auditCard.append(el('p', { className: 'muted small', style: 'margin-top:8px' }, 'Showing the last 10 — the full audit trail is kept in the database.'));
-  page.append(auditCard);
-
-  view.replaceChildren(page);
-  view.scrollTop = savedY;   // stay where the user was reading, don't jump to the top on refresh
-  // Live-refresh while the panel is open (so new requests appear without a manual reload),
-  // but don't yank the view out from under an open dialog.
-  clearTimeout(window.__adminPoll);
-  window.__adminPoll = setTimeout(() => { if (location.hash.startsWith('#/admin') && !$('#modalRoot').hasChildNodes()) renderAdmin(); }, 5000);
+  out.push(codeCard);
+  return out;
 }
+
+// Devices page: enrolled devices, revoke / remove.
+async function adminDevices(ctx, A) {
+  const devices = await A('/devices');
+  const devCard = admCard(`Devices (${devices.filter(d => !d.revoked).length} active${devices.length ? ` · ${devices.length} total` : ''})`);
+  if (!devices.length) devCard.append(el('p', { className: 'muted' }, 'No devices enrolled yet.'));
+  for (const d of devices) devCard.append(admRow(
+    [el('strong', { style: d.revoked ? 'text-decoration:line-through;opacity:.55' : '' }, d.display_name),
+      el('span', { className: 'muted' }, ` · ${d.username} · `), el('span', { className: 'pill' }, d.role),
+      el('div', { className: 'muted small' }, `last seen ${d.last_seen ? new Date(d.last_seen).toLocaleString() : 'never'}`)],
+    ...(d.revoked
+      ? [el('span', { className: 'pill warn' }, 'revoked'), el('button', { className: 'btn danger', onclick: () => removeDevice(ctx, d.id, d.display_name) }, icon('trash', 12), 'Remove')]
+      : [el('button', { className: 'btn danger', onclick: () => revokeDevice(ctx, d.id, d.display_name) }, 'Revoke')])));
+  return [devCard];
+}
+
+// Logs page: the full audit trail (kept in the database), newest first, with a quick filter.
+async function adminLogs(ctx, A) {
+  const audit = await A('/audit?limit=500');
+  const card = admCard('Activity log', `${audit.length} most recent`);
+  if (!audit.length) { card.append(el('p', { className: 'muted' }, 'Nothing recorded yet.')); return [card]; }
+  const list = el('div', { className: 'auditlist' });
+  const paint = (q) => {
+    const needle = q.trim().toLowerCase();
+    list.replaceChildren(...audit
+      .filter(a => !needle || `${a.display_name || ''} ${a.username || ''} ${a.action || ''} ${a.method} ${a.path}`.toLowerCase().includes(needle))
+      .map(a => el('div', { className: 'auditrow' },
+        el('span', { className: 'muted small' }, new Date(a.at).toLocaleString()),
+        el('span', { className: 'aud-who' }, ` ${a.display_name || a.username || '—'} `),
+        el('span', { className: 'muted' }, a.action || `${a.method} ${a.path}`))));
+    if (!list.childNodes.length) list.append(el('p', { className: 'muted small' }, 'No entries match.'));
+  };
+  const search = el('input', { className: 'audsearch', placeholder: 'Filter by user or action…', oninput: (e) => paint(e.target.value) });
+  card.append(search, list);
+  paint('');
+  card.append(el('p', { className: 'muted small', style: 'margin-top:8px' }, 'The full trail is kept in the database; this shows the most recent 500.'));
+  return [card];
+}
+
+// Backup page: run / schedule / restore, and download individual snapshots.
+async function adminBackup(ctx, A) {
+  let bk;
+  try { bk = await A('/backup'); }
+  catch { const c = admCard('Backups'); c.append(el('p', { className: 'muted' }, 'Backups are a team-server feature and are not available here.')); return [c]; }
+  const bc = bk.config || {};
+  const bcard = admCard('Backups');
+  if (bc.due) bcard.append(el('div', { className: 'duebanner' },
+    el('div', {}, el('strong', {}, 'Scheduled backup is due'), el('div', { className: 'muted small' }, 'Enter your backup password to run it now — the password is never stored, so a backup only happens when you do this.')),
+    el('button', { className: 'btn gold', onclick: () => backupNow(ctx) }, 'Back up now')));
+  bcard.append(el('p', { className: 'muted' },
+    `${bc.enabled ? `Reminds you every ${bc.interval_hours}h` : 'No schedule set'}${bc.last_backup_at ? ' · last backup ' + new Date(bc.last_backup_at).toLocaleString() : ' · never backed up'}. Each backup is a full, self-contained snapshot (findings’ screenshots included), encrypted with a password you type each time — nothing is stored. Only the newest ${bc.retain || 5} are kept.`));
+  bcard.append(el('div', { className: 'setcard-actions' },
+    el('button', { className: 'btn gold', onclick: () => backupNow(ctx) }, icon('down', 12), 'Back up now'),
+    el('button', { className: 'btn', onclick: () => backupConfigDialog(ctx, bc) }, bc.enabled ? 'Schedule…' : 'Set reminder…'),
+    el('button', { className: 'btn', onclick: () => restoreDialog(ctx) }, icon('up', 12), 'Restore…')));
+  for (const f of bk.backups) bcard.append(admRow(
+    [el('strong', {}, f.file), el('div', { className: 'muted small' }, `${(f.size / 1024).toFixed(1)} KB · ${new Date(f.at).toLocaleString()}`)],
+    el('button', { className: 'btn', onclick: () => downloadBackup(ctx, f.file) }, icon('down', 12), 'Download')));
+  BACKUP_DUE = !!bc.due; // keep the top-bar Admin badge in sync while the panel is open
+  return [bcard];
+}
+
+// Ranking page: who is producing, attributed by findings.author. Sorted by total findings; a
+// separate strip highlights the PoC leaders. Findings recorded before attribution existed
+// (author NULL) aren't counted — noted in the header.
+async function adminRanking(ctx, A) {
+  const { ranking = [], totals = {} } = await A('/ranking');
+  const out = [];
+  const head = admCard('Operator ranking',
+    `${totals.operators || 0} operator${totals.operators === 1 ? '' : 's'} · ${totals.findings || 0} attributed finding${totals.findings === 1 ? '' : 's'}`);
+  if (totals.unattributed) head.append(el('p', { className: 'muted small' },
+    `${totals.unattributed} earlier finding${totals.unattributed === 1 ? '' : 's'} were recorded before author-tracking and aren’t counted.`));
+  if (!ranking.length) { head.append(el('p', { className: 'muted' }, 'No attributed findings yet — as operators record findings, they’ll rank here.')); return [head]; }
+  out.push(head);
+
+  // Leaderboard table.
+  const board = admCard('Leaderboard', 'by total findings');
+  const table = el('div', { className: 'ranktable' });
+  table.append(el('div', { className: 'rankhead' },
+    el('span', {}, '#'), el('span', {}, 'Operator'), el('span', {}, 'Projects'),
+    el('span', {}, 'Findings'), el('span', {}, 'PoC'), el('span', {}, 'Focus')));
+  ranking.forEach((r, i) => {
+    const mix = Object.entries(r.types).slice(0, 4).map(([t, n]) =>
+      el('span', { className: 'rankmix' }, codeBadge(t, true), el('span', { className: 'muted small' }, String(n))));
+    table.append(el('div', { className: 'rankrow' + (i === 0 ? ' top' : '') },
+      el('span', { className: 'rank-n' }, String(i + 1)),
+      el('span', {}, el('strong', {}, r.author), r.role ? el('span', { className: 'pill', style: 'margin-left:6px' }, r.role) : null),
+      el('span', { className: 'rank-num' }, String(r.projects)),
+      el('span', { className: 'rank-num rank-find' }, String(r.findings)),
+      el('span', { className: 'rank-num' }, r.poc ? el('span', { className: 'pill gold' }, String(r.poc)) : el('span', { className: 'muted' }, '0')),
+      el('span', { className: 'rankmixwrap' }, ...(mix.length ? mix : [el('span', { className: 'muted small' }, '—')]))));
+  });
+  board.append(table);
+  out.push(board);
+
+  // PoC tier — who has proven the most exploits.
+  const pocLeaders = ranking.filter(r => r.poc > 0).sort((a, b) => b.poc - a.poc);
+  const pocCard = admCard('PoC leaders', 'proof-of-concept findings');
+  if (!pocLeaders.length) pocCard.append(el('p', { className: 'muted' }, 'No PoC findings recorded yet.'));
+  else pocLeaders.forEach((r, i) => pocCard.append(admRow(
+    [el('span', { className: 'rank-n' }, String(i + 1)), el('strong', { style: 'margin-left:8px' }, r.author),
+      el('span', { className: 'muted small', style: 'margin-left:8px' }, `${r.poc} PoC${r.poc === 1 ? '' : 's'}`)],
+    el('span', { className: 'tcode on' }, 'POC'))));
+  out.push(pocCard);
+  return out;
+}
+
+const ADMIN_SECTIONS = { users: adminUsers, devices: adminDevices, ranking: adminRanking, logs: adminLogs, backup: adminBackup };
 async function decide(ctx, id, action, name) {
   try {
     await api(`${ctx.base}/requests/${id}/${action}`, { method: 'POST' });

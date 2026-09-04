@@ -95,6 +95,6 @@ package() {
 
   install -Dm644 packaging/magi.desktop "$pkgdir/usr/share/applications/magi.desktop"
   install -Dm644 packaging/magi.svg     "$pkgdir/usr/share/icons/hicolor/scalable/apps/magi.svg"
-  install -Dm644 packaging/magi.png     "$pkgdir/usr/share/icons/hicolor/256x256/apps/magi.png"
+  install -Dm644 packaging/magi.png     "$pkgdir/usr/share/icons/hicolor/512x512/apps/magi.png"
   install -Dm644 README.md              "$pkgdir/usr/share/doc/$pkgname/README.md"
 }

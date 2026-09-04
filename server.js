@@ -117,16 +117,45 @@ function bearerJwt(req) {
   if (!u || u.cred_epoch !== claims.epoch) return null;
   return { id: u.id, username: u.username, role: u.role, display_name: u.username, device_id: null };
 }
+// Is this install a LINKED CLIENT, and if so, who is the linked (server) user? Read straight from
+// the client_link row so this stays synchronous (localSession/login can't await). Null unless fully
+// linked — a token present and not a still-pending request. The role comes from the signed token;
+// the identity we trust locally (the token is the server's, not ours to verify — we hold no secret).
+function linkedIdentity() {
+  if (SERVER_MODE) return null;
+  try {
+    const row = q(`SELECT data FROM client_link WHERE id=1`).get();
+    if (!row) return null;
+    const link = JSON.parse(row.data);
+    if (link.pending || !link.token) return null;
+    const claims = jwt.decodeUnsafe(link.token) || {};
+    const username = link.username || claims.username || null;
+    return username ? { username, role: claims.role || 'worker' } : null;
+  } catch { return null; }
+}
 // Standalone / linked-client local login: a plain opaque bearer token, minted at login and kept in
 // the local (encrypted) DB. No signing key — the same process issues and checks it, so a JWT would
 // add nothing. Expiry is enforced here, not by anything the client controls.
+//
+// On a LINKED client the app opens with the SERVER identity only: its session carries no user_id
+// and resolves to the linked user. A leftover local-account session (user_id set) is refused, so a
+// device connected to a server can never be opened as a local user. When NOT linked we fall back to
+// the local users table (standalone), and a stray link session (null user_id) is refused.
 function localSession(req) {
   if (SERVER_MODE) return null; // the server signs JWTs; it never mints an opaque local session
   const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
   if (!m) return null;
-  const row = q(`SELECT u.id, u.username, u.role FROM sessions s JOIN users u ON u.id=s.user_id
-    WHERE s.token=? AND s.created_at > datetime('now', '-${SESSION_TTL_DAYS} days')`).get(m[1]);
-  return row ? { ...row, display_name: row.username, device_id: null } : null;
+  const row = q(`SELECT user_id FROM sessions
+    WHERE token=? AND created_at > datetime('now', '-${SESSION_TTL_DAYS} days')`).get(m[1]);
+  if (!row) return null;
+  const li = linkedIdentity();
+  if (li) {
+    if (row.user_id != null) return null; // a pre-link local session is not valid on a linked device
+    return { id: null, username: li.username, role: li.role, display_name: li.username, device_id: null };
+  }
+  if (row.user_id == null) return null;   // a link session, but the link is gone → invalid
+  const u = q(`SELECT id, username, role FROM users WHERE id=?`).get(row.user_id);
+  return u ? { id: u.id, username: u.username, role: u.role, display_name: u.username, device_id: null } : null;
 }
 // Resolve the acting user: a JWT (server: device-bound clients + the web UI), else the opaque local
 // session (standalone/client). Cached on the request so repeat lookups are free.
@@ -206,11 +235,38 @@ function noteFailure(key) {
 // every call (no session cookie). MFA is folded in exactly like /auth/token: password (+ OTP) in
 // one flow — a returning user is asked for a code, a new one is walked through setup. The token
 // lives as long as SESSION_DAYS and dies the moment the credential epoch changes (password reset).
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   const { username, password, otp } = req.body || {};
   const key = throttleKey(req, username);
   const wait = lockedFor(key);
   if (wait) return res.status(429).json({ error: `too many attempts — try again in ${Math.ceil(wait / 60)} min` });
+
+  // A device linked to a server opens with the SERVER identity ONLY — never a local users row, so a
+  // leftover local account (even the shipped admin/admin) cannot open it and read the team's synced
+  // data. The password is checked against the cached verifier (works offline; the same password you
+  // use with the server). A legacy link that has no verifier yet bootstraps one via a single online
+  // login (which also handles the server's 2FA); after that, opening is offline-capable.
+  const li = linkedIdentity();
+  if (li) {
+    if ((username || '') !== li.username) { noteFailure(key); return res.status(401).json({ error: 'invalid credentials' }); }
+    const m = await import('./client-link.js');
+    const mintLinkSession = (extra) => {
+      const token = randomBytes(32).toString('hex');
+      q(`INSERT INTO sessions (token, user_id) VALUES (?, NULL)`).run(token);
+      attempts.delete(key);
+      return res.json({ token, exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * SESSION_TTL_DAYS, username: li.username, role: li.role, ...(extra || {}) });
+    };
+    const off = m.offlineLogin(password || '');
+    if (off.ok) return mintLinkSession();
+    if (/no cached credential/i.test(off.error || '')) {
+      // No offline verifier stored yet (legacy link) — do one real online login to establish it.
+      const on = await m.login({ password, otp });
+      if (on.ok) return mintLinkSession(on.recovery_codes ? { recovery_codes: on.recovery_codes } : undefined);
+      if (on.mfa) return res.json({ mfa: on.mfa, secret: on.secret, otpauth_uri: on.otpauth_uri });
+      noteFailure(key); return res.status(401).json({ error: on.error || 'invalid credentials' });
+    }
+    noteFailure(key); return res.status(401).json({ error: 'invalid credentials' });
+  }
 
   const u = q(`SELECT * FROM users WHERE username=?`).get(username || '');
   if (!u || !verifyPassword(password || '', u.pass_hash)) {
@@ -355,8 +411,11 @@ app.get('/api/me', (req, res) => {
   const u = currentUser(req);
   if (!u) {
     // Only ever surfaced in the desktop app, which opens no port — never over HTTP.
-    const hint = process.env.MAGI_EMBED === '1' && usingDefaultPassword() ? 'admin / admin' : undefined;
-    return res.status(401).json({ error: 'unauthorized', hint });
+    const li = linkedIdentity();
+    // On a linked device the login screen signs in as the SERVER user — tell it who that is (and
+    // suppress the default-password hint, which is about the now-inaccessible local account).
+    const hint = !li && process.env.MAGI_EMBED === '1' && usingDefaultPassword() ? 'admin / admin' : undefined;
+    return res.status(401).json({ error: 'unauthorized', hint, link: li ? { username: li.username } : undefined });
   }
   res.json({ username: u.username, role: u.role, display_name: u.display_name, device: u.device_id ? true : false, server: SERVER_MODE, version: VERSION });
 });

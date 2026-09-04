@@ -261,7 +261,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE TABLE IF NOT EXISTS sessions (
   token       TEXT PRIMARY KEY,
-  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id     INTEGER REFERENCES users(id) ON DELETE CASCADE,  -- NULL = a linked client's "server identity" session (no local users row)
   pending     INTEGER NOT NULL DEFAULT 0,     -- 1 = password ok, second factor not yet satisfied
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -417,12 +417,27 @@ if (!uCols.has('recovery_hashes')) db.exec(`ALTER TABLE users ADD COLUMN recover
 if (!uCols.has('cred_epoch')) db.exec(`ALTER TABLE users ADD COLUMN cred_epoch INTEGER NOT NULL DEFAULT 0`);
 const erCols = new Set(db.prepare(`PRAGMA table_info(enroll_requests)`).all().map(r => r.name));
 if (!erCols.has('pass_hash')) db.exec(`ALTER TABLE enroll_requests ADD COLUMN pass_hash TEXT`);
-const sCols = new Set(db.prepare(`PRAGMA table_info(sessions)`).all().map(r => r.name));
+const sInfo = db.prepare(`PRAGMA table_info(sessions)`).all();
+const sCols = new Set(sInfo.map(r => r.name));
 if (!sCols.has('pending')) {
   db.exec(`ALTER TABLE sessions ADD COLUMN pending INTEGER NOT NULL DEFAULT 0`);
   // Upgrading to MFA: drop every existing session so a cookie minted before MFA can't skip the
   // second factor. Everyone signs in once more (and enrols) right after the upgrade.
   db.exec(`DELETE FROM sessions`);
+}
+// A linked client's "open the app" login is the SERVER identity, verified against the cached
+// verifier — not a local users row — so its session carries no user_id. Older databases declared
+// sessions.user_id NOT NULL; rebuild to relax it. Sessions are ephemeral, so this just re-logs in.
+if (sInfo.find(c => c.name === 'user_id')?.notnull === 1) {
+  db.exec(`
+    DROP TABLE sessions;
+    CREATE TABLE sessions (
+      token       TEXT PRIMARY KEY,
+      user_id     INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      pending     INTEGER NOT NULL DEFAULT 0,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
 }
 
 // engagements gained a lifecycle (active/finished) and a start/end window.

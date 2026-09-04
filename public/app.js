@@ -2426,7 +2426,12 @@ function loginPasswordStep() {
   const p = el('input', { name: 'password', type: 'password', autocomplete: 'current-password' });
   const err = el('div', { className: 'loginerr' });
   const hint = el('div', { className: 'login-hint' });
-  fetch('/api/me').then(r => r.json()).then(d => { if (d?.hint) hint.textContent = `default login — ${d.hint}`; }).catch(() => {});
+  // On a linked device you sign in with your SERVER account, not a local one — lock the username to
+  // it and say so. (A local account can no longer open a device that's connected to a server.)
+  fetch('/api/me').then(r => r.json()).then(d => {
+    if (d?.link?.username) { u.value = d.link.username; u.readOnly = true; hint.textContent = 'sign in with your team-server account'; }
+    else if (d?.hint) { hint.textContent = `default login — ${d.hint}`; }
+  }).catch(() => {});
   const box = loginShell(el('div', { className: 'login-card' },
     el('label', {}, 'Operator'), u,
     el('label', {}, 'Passphrase'), p,

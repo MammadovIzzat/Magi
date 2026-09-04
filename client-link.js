@@ -203,6 +203,10 @@ function storeToken(link, password, loginJson) {
   linkGen++;
   stopApprovalPoll();
   saveLink(full);
+  // Once linked, the app opens with the SERVER identity only. Kill any leftover LOCAL-account
+  // sessions (user_id set) so the pre-link login (e.g. admin/admin) can no longer open this device.
+  // Link sessions (null user_id) are left alone, so refreshing an expired token doesn't log you out.
+  try { db.prepare(`DELETE FROM sessions WHERE user_id IS NOT NULL`).run(); } catch { /* best effort */ }
   pendingSecret = null;
   startSyncLoop();
   return { ok: true, link: publicLink(full), recovery_codes: loginJson.recovery_codes };
@@ -477,6 +481,9 @@ export function disconnect() {
     try { sync.setWatermarks(db, { pull: '', push: '' }); } catch {}
   }
   deleteLink();
+  // Drop every session: the link (server) identity no longer applies, and the next login goes back
+  // to the local users table (standalone). Whoever holds this device logs in locally again.
+  try { db.prepare(`DELETE FROM sessions`).run(); } catch { /* best effort */ }
   try { rmSync(LINK_FILE, { force: true }); } catch {} // remove any leftover legacy file too
   return { ok: true, was: link ? publicLink(link) : null };
 }

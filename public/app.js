@@ -2588,9 +2588,12 @@ function onAuthed(me) {
 }
 async function logout() { try { await api('/auth/logout', { method: 'POST' }); } catch { /* best effort */ } clearAuthToken(); showLogin(); }
 function changePassword() {
+  const linked = !!LINK?.linked;
   modal({
     kicker: 'Account', title: 'Change passphrase', cta: 'Change',
-    note: 'Signs out every other session. Minimum 10 characters.',
+    note: linked
+      ? 'This is your team-server password — it changes on the server and signs out your other devices. You need to be online. Minimum 10 characters.'
+      : 'Signs out every other session. Minimum 10 characters.',
     build: (b) => {
       field(b, 'Current passphrase', 'current', { type: 'password' });
       field(b, 'New passphrase', 'next', { type: 'password' });
@@ -2598,7 +2601,10 @@ function changePassword() {
     onSubmit: async (fd) => {
       const r = await api('/change-password', { method: 'POST', body: Object.fromEntries(fd) });
       if (r?.token) setAuthToken(r.token); // keep THIS session alive; the epoch bump killed the rest
-      toast('Passphrase changed — other sessions signed out');
+      // Linked client: the password changed on the server but a fresh sync token still needs a
+      // sign-in (e.g. the server asks for 2FA). Prompt for it so sync resumes with the new password.
+      if (r?.needs_reauth) { toast('Password changed — sign in again to resume sync'); try { LINK = await api('/link'); } catch {} linkSignIn({ reauth: true }); return; }
+      toast(linked ? 'Password changed on the server' : 'Passphrase changed — other sessions signed out');
     },
   });
 }

@@ -122,6 +122,17 @@ check('the login screen is told the server username to use', anon.status === 401
 const wrong = await reqCli('POST', '/api/auth/login', { body: { username: 'ana', password: 'not-the-password' } });
 check('linked: a wrong server password is refused', wrong.status === 401);
 
+// D) a linked user can change their (server) password from the client. It changes on the server,
+// the cached offline verifier is refreshed, the local app session survives, old password stops
+// working and the new one opens the app.
+const chg = await reqCli('POST', '/api/change-password', { token: anaTok, body: { current: 'ana-secret-8', next: 'ana-fresh-pass-11' } });
+check('linked: changing your (server) password from the client succeeds', chg.status === 200 && chg.json?.ok === true);
+check('linked: the app session survives the password change', (await reqCli('GET', '/api/me', { token: anaTok })).status === 200);
+check('linked: the OLD password no longer opens the app', (await reqCli('POST', '/api/auth/login', { body: { username: 'ana', password: 'ana-secret-8' } })).status === 401);
+const newPw = await reqCli('POST', '/api/auth/login', { body: { username: 'ana', password: 'ana-fresh-pass-11' } });
+check('linked: the NEW password opens the app (offline verifier refreshed)', newPw.status === 200 && !!newPw.json?.token);
+check('the password actually changed on the server', (await reqTeam('POST', '/api/auth/login', { body: { username: 'ana', password: 'ana-fresh-pass-11' } })).status === 200);
+
 // C) after disconnect, the device is standalone again and the local admin works.
 await reqCli('POST', '/api/link/disconnect', { token: anaTok });
 const backLocal = await reqCli('POST', '/api/auth/login', { body: { username: 'admin', password: 'admin' } });

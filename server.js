@@ -422,9 +422,18 @@ app.get('/api/me', (req, res) => {
 // A cheap "has anything changed" marker: the highest row clock. The SPA polls it and
 // live-refreshes the current view when background sync brings a teammate's changes in.
 app.get('/api/rev', (req, res) => res.json({ rev: maxHlc(db) }));
-app.post('/api/change-password', (req, res) => {
-  const u = currentUser(req);
+app.post('/api/change-password', async (req, res) => {
   const { current, next } = req.body || {};
+  // Linked client: the password is the SERVER account's, not a local users row — change it on the
+  // server and refresh the cached offline verifier. (currentUser here has no local id to update.)
+  const li = linkedIdentity();
+  if (li) {
+    const m = await import('./client-link.js');
+    const r = await m.changePassword(current, next);
+    if (r.ok) return res.json({ ok: true, needs_reauth: !!r.needs_reauth });
+    return res.status(400).json({ error: r.error || 'could not change password' });
+  }
+  const u = currentUser(req);
   const row = q(`SELECT * FROM users WHERE id=?`).get(u.id);
   if (!verifyPassword(current || '', row.pass_hash)) return res.status(400).json({ error: 'current password is wrong' });
   if (!next || next.length < 10) return res.status(400).json({ error: 'new password must be at least 10 characters' });
@@ -444,6 +453,9 @@ app.post('/api/change-password', (req, res) => {
 });
 // Change your own sign-in name (confirmed with your current password).
 app.post('/api/change-username', (req, res) => {
+  // On a linked client the username is the server-issued identity — not editable locally. (The UI
+  // already hides the control while linked; this guards the endpoint, whose user has no local id.)
+  if (linkedIdentity()) return res.status(400).json({ error: 'your username is managed by the team server' });
   const u = currentUser(req);
   const { username, password } = req.body || {};
   const row = q(`SELECT * FROM users WHERE id=?`).get(u.id);

@@ -231,6 +231,29 @@ export async function login({ password, otp } = {}) {
   return attemptLogin(link, password, otp);
 }
 
+// Change the linked user's password. On a linked client the password IS the server account's, so
+// the change goes to the server (authoritative). That bumps the credential epoch, killing our
+// device token, so we refresh the cached offline verifier to the new password and re-authenticate
+// for a fresh token. If the server wants a second factor (or is unreachable) for that refresh, the
+// password is already changed — we surface needs_reauth so the normal sign-in flow completes it.
+export async function changePassword(current, next) {
+  const link = loadLink();
+  if (!link?.token) return { ok: false, error: 'not linked' };
+  if (!current || !next) return { ok: false, error: 'both your current and new password are required' };
+  let r;
+  try { r = await remoteFetch('/api/change-password', { method: 'POST', link, body: { current, next } }); }
+  catch (e) { return { ok: false, error: `could not reach the server: ${e.message}` }; }
+  if (r.status !== 200) return { ok: false, error: r.json?.error || `could not change password (${r.status})` };
+  // The server accepted it and its epoch bump has now invalidated our device token. Update the
+  // offline verifier right away so an offline open uses the new password even if the re-auth below
+  // can't finish immediately.
+  const l = loadLink(); if (l) { l.pass_verifier = hashPassword(String(next)); saveLink(l); }
+  const relog = await attemptLogin(loadLink(), next);   // fresh device token (+ re-store verifier)
+  if (relog.ok) return { ok: true };
+  markNeedsReauth();                                     // MFA needed or server unreachable — finish via sign-in
+  return { ok: true, needs_reauth: true, mfa: relog.mfa };
+}
+
 // One poll of a pending request. On approval the device is registered server-side; we then log in
 // (auto, using the in-memory password) for a token. rejected -> clears the pending link.
 // Reentrancy-guarded: the background timer and a manual "Check now" must never both reach the

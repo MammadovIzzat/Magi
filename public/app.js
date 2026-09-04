@@ -262,6 +262,9 @@ function renderAccount() {
   const badge = LINK?.pending
     ? el('button', { className: 'linkbadge pending', title: 'Join request awaiting approval — open settings', onclick: () => location.hash = '/settings' },
         el('span', { className: 'dot' }), lbl('pending'))
+    : (LINK?.linked && LINK.link?.needs_reauth)
+      ? el('button', { className: 'linkbadge reauth', title: 'Session expired — sync is paused. Click to sign in and resume.', onclick: () => linkSignIn({ reauth: true }) },
+          el('span', { className: 'dot' }), lbl('sign in'))
     : LINK?.linked
       ? el('button', { className: 'linkbadge on', title: `Linked to ${LINK.link?.server_url} — open settings`, onclick: () => location.hash = '/settings' },
           el('span', { className: 'dot' }), lbl(LINK.link?.display_name || 'linked'))
@@ -287,8 +290,25 @@ function renderAccount() {
     el('button', { className: 'iconbtn danger', title: 'Sign out', onclick: logout }, icon('exit'))));
   const tb = $('#tplBtn'); if (tb) tb.hidden = !isAdmin(); // editing templates is admin-only
 }
+// When the background poll first notices the token has lapsed (server 401 → sync paused),
+// open the sign-in dialog once, so the user is actually asked for a fresh token instead of
+// working on against a mirror that has silently stopped syncing. We ask only once per lapse
+// (the pulsing topbar badge stays as the standing cue) and never stomp an open dialog or
+// interrupt typing — the next poll retries when the user is free.
+let REAUTH_PROMPTED = false;
+function maybePromptReauth() {
+  const need = !!(LINK?.linked && LINK.link?.needs_reauth);
+  if (!need) { REAUTH_PROMPTED = false; return; }
+  if (REAUTH_PROMPTED || !CURRENT_USER) return;
+  if ($('#modalRoot')?.hasChildNodes()) return;
+  const ae = document.activeElement;
+  if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
+  REAUTH_PROMPTED = true;
+  linkSignIn({ reauth: true });
+}
 async function refreshLink() {
   try { LINK = await api('/link'); } catch { LINK = { linked: false, unavailable: true }; }
+  maybePromptReauth();
   const ctx = adminCtx();
   if (ctx) {
     try { ADMIN_PENDING = (await api(ctx.base + '/requests')).length; } catch { ADMIN_PENDING = 0; }
@@ -1883,7 +1903,7 @@ async function renderSettings() {
     page.append(el('div', { className: 'setcard' },
       el('div', { className: 'setcard-hd' }, el('span', { className: 'linkbadge on' }, el('span', { className: 'dot' }), 'Linked')),
       L.needs_reauth ? el('div', { className: 'duebanner' },
-        el('div', {}, el('strong', {}, '🔒 Sign-in required'), el('div', { className: 'muted small' }, 'Your session expired or an admin reset your access — syncing is paused. Your local work is safe.')),
+        el('div', {}, el('strong', {}, 'Sign-in required'), el('div', { className: 'muted small' }, 'Your session expired or an admin reset your access — syncing is paused. Your local work is safe.')),
         el('button', { className: 'btn gold', onclick: () => linkSignIn({ reauth: true }) }, 'Sign in')) : null,
       kv('Server', L.server_url),
       kv('Signed as', `${L.display_name} · ${L.username} · ${L.role}`),
@@ -1899,6 +1919,9 @@ async function renderSettings() {
       el('div', { className: 'setcard-actions' },
         el('button', { className: 'btn gold', onclick: syncNowUI }, icon('down'), 'Sync now'),
         el('button', { className: 'btn', onclick: pingLink }, 'Check connection'),
+        // Force a fresh token on demand (asks for the password, and a 2FA code if the server
+        // requires it) — for when you'd rather re-authenticate now than wait for the session to lapse.
+        el('button', { className: 'btn', onclick: () => linkSignIn({ reauth: true }) }, icon('server'), 'Sign in again'),
         el('button', { className: 'btn danger', onclick: disconnectDialog }, icon('exit'), 'Disconnect'))));
   }
 
@@ -1920,7 +1943,7 @@ function securityCard(sec) {
   c.append(el('div', { className: 'setcard-hd' }, el('h3', {}, 'Encryption at rest')));
   if (sec.encrypted) {
     c.append(
-      el('p', { className: 'muted' }, el('span', { className: 'pill ok' }, '🔒 encrypted'),
+      el('p', { className: 'muted' }, el('span', { className: 'pill ok' }, 'encrypted'),
         ' This workspace’s database is encrypted on disk — a copied file or a stolen disk is useless without the passphrase.'),
       el('div', { className: 'setcard-actions' },
         el('button', { className: 'btn', onclick: () => rekeyDialog(true) }, 'Change passphrase…')));
@@ -2013,7 +2036,7 @@ function linkSignIn({ reauth } = {}) {
       try {
         if (pw) savedPw = pw.value;
         const r = await api('/link/login', { method: 'POST', body: { password: savedPw, otp: otp?.value || undefined } });
-        if (r.ok) { close(); if (r.recovery_codes) showRecoveryCodes(r.recovery_codes); toast('Signed in'); LINK = await api('/link'); renderSettings(); return; }
+        if (r.ok) { close(); if (r.recovery_codes) showRecoveryCodes(r.recovery_codes); toast('Signed in — syncing resumed'); REAUTH_PROMPTED = false; try { LINK = await api('/link'); } catch {} renderAccount(); route(); return; }
         if (r.mfa === 'setup') { setup = { secret: r.secret, otpauth_uri: r.otpauth_uri }; phase = 'setup'; render(); return; }
         if (r.mfa === 'required') { phase = 'code'; render(); return; }
         err.textContent = 'Sign-in failed — try again';
@@ -2051,15 +2074,17 @@ function cancelPending() {
 async function pingLink() {
   try {
     const r = await api('/link/ping');
-    toast(r.online ? 'Server reachable'
-      : r.revoked ? 'This device was revoked by the server — use Disconnect to return to local mode'
-        : ('Server not reachable' + (r.error ? ` — ${r.error}` : '')));
+    // A 401 means the token lapsed (expiry or an admin reset access) — offer to sign in rather
+    // than a dead-end message. A genuinely revoked device just fails the re-auth, which the dialog shows.
+    if (r.revoked) { toast('Session expired — sign in to resume sync'); linkSignIn({ reauth: true }); return; }
+    toast(r.online ? 'Server reachable' : ('Server not reachable' + (r.error ? ` — ${r.error}` : '')));
     renderSettings();
   } catch (e) { toast('Ping failed: ' + e.message); }
 }
 async function syncNowUI() {
   try {
     const r = await api('/link/sync', { method: 'POST' });
+    if (r.needs_reauth) { toast('Session expired — sign in to resume sync'); linkSignIn({ reauth: true }); return; }
     toast(r.ok ? (r.applied ? `Synced — ${r.applied} update(s) in` : 'Synced — up to date') : `Sync failed${r.error ? ' — ' + r.error : ''}`);
     renderSettings();
   } catch (e) { toast('Sync failed: ' + e.message); }

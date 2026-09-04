@@ -769,6 +769,10 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 .linkbadge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted-3); }
 .linkbadge.on { border-color: #46B87A55; color: var(--jade); }
 .linkbadge.on .dot { background: var(--jade); box-shadow: 0 0 6px #46B87A99; }
+/* Token expired / access reset — sync is paused until the user signs in again. Amber, and it
+   pulses, so it reads as "action needed" from any screen (not a healthy "linked"). */
+.linkbadge.reauth { border-color: var(--gold); color: var(--gold); }
+.linkbadge.reauth .dot { background: var(--gold); box-shadow: 0 0 6px var(--gold); animation: pulse 1.4s ease-in-out infinite; }
 
 .setcard {
   background: var(--panel); border: 1px solid var(--line-2); border-radius: 10px;

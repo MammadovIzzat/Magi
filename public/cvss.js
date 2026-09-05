@@ -16,35 +16,37 @@
   const RCW = { X: 1, C: 1, R: .96, U: .92 };
   const REQW = { X: 1, H: 1.5, M: 1, L: .5 };
 
-  // Metric groups — order + option labels drive both the editor UI and the vector string.
+  // Metric groups. `col` places each metric in the editor's left/right column so the layout matches
+  // the CVSS spec's grouping (Base: AV/AC/PR/UI left, Scope/C/I/A right). Vector-string order is
+  // ORDER below, independent of this presentation.
   const GROUPS = [
     { title: 'Base Score', metrics: [
-      { k: 'AV', label: 'Attack Vector', opts: [['N', 'Network'], ['A', 'Adjacent'], ['L', 'Local'], ['P', 'Physical']] },
-      { k: 'AC', label: 'Attack Complexity', opts: [['L', 'Low'], ['H', 'High']] },
-      { k: 'PR', label: 'Privileges Required', opts: [['N', 'None'], ['L', 'Low'], ['H', 'High']] },
-      { k: 'UI', label: 'User Interaction', opts: [['N', 'None'], ['R', 'Required']] },
-      { k: 'S', label: 'Scope', opts: [['U', 'Unchanged'], ['C', 'Changed']] },
-      { k: 'C', label: 'Confidentiality', opts: [['N', 'None'], ['L', 'Low'], ['H', 'High']] },
-      { k: 'I', label: 'Integrity', opts: [['N', 'None'], ['L', 'Low'], ['H', 'High']] },
-      { k: 'A', label: 'Availability', opts: [['N', 'None'], ['L', 'Low'], ['H', 'High']] },
+      { k: 'AV', col: 'l', label: 'Attack Vector', opts: [['N', 'Network'], ['A', 'Adjacent'], ['L', 'Local'], ['P', 'Physical']] },
+      { k: 'AC', col: 'l', label: 'Attack Complexity', opts: [['L', 'Low'], ['H', 'High']] },
+      { k: 'PR', col: 'l', label: 'Privileges Required', opts: [['N', 'None'], ['L', 'Low'], ['H', 'High']] },
+      { k: 'UI', col: 'l', label: 'User Interaction', opts: [['N', 'None'], ['R', 'Required']] },
+      { k: 'S', col: 'r', label: 'Scope', opts: [['U', 'Unchanged'], ['C', 'Changed']] },
+      { k: 'C', col: 'r', label: 'Confidentiality', opts: [['N', 'None'], ['L', 'Low'], ['H', 'High']] },
+      { k: 'I', col: 'r', label: 'Integrity', opts: [['N', 'None'], ['L', 'Low'], ['H', 'High']] },
+      { k: 'A', col: 'r', label: 'Availability', opts: [['N', 'None'], ['L', 'Low'], ['H', 'High']] },
     ] },
     { title: 'Temporal Score', metrics: [
-      { k: 'E', label: 'Exploit Code Maturity', opts: [['X', 'Not Defined'], ['U', 'Unproven'], ['P', 'Proof-of-Concept'], ['F', 'Functional'], ['H', 'High']] },
-      { k: 'RL', label: 'Remediation Level', opts: [['X', 'Not Defined'], ['O', 'Official Fix'], ['T', 'Temporary Fix'], ['W', 'Workaround'], ['U', 'Unavailable']] },
-      { k: 'RC', label: 'Report Confidence', opts: [['X', 'Not Defined'], ['U', 'Unknown'], ['R', 'Reasonable'], ['C', 'Confirmed']] },
+      { k: 'E', col: 'l', label: 'Exploit Code Maturity', opts: [['X', 'Not Defined'], ['U', 'Unproven'], ['P', 'Proof-of-Concept'], ['F', 'Functional'], ['H', 'High']] },
+      { k: 'RL', col: 'l', label: 'Remediation Level', opts: [['X', 'Not Defined'], ['O', 'Official Fix'], ['T', 'Temporary Fix'], ['W', 'Workaround'], ['U', 'Unavailable']] },
+      { k: 'RC', col: 'l', label: 'Report Confidence', opts: [['X', 'Not Defined'], ['U', 'Unknown'], ['R', 'Reasonable'], ['C', 'Confirmed']] },
     ] },
     { title: 'Environmental Score', metrics: [
-      { k: 'CR', label: 'Confidentiality Req.', opts: [['X', 'Not Defined'], ['L', 'Low'], ['M', 'Medium'], ['H', 'High']] },
-      { k: 'IR', label: 'Integrity Req.', opts: [['X', 'Not Defined'], ['L', 'Low'], ['M', 'Medium'], ['H', 'High']] },
-      { k: 'AR', label: 'Availability Req.', opts: [['X', 'Not Defined'], ['L', 'Low'], ['M', 'Medium'], ['H', 'High']] },
-      { k: 'MAV', label: 'Modified Attack Vector', opts: [['X', 'Not Defined'], ['N', 'Network'], ['A', 'Adjacent'], ['L', 'Local'], ['P', 'Physical']] },
-      { k: 'MAC', label: 'Modified Attack Complexity', opts: [['X', 'Not Defined'], ['L', 'Low'], ['H', 'High']] },
-      { k: 'MPR', label: 'Modified Privileges Required', opts: [['X', 'Not Defined'], ['N', 'None'], ['L', 'Low'], ['H', 'High']] },
-      { k: 'MUI', label: 'Modified User Interaction', opts: [['X', 'Not Defined'], ['N', 'None'], ['R', 'Required']] },
-      { k: 'MS', label: 'Modified Scope', opts: [['X', 'Not Defined'], ['U', 'Unchanged'], ['C', 'Changed']] },
-      { k: 'MC', label: 'Modified Confidentiality', opts: [['X', 'Not Defined'], ['N', 'None'], ['L', 'Low'], ['H', 'High']] },
-      { k: 'MI', label: 'Modified Integrity', opts: [['X', 'Not Defined'], ['N', 'None'], ['L', 'Low'], ['H', 'High']] },
-      { k: 'MA', label: 'Modified Availability', opts: [['X', 'Not Defined'], ['N', 'None'], ['L', 'Low'], ['H', 'High']] },
+      { k: 'CR', col: 'l', label: 'Confidentiality Requirement', opts: [['X', 'Not Defined'], ['L', 'Low'], ['M', 'Medium'], ['H', 'High']] },
+      { k: 'IR', col: 'l', label: 'Integrity Requirement', opts: [['X', 'Not Defined'], ['L', 'Low'], ['M', 'Medium'], ['H', 'High']] },
+      { k: 'AR', col: 'l', label: 'Availability Requirement', opts: [['X', 'Not Defined'], ['L', 'Low'], ['M', 'Medium'], ['H', 'High']] },
+      { k: 'MAV', col: 'r', label: 'Modified Attack Vector', opts: [['X', 'Not Defined'], ['N', 'Network'], ['A', 'Adjacent Network'], ['L', 'Local'], ['P', 'Physical']] },
+      { k: 'MAC', col: 'r', label: 'Modified Attack Complexity', opts: [['X', 'Not Defined'], ['L', 'Low'], ['H', 'High']] },
+      { k: 'MPR', col: 'r', label: 'Modified Privileges Required', opts: [['X', 'Not Defined'], ['N', 'None'], ['L', 'Low'], ['H', 'High']] },
+      { k: 'MUI', col: 'r', label: 'Modified User Interaction', opts: [['X', 'Not Defined'], ['N', 'None'], ['R', 'Required']] },
+      { k: 'MS', col: 'r', label: 'Modified Scope', opts: [['X', 'Not Defined'], ['U', 'Unchanged'], ['C', 'Changed']] },
+      { k: 'MC', col: 'r', label: 'Modified Confidentiality', opts: [['X', 'Not Defined'], ['N', 'None'], ['L', 'Low'], ['H', 'High']] },
+      { k: 'MI', col: 'r', label: 'Modified Integrity', opts: [['X', 'Not Defined'], ['N', 'None'], ['L', 'Low'], ['H', 'High']] },
+      { k: 'MA', col: 'r', label: 'Modified Availability', opts: [['X', 'Not Defined'], ['N', 'None'], ['L', 'Low'], ['H', 'High']] },
     ] },
   ];
   const BASE_KEYS = ['AV', 'AC', 'PR', 'UI', 'S', 'C', 'I', 'A'];

@@ -1187,21 +1187,24 @@ function openCvssEditor(currentVector, onApply) {
       el('div', { className: 'cvss-badge-n' }, d.overall == null ? '—' : d.overall.toFixed(1)),
       el('div', { className: 'cvss-badge-s' }, (d.severity || '—').toUpperCase()));
   };
+  // Build one metric's label + segmented control.
+  const metricNode = (met) => {
+    const seg = el('div', { className: 'cvss-seg' });
+    const cur = m[met.k] ?? met.opts[0][0];
+    const btns = [];
+    for (const [v, lab] of met.opts) {
+      const b = el('button', { type: 'button', className: 'cvss-opt' + (cur === v ? ' on' : ''),
+        onclick: () => { m[met.k] = v; btns.forEach(x => x.classList.toggle('on', x === b)); recompute(); } }, `${lab} (${v})`);
+      btns.push(b); seg.append(b);
+    }
+    return el('div', { className: 'cvss-metric' }, el('div', { className: 'cvss-mlabel' }, met.label), seg);
+  };
   const sections = el('div', { className: 'cvss-sections' });
   for (const g of MagiCVSS.GROUPS) {
-    const grid = el('div', { className: 'cvss-mgrid' });
-    for (const met of g.metrics) {
-      const seg = el('div', { className: 'cvss-seg' });
-      const cur = m[met.k] ?? met.opts[0][0];
-      const btns = [];
-      for (const [v, lab] of met.opts) {
-        const b = el('button', { type: 'button', className: 'cvss-opt' + (cur === v ? ' on' : ''),
-          onclick: () => { m[met.k] = v; btns.forEach(x => x.classList.toggle('on', x === b)); recompute(); } }, `${lab} (${v})`);
-        btns.push(b); seg.append(b);
-      }
-      grid.append(el('div', { className: 'cvss-metric' }, el('div', { className: 'cvss-mlabel' }, met.label), seg));
-    }
-    sections.append(el('div', { className: 'cvss-card' }, el('h4', {}, g.title), grid));
+    // Two real columns so the layout matches the spec grouping (left/right per metric.col).
+    const colL = el('div', { className: 'cvss-col' }), colR = el('div', { className: 'cvss-col' });
+    for (const met of g.metrics) (met.col === 'r' ? colR : colL).append(metricNode(met));
+    sections.append(el('div', { className: 'cvss-card' }, el('h4', {}, g.title), el('div', { className: 'cvss-mgrid' }, colL, colR)));
   }
   overlay.append(el('div', { className: 'cvss-panel' },
     el('div', { className: 'cvss-header' },

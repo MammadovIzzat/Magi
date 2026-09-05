@@ -113,9 +113,9 @@ checks.push(['checklist screen paints', await ev(`
   location.hash = "#/target/" + f.targets[0].id; await new Promise(r => setTimeout(r, 1400));
   document.querySelectorAll(".ghdr")[0]?.click(); await new Promise(r => setTimeout(r, 700));
   return document.querySelectorAll(".item").length > 0`)]);
-// The vuln finding editor gives graders a CVSS builder whose complete vector drives the severity.
-// (This local admin IS a grader, so the calculator shows.)
-checks.push(['finding editor: CVSS calculator drives the severity', await ev(`
+// The vuln finding editor opens a full CVSS 3.1 editor (segmented controls, live score) whose
+// applied vector sets the severity. (This local admin IS a grader, so the calculator shows.)
+checks.push(['CVSS editor opens, scores, and applies to the finding', await ev(`
   const p = (await (await fetch("/api/projects")).json())[0];
   const d = await (await fetch("/api/projects/" + p.id)).json();
   const fold = await (await fetch("/api/assets/" + d.assets[0].id)).json();
@@ -124,14 +124,15 @@ checks.push(['finding editor: CVSS calculator drives the severity', await ev(`
   kindSel.value = "vuln"; kindSel.dispatchEvent(new Event("change")); await new Promise(r => setTimeout(r, 150));
   const hasSev = !!document.querySelector(".modal select[name=severity]");
   [...document.querySelectorAll(".modal button")].find(b => /CVSS calculator/i.test(b.textContent))?.click();
-  await new Promise(r => setTimeout(r, 80));
-  const sels = document.querySelectorAll(".modal .cvss-sel");
-  const order = ["AV","AC","PR","UI","S","C","I","A"], vec = { AV:"N", AC:"L", PR:"N", UI:"N", S:"U", C:"H", I:"H", A:"H" };
-  sels.forEach((s, i) => { s.value = vec[order[i]]; s.dispatchEvent(new Event("change")); });
-  await new Promise(r => setTimeout(r, 80));
+  await new Promise(r => setTimeout(r, 120));
+  const opts = document.querySelectorAll(".cvss-overlay .cvss-opt");
+  const scored = /^[0-9]/.test(document.querySelector(".cvss-badge-n")?.textContent || "");
+  document.querySelector('.cvss-hactions .iconbtn[title=Apply]')?.click();
+  await new Promise(r => setTimeout(r, 100));
+  const gone = !document.querySelector(".cvss-overlay");
   const sev = document.querySelector(".modal select[name=severity]")?.value;
   const cvssVal = document.querySelector(".modal input[name=cvss]")?.value || "";
-  return hasSev && sels.length === 8 && sev === "critical" && cvssVal.includes("AV:N")`)]);
+  return hasSev && opts.length >= 20 && scored && gone && sev === "critical" && cvssVal.includes("AV:N")`)]);
 checks.push(['template library paints', await ev(`
   location.hash = "#/editor"; await new Promise(r => setTimeout(r, 1400));
   return document.querySelectorAll(".tpl-type").length > 0`)]);

@@ -895,22 +895,45 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
   .rankrow > :nth-child(3), .rankrow > :nth-child(5), .rankrow > :nth-child(6) { display: none; }
 }
 
-/* CVSS builder (finding editor, graders only) + finding CVSS display. */
-.cvss-box { border: 1px solid var(--line-2); padding: 10px 12px; margin: 0 0 8px; background: var(--panel-2); }
-.cvss-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-.cvss-score { font-family: var(--mono); font-size: 12px; font-weight: 700; }
-.cvss-score.muted { color: var(--muted-3); font-weight: 400; }
-.cvss-score.sev-critical { color: var(--red); }
-.cvss-score.sev-high { color: var(--gold); }
-.cvss-score.sev-medium, .cvss-score.sev-low, .cvss-score.sev-info { color: var(--text); }
-.cvss-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
-.cvss-lab { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
-.cvss-sel { background: var(--bg); border: 1px solid var(--line-3); color: var(--text); font-size: 12px; padding: 5px 6px; font-family: var(--mono); }
-.cvss-sel:focus { outline: none; border-color: var(--gold); }
+/* CVSS grading control in the finding editor (graders only): a button + a live score pill. */
+.cvss-row { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; flex-wrap: wrap; }
+.cvss-pill { font-family: var(--mono); font-size: 10.5px; padding: 3px 9px; border: 1px solid var(--line-4); color: var(--text); }
+.cvss-pill.muted { color: var(--muted-3); }
+.cvss-pill.sev-critical { border-color: var(--red); color: var(--red); }
+.cvss-pill.sev-high { border-color: var(--gold); color: var(--gold); }
+.cvss-pill.sev-medium, .cvss-pill.sev-low, .cvss-pill.sev-info { border-color: var(--line-hi); }
 .fd-cvss { display: inline-flex; align-items: center; padding: 3px 8px; border: 1px solid var(--line-4); font-family: var(--mono); font-size: 10.5px; color: var(--muted-2); }
 .fd-vector { display: block; font-family: var(--mono); font-size: 11px; color: var(--muted); word-break: break-all; margin-bottom: 4px; }
 .readonly-sev { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-@media (max-width: 560px) { .cvss-grid { grid-template-columns: 1fr; } }
+
+/* Full CVSS 3.1 editor — its own overlay above the finding modal, SysReptor-style. */
+.cvss-overlay { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, .6);
+  display: flex; align-items: flex-start; justify-content: center; padding: 24px 16px; overflow: auto; }
+.cvss-panel { width: 100%; max-width: 1120px; background: var(--panel); border: 1px solid var(--line-hi); }
+.cvss-header { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 12px 16px; background: var(--panel-2); border-bottom: 1px solid var(--line); }
+.cvss-title { font-family: var(--display); font-size: 15px; color: var(--fg); }
+.cvss-hactions { display: flex; align-items: center; gap: 10px; }
+.cvss-badge { min-width: 84px; text-align: center; padding: 5px 12px; border: 1px solid var(--line-hi); }
+.cvss-badge-n { font-family: var(--mono); font-size: 17px; font-weight: 700; line-height: 1.1; color: var(--fg); }
+.cvss-badge-s { font-family: var(--mono); font-size: 9px; letter-spacing: .12em; color: var(--muted); }
+.cvss-badge.sev-critical { background: var(--red); border-color: var(--red); }
+.cvss-badge.sev-critical .cvss-badge-n, .cvss-badge.sev-critical .cvss-badge-s { color: var(--red-ink); }
+.cvss-badge.sev-high { background: var(--gold); border-color: var(--gold); }
+.cvss-badge.sev-high .cvss-badge-n, .cvss-badge.sev-high .cvss-badge-s { color: var(--gold-ink); }
+.cvss-badge.sev-medium, .cvss-badge.sev-low, .cvss-badge.sev-info { background: var(--panel); }
+.cvss-sections { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+.cvss-card { border: 1px solid var(--line-2); padding: 14px 16px; }
+.cvss-card h4 { margin: 0 0 12px; font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--label); }
+.cvss-mgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 24px; }
+.cvss-metric { min-width: 0; }
+.cvss-mlabel { font-size: 11.5px; color: var(--muted); margin-bottom: 5px; }
+.cvss-seg { display: flex; flex-wrap: wrap; gap: 3px; }
+.cvss-opt { background: none; border: 1px solid var(--line-3); color: var(--muted-2); cursor: pointer;
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .04em; text-transform: uppercase; padding: 5px 8px; }
+.cvss-opt:hover { border-color: var(--line-hi); color: var(--text); }
+.cvss-opt.on { background: var(--gold); border-color: var(--gold); color: var(--gold-ink); }
+@media (max-width: 720px) { .cvss-mgrid { grid-template-columns: 1fr; } }
 
 .codebanner {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;

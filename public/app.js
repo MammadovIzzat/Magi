@@ -1150,64 +1150,68 @@ const FINDING_KINDS = [{ value: 'note', label: 'Note' }, { value: 'credential', 
 const SEVERITIES = [{ value: '', label: '—' }, { value: 'info', label: 'Info' }, { value: 'low', label: 'Low' },
 { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }, { value: 'critical', label: 'Critical' }];
 
-// CVSS v3.1 base — a live preview mirror of cvss.js (the server re-derives + is authoritative on
-// save). Keep the two in step. Only admins/editors ever see this; workers can't grade a finding.
-const CVSS_W = { AV: { N: .85, A: .62, L: .55, P: .2 }, AC: { L: .77, H: .44 }, UI: { N: .85, R: .62 },
-  C: { H: .56, L: .22, N: 0 }, I: { H: .56, L: .22, N: 0 }, A: { H: .56, L: .22, N: 0 },
-  PR: { U: { N: .85, L: .62, H: .27 }, C: { N: .85, L: .68, H: .5 } } };
-const CVSS_METRICS = [
-  { k: 'AV', label: 'Attack Vector', opts: [['N', 'Network'], ['A', 'Adjacent'], ['L', 'Local'], ['P', 'Physical']] },
-  { k: 'AC', label: 'Attack Complexity', opts: [['L', 'Low'], ['H', 'High']] },
-  { k: 'PR', label: 'Privileges Req.', opts: [['N', 'None'], ['L', 'Low'], ['H', 'High']] },
-  { k: 'UI', label: 'User Interaction', opts: [['N', 'None'], ['R', 'Required']] },
-  { k: 'S', label: 'Scope', opts: [['U', 'Unchanged'], ['C', 'Changed']] },
-  { k: 'C', label: 'Confidentiality', opts: [['H', 'High'], ['L', 'Low'], ['N', 'None']] },
-  { k: 'I', label: 'Integrity', opts: [['H', 'High'], ['L', 'Low'], ['N', 'None']] },
-  { k: 'A', label: 'Availability', opts: [['H', 'High'], ['L', 'Low'], ['N', 'None']] },
-];
-function parseCvss(v) { const o = {}; if (typeof v !== 'string') return o; for (const p of v.split('/')) { const i = p.indexOf(':'); if (i > 0) o[p.slice(0, i)] = p.slice(i + 1); } return o; }
-function cvssScore(v) {
-  const m = parseCvss(v), S = m.S; if (S !== 'U' && S !== 'C') return null;
-  const av = CVSS_W.AV[m.AV], ac = CVSS_W.AC[m.AC], ui = CVSS_W.UI[m.UI], pr = CVSS_W.PR[S]?.[m.PR], c = CVSS_W.C[m.C], i = CVSS_W.I[m.I], a = CVSS_W.A[m.A];
-  if ([av, ac, ui, pr, c, i, a].some(x => x === undefined)) return null;
-  const iss = 1 - (1 - c) * (1 - i) * (1 - a);
-  const impact = S === 'U' ? 6.42 * iss : 7.52 * (iss - .029) - 3.25 * Math.pow(iss - .02, 15);
-  if (impact <= 0) return 0;
-  const expl = 8.22 * av * ac * pr * ui;
-  return Math.ceil((S === 'U' ? Math.min(impact + expl, 10) : Math.min(1.08 * (impact + expl), 10)) * 10) / 10;
-}
-const cvssSev = (s) => (s == null ? null : s <= 0 ? 'info' : s < 4 ? 'low' : s < 7 ? 'medium' : s < 9 ? 'high' : 'critical');
-// The CVSS calculator shown to graders (admin/editor) in the vuln finding editor. A COMPLETE vector
-// drives `sevSel` (the severity dropdown) and fills a hidden `cvss` input the form submits; picking a
-// severity by hand instead clears the vector (a manual override). Returns the node to append.
+// CVSS scoring uses the shared module (public/cvss.js → globalThis.MagiCVSS), the same code the
+// server grades with. The editor is a full CVSS 3.1 calculator (Base / Temporal / Environmental)
+// with segmented controls and a live score, opened as its own modal. Only admins/editors see it.
+const cvssPillText = (v) => { const d = MagiCVSS.scoreDetail(v); return d.overall == null ? null : `CVSS ${d.overall.toFixed(1)} · ${(d.severity || '').toUpperCase()}`; };
+// The finding editor's grading control: a "CVSS calculator" button + a live score pill, backed by a
+// hidden `cvss` input the form submits. Opening the editor and applying it sets the vector and the
+// severity dropdown; picking a severity by hand instead clears the vector (a manual override).
 function cvssSection(sevSel, existingVector) {
-  const cur = parseCvss(existingVector || '');
   const hidden = el('input', { type: 'hidden', name: 'cvss', value: existingVector || '' });
-  const readout = el('span', { className: 'cvss-score' });
-  const selects = {};
-  const grid = el('div', { className: 'cvss-grid' });
-  const recompute = () => {
-    if (!CVSS_METRICS.every(m => selects[m.k].value)) { readout.textContent = 'incomplete'; readout.className = 'cvss-score muted'; hidden.value = ''; return; }
-    const vec = 'CVSS:3.1/' + CVSS_METRICS.map(m => m.k + ':' + selects[m.k].value).join('/');
-    const s = cvssScore(vec), sv = cvssSev(s);
-    readout.textContent = s.toFixed(1) + ' · ' + sv.toUpperCase();
-    readout.className = 'cvss-score sev-' + sv;
-    hidden.value = vec; sevSel.value = sv;
+  const pill = el('span', { className: 'cvss-pill' });
+  const paint = () => {
+    const txt = hidden.value && MagiCVSS.isValidVector(hidden.value) ? cvssPillText(hidden.value) : null;
+    pill.className = 'cvss-pill' + (txt ? ' sev-' + MagiCVSS.severityOf(MagiCVSS.score(hidden.value)) : ' muted');
+    pill.textContent = txt || 'no CVSS';
   };
-  for (const m of CVSS_METRICS) {
-    const sel = el('select', { className: 'cvss-sel' }, el('option', { value: '' }, m.k + ' —'),
-      ...m.opts.map(([v, lab]) => el('option', { value: v, selected: cur[m.k] === v }, `${v} · ${lab}`)));
-    sel.onchange = recompute; selects[m.k] = sel;
-    grid.append(el('label', { className: 'cvss-lab' }, el('span', {}, m.label), sel));
+  paint();
+  const open = () => openCvssEditor(hidden.value, (vec, sv) => { hidden.value = vec; sevSel.value = sv; paint(); });
+  sevSel.addEventListener('change', () => { if (hidden.value) { hidden.value = ''; paint(); } }); // manual severity clears the vector
+  return el('div', { className: 'cvss-row' }, hidden,
+    el('button', { type: 'button', className: 'btn line sm', onclick: open }, icon('plus', 12), 'CVSS calculator'), pill);
+}
+// The full-screen CVSS 3.1 editor. `onApply(vector, severity)` fires when the check is pressed.
+function openCvssEditor(currentVector, onApply) {
+  const m = MagiCVSS.parse(currentVector);
+  // Sensible starting point when there's no vector yet — a complete base, temporal/env "Not Defined".
+  const DEF = { AV: 'N', AC: 'L', PR: 'N', UI: 'N', S: 'U', C: 'H', I: 'H', A: 'H' };
+  for (const k in DEF) if (!m[k]) m[k] = DEF[k];
+  const overlay = el('div', { className: 'cvss-overlay' });
+  const close = () => overlay.remove();
+  const badge = el('div', { className: 'cvss-badge' });
+  const recompute = () => {
+    const d = MagiCVSS.scoreDetail(MagiCVSS.buildVector(m));
+    badge.className = 'cvss-badge sev-' + (d.severity || 'info');
+    badge.replaceChildren(
+      el('div', { className: 'cvss-badge-n' }, d.overall == null ? '—' : d.overall.toFixed(1)),
+      el('div', { className: 'cvss-badge-s' }, (d.severity || '—').toUpperCase()));
+  };
+  const sections = el('div', { className: 'cvss-sections' });
+  for (const g of MagiCVSS.GROUPS) {
+    const grid = el('div', { className: 'cvss-mgrid' });
+    for (const met of g.metrics) {
+      const seg = el('div', { className: 'cvss-seg' });
+      const curVal = () => m[met.k] ?? met.opts[0][0];
+      for (const [v, lab] of met.opts) {
+        seg.append(el('button', { type: 'button', className: 'cvss-opt' + (curVal() === v ? ' on' : ''), 'data-v': v,
+          onclick: () => { m[met.k] = v; for (const b of seg.children) b.classList.toggle('on', b.getAttribute('data-v') === v); recompute(); } },
+          `${lab} (${v})`));
+      }
+      grid.append(el('div', { className: 'cvss-metric' }, el('div', { className: 'cvss-mlabel' }, met.label), seg));
+    }
+    sections.append(el('div', { className: 'cvss-card' }, el('h4', {}, g.title), grid));
   }
-  sevSel.addEventListener('change', () => {
-    if (hidden.value) { hidden.value = ''; for (const m of CVSS_METRICS) selects[m.k].value = ''; readout.textContent = 'cleared'; readout.className = 'cvss-score muted'; }
-  });
-  const box = el('div', { className: 'cvss-box', hidden: !existingVector },
-    el('div', { className: 'cvss-hd' }, el('span', { className: 'kicker' }, 'CVSS 3.1 base'), readout), grid);
-  const toggle = el('button', { type: 'button', className: 'btn line sm', style: 'margin:2px 0 8px', onclick: () => { box.hidden = !box.hidden; } }, icon('plus', 12), 'CVSS calculator');
-  if (existingVector) recompute();
-  return el('div', {}, hidden, toggle, box);
+  overlay.append(el('div', { className: 'cvss-panel' },
+    el('div', { className: 'cvss-header' },
+      el('div', { className: 'cvss-title' }, 'CVSS:3.1 Editor'),
+      el('div', { className: 'cvss-hactions' }, badge,
+        el('button', { type: 'button', className: 'iconbtn', title: 'Apply', onclick: () => { const vec = MagiCVSS.buildVector(m); onApply(vec, MagiCVSS.scoreDetail(vec).severity || 'info'); close(); } }, icon('check', 15)),
+        el('button', { type: 'button', className: 'iconbtn', title: 'Cancel', onclick: close }, icon('x', 15)))),
+    sections));
+  overlay.onclick = (e) => { if (e.target === overlay) close(); };
+  document.body.append(overlay);
+  recompute();
 }
 const FIX_STATUS = [{ value: 'not_fixed', label: 'Not fixed' }, { value: 'half_fixed', label: 'Partially fixed' }, { value: 'fixed', label: 'Fixed' }];
 const fixLabel = (v) => (FIX_STATUS.find(x => x.value === v)?.label || v);
@@ -1275,7 +1279,7 @@ function findingDetail(f, id) {
     build: (b) => {
       b.append(el('div', { className: 'fd-badges' },
         f.severity ? el('span', { className: 'fd-sev sev-' + f.severity }, f.severity.toUpperCase()) : null,
-        f.cvss ? el('span', { className: 'fd-cvss', title: f.cvss }, 'CVSS ' + (cvssScore(f.cvss)?.toFixed(1) ?? '—')) : null,
+        f.cvss ? el('span', { className: 'fd-cvss', title: f.cvss }, 'CVSS ' + (MagiCVSS.score(f.cvss)?.toFixed(1) ?? '—')) : null,
         reportTick(f, () => renderTarget(id))));
       if (f.cvss) { b.append(el('label', {}, 'CVSS vector')); b.append(el('code', { className: 'fd-vector' }, f.cvss)); }
       if (locs.length) { b.append(el('label', {}, locs.length > 1 ? 'Locations' : 'Location')); b.append(el('div', { className: 'fd-locs' }, ...locs.map(l => el('code', {}, l)))); }
@@ -1413,7 +1417,7 @@ async function findingModal(assetId, finding = null, isRetest = false) {
             fields.append(el('label', {}, 'Severity (set by a lead)'),
               el('div', { className: 'readonly-sev' },
                 finding.severity ? el('span', { className: 'fd-sev sev-' + finding.severity }, finding.severity.toUpperCase()) : null,
-                finding.cvss ? el('span', { className: 'fd-cvss', title: finding.cvss }, 'CVSS ' + (cvssScore(finding.cvss)?.toFixed(1) ?? '—')) : null));
+                finding.cvss ? el('span', { className: 'fd-cvss', title: finding.cvss }, 'CVSS ' + (MagiCVSS.score(finding.cvss)?.toFixed(1) ?? '—')) : null));
           } else {
             fields.append(el('p', { className: 'muted small', style: 'margin:2px 0 8px' }, 'A lead will set the severity.'));
           }

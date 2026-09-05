@@ -8,7 +8,7 @@ import { exportProject as exportProjectBundle, importProject, validateProjectBun
 import { projectReportHTML } from './report-html.js';
 import { collectChanges, applyChanges, maxHlc } from './sync.js';
 import * as totp from './totp.js';
-import * as cvss from './cvss.js';
+import './public/cvss.js'; // classic script: assigns globalThis.MagiCVSS (shared with the browser)
 import * as jwt from './jwt.js';
 import { jwtSecret } from './server-identity.js';
 import { VERSION } from './version.js';
@@ -37,6 +37,7 @@ const MFA_ENFORCED = SERVER_MODE && env('MFA', 'on') !== 'off';
 // no such boundary — the one local process both issues and checks its login — so it uses a plain
 // opaque session token instead and never creates this key. (See localSession below.)
 const JWT_SECRET = SERVER_MODE ? jwtSecret() : null;
+const cvss = globalThis.MagiCVSS; // set by the side-effect import above; used to grade findings
 const sha256 = (s) => createHash('sha256').update(String(s)).digest('hex');
 
 app.use((req, res, next) => {

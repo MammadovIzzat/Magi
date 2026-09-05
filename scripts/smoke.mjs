@@ -113,6 +113,25 @@ checks.push(['checklist screen paints', await ev(`
   location.hash = "#/target/" + f.targets[0].id; await new Promise(r => setTimeout(r, 1400));
   document.querySelectorAll(".ghdr")[0]?.click(); await new Promise(r => setTimeout(r, 700));
   return document.querySelectorAll(".item").length > 0`)]);
+// The vuln finding editor gives graders a CVSS builder whose complete vector drives the severity.
+// (This local admin IS a grader, so the calculator shows.)
+checks.push(['finding editor: CVSS calculator drives the severity', await ev(`
+  const p = (await (await fetch("/api/projects")).json())[0];
+  const d = await (await fetch("/api/projects/" + p.id)).json();
+  const fold = await (await fetch("/api/assets/" + d.assets[0].id)).json();
+  addFinding(fold.targets[0].id); await new Promise(r => setTimeout(r, 300));
+  const kindSel = document.querySelector(".modal select[name=kind]");
+  kindSel.value = "vuln"; kindSel.dispatchEvent(new Event("change")); await new Promise(r => setTimeout(r, 150));
+  const hasSev = !!document.querySelector(".modal select[name=severity]");
+  [...document.querySelectorAll(".modal button")].find(b => /CVSS calculator/i.test(b.textContent))?.click();
+  await new Promise(r => setTimeout(r, 80));
+  const sels = document.querySelectorAll(".modal .cvss-sel");
+  const order = ["AV","AC","PR","UI","S","C","I","A"], vec = { AV:"N", AC:"L", PR:"N", UI:"N", S:"U", C:"H", I:"H", A:"H" };
+  sels.forEach((s, i) => { s.value = vec[order[i]]; s.dispatchEvent(new Event("change")); });
+  await new Promise(r => setTimeout(r, 80));
+  const sev = document.querySelector(".modal select[name=severity]")?.value;
+  const cvssVal = document.querySelector(".modal input[name=cvss]")?.value || "";
+  return hasSev && sels.length === 8 && sev === "critical" && cvssVal.includes("AV:N")`)]);
 checks.push(['template library paints', await ev(`
   location.hash = "#/editor"; await new Promise(r => setTimeout(r, 1400));
   return document.querySelectorAll(".tpl-type").length > 0`)]);
@@ -131,8 +150,8 @@ checks.push(['admin tabs + ranking page paint', await ev(`
   const stub = {
     "/api/link": { unavailable: true },
     "/api/admin/ranking": { ranking: [
-      { author: "ana", role: "worker", findings: 7, poc: 3, projects: 2, types: { web: 4, poc: 3 }, topType: "web" },
-      { author: "bob", role: "editor", findings: 2, poc: 0, projects: 1, types: { ad: 2 }, topType: "ad" }],
+      { author: "ana", role: "worker", findings: 7, poc: 3, projects: 2, score: 41, types: { web: 4, poc: 3 }, topType: "web", sev: { critical: 2, high: 3, medium: 2, low: 0, info: 0, none: 0 } },
+      { author: "bob", role: "editor", findings: 2, poc: 0, projects: 1, score: 4, types: { ad: 2 }, topType: "ad", sev: { critical: 0, high: 0, medium: 1, low: 1, info: 0, none: 0 } }],
       totals: { operators: 2, findings: 9, unattributed: 1 } },
     "/api/admin/requests": [], "/api/admin/users": [], "/api/admin/enroll-codes": [],
     "/api/admin/devices": [], "/api/admin/audit": [], "/api/admin/backup": { config: {}, backups: [] },
@@ -145,12 +164,14 @@ checks.push(['admin tabs + ranking page paint', await ev(`
   LINK = { unavailable: true };
   location.hash = "#/admin/ranking"; await new Promise(r => setTimeout(r, 1000));
   const rankRows = document.querySelectorAll(".ranktable .rankrow").length;
+  const hasSev = document.querySelectorAll(".ranktable .sevchip").length > 0;
+  const hasScore = /41/.test(document.querySelector(".rankrow .rank-score")?.textContent || "");
   const tabs = document.querySelectorAll(".admtabs .admtab").length;
   const activeIsRanking = /ranking/i.test(document.querySelector(".admtab.on")?.textContent || "");
   location.hash = "#/admin/users"; await new Promise(r => setTimeout(r, 700));
   const usersActive = /users/i.test(document.querySelector(".admtab.on")?.textContent || "");
   window.fetch = real;
-  return rankRows === 2 && tabs === 5 && activeIsRanking && usersActive`)]);
+  return rankRows === 2 && tabs === 5 && activeIsRanking && usersActive && hasSev && hasScore`)]);
 // Regression: an MFA-enabled account returns 401 {mfa:'required'} on password-only login. The
 // login flow must READ that challenge and show the code screen — not treat the 401 as a hard error.
 // (This standalone server never enforces MFA, so stub fetch to return the challenge just for the login.)

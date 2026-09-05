@@ -218,6 +218,7 @@ CREATE TABLE IF NOT EXISTS findings (
   fix_status  TEXT,                      -- retest only: fixed | not_fixed | half_fixed
   in_report   INTEGER NOT NULL DEFAULT 0, -- ticked once written into the report, so it's clear what's done
   author      TEXT,                      -- username of whoever recorded it (for the team ranking); syncs with the row
+  cvss        TEXT,                      -- optional CVSS v3.1 base vector; severity is derived from it when set
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_findings_asset ON findings(asset_id);
@@ -328,6 +329,20 @@ CREATE TABLE IF NOT EXISTS audit (
   action       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_audit_at ON audit(id);
+
+-- Durable per-finding contribution ledger for the worker ranking (server side). Keyed by the
+-- finding's global uid and snapshotting the engagement + target type at credit time, so a finding
+-- still counts toward its author's ranking after its project is DELETED (the row is never removed
+-- here on delete — only inserted/updated when a finding is created or graded). Not synced.
+CREATE TABLE IF NOT EXISTS finding_credits (
+  uid         TEXT PRIMARY KEY,          -- findings.uid
+  author      TEXT NOT NULL,             -- username of the recorder (credited even if an editor grades it)
+  project_id  INTEGER,                   -- snapshot: which engagement (kept after the project is deleted)
+  asset_type  TEXT,                      -- snapshot: target type (web/api/ad/poc/…), for the focus + PoC tally
+  severity    TEXT,                      -- latest severity (set by an admin/editor), for the weighted score
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_credits_author ON finding_credits(author);
 
 -- editable default templates (what new assets are instantiated from)
 CREATE TABLE IF NOT EXISTS tpl_types (
@@ -448,6 +463,7 @@ if (!findCols.has('refs')) db.exec(`ALTER TABLE findings ADD COLUMN refs TEXT`);
 if (!findCols.has('fix_status')) db.exec(`ALTER TABLE findings ADD COLUMN fix_status TEXT`);
 if (!findCols.has('in_report')) db.exec(`ALTER TABLE findings ADD COLUMN in_report INTEGER NOT NULL DEFAULT 0`);
 if (!findCols.has('author')) db.exec(`ALTER TABLE findings ADD COLUMN author TEXT`);
+if (!findCols.has('cvss')) db.exec(`ALTER TABLE findings ADD COLUMN cvss TEXT`);
 if (!projCols.has('status')) db.exec(`ALTER TABLE projects ADD COLUMN status TEXT DEFAULT 'active'`);
 if (!projCols.has('start_date')) db.exec(`ALTER TABLE projects ADD COLUMN start_date TEXT`);
 if (!projCols.has('end_date')) db.exec(`ALTER TABLE projects ADD COLUMN end_date TEXT`);
@@ -624,5 +640,17 @@ if (db.prepare(`SELECT COUNT(*) c FROM tpl_groups`).get().c === 0) {
 // stamps rows it never sends anywhere.
 import { setupSchema as setupSync } from './sync.js';
 setupSync(db);
+
+// Ranking ledger backfill — runs AFTER setupSync has added the findings.uid column. Seeds the
+// durable credit ledger from findings that already exist and are attributable, so an upgrade
+// doesn't reset the board. INSERT OR IGNORE preserves rows for findings that survived a project
+// deletion (they're gone from `findings`) and only adds current findings not yet credited. Server
+// only — the ledger is read solely by the admin ranking, which lives on the server.
+if (env('SERVER') === '1') {
+  db.exec(`INSERT OR IGNORE INTO finding_credits (uid, author, project_id, asset_type, severity, updated_at)
+    SELECT f.uid, f.author, a.project_id, a.type, f.severity, datetime('now')
+    FROM findings f JOIN assets a ON a.id = f.asset_id
+    WHERE f.uid IS NOT NULL AND f.author IS NOT NULL AND f.author <> ''`);
+}
 
 export default db;

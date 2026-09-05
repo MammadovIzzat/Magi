@@ -8,6 +8,7 @@ import { exportProject as exportProjectBundle, importProject, validateProjectBun
 import { projectReportHTML } from './report-html.js';
 import { collectChanges, applyChanges, maxHlc } from './sync.js';
 import * as totp from './totp.js';
+import * as cvss from './cvss.js';
 import * as jwt from './jwt.js';
 import { jwtSecret } from './server-identity.js';
 import { VERSION } from './version.js';
@@ -706,29 +707,36 @@ app.get('/api/admin/audit', requireAdmin, (req, res) => {
 // asset for the target TYPE (web/api/ad/poc/…) and the engagement it belongs to. Findings from
 // before author-tracking (author NULL) are simply not counted. Returns rows sorted by volume plus
 // a couple of totals for the page header.
+// Weight per severity, so the score rewards impact, not just volume (an editor's grade on a
+// worker's finding thus lifts that worker). Roughly tracks the CVSS bands.
+const SEV_WEIGHT = { critical: 10, high: 6, medium: 3, low: 1, info: 0 };
 app.get('/api/admin/ranking', requireAdmin, (req, res) => {
-  const rows = q(`SELECT f.author AS author, a.type AS type, a.project_id AS project_id
-    FROM findings f JOIN assets a ON a.id = f.asset_id
-    WHERE f.author IS NOT NULL AND f.author <> ''`).all();
+  // Read the DURABLE ledger, not live findings — so deleting an old engagement doesn't wipe the
+  // credit its author earned. Rows are snapshotted at grade time (project_id, target type, severity).
+  const rows = q(`SELECT author, asset_type AS type, project_id, severity FROM finding_credits
+    WHERE author IS NOT NULL AND author <> ''`).all();
   const roles = {};
   for (const u of q(`SELECT username, role FROM users`).all()) roles[u.username] = u.role;
   const by = new Map();
   for (const r of rows) {
     let e = by.get(r.author);
-    if (!e) { e = { author: r.author, role: roles[r.author] || null, findings: 0, poc: 0, projects: new Set(), types: {} }; by.set(r.author, e); }
+    if (!e) { e = { author: r.author, role: roles[r.author] || null, findings: 0, poc: 0, score: 0,
+      projects: new Set(), types: {}, sev: { critical: 0, high: 0, medium: 0, low: 0, info: 0, none: 0 } }; by.set(r.author, e); }
     e.findings++;
     if (r.type === 'poc') e.poc++;
     if (r.project_id != null) e.projects.add(r.project_id);
     if (r.type) e.types[r.type] = (e.types[r.type] || 0) + 1;
+    e.sev[(r.severity && r.severity in e.sev) ? r.severity : 'none']++;
+    e.score += SEV_WEIGHT[r.severity] ?? 0;
   }
   const ranking = [...by.values()].map(e => {
     const types = Object.entries(e.types).sort((a, b) => b[1] - a[1]);
-    return { author: e.author, role: e.role, findings: e.findings, poc: e.poc,
-      projects: e.projects.size, types: Object.fromEntries(types), topType: types[0]?.[0] || null };
-  }).sort((a, b) => b.findings - a.findings || b.projects - a.projects);
-  const attributed = rows.length;
+    return { author: e.author, role: e.role, findings: e.findings, poc: e.poc, score: e.score,
+      projects: e.projects.size, types: Object.fromEntries(types), topType: types[0]?.[0] || null, sev: e.sev };
+  }).sort((a, b) => b.score - a.score || b.findings - a.findings || b.projects - a.projects);
+  // Live findings that still have no author (recorded before attribution) — a soft "not counted" note.
   const unattributed = q(`SELECT COUNT(*) c FROM findings WHERE author IS NULL OR author=''`).get().c;
-  res.json({ ranking, totals: { operators: ranking.length, findings: attributed, unattributed } });
+  res.json({ ranking, totals: { operators: ranking.length, findings: rows.length, unattributed } });
 });
 
 // ---- replication: clients pull server changes and push their own ----
@@ -754,14 +762,27 @@ if (SERVER_MODE) {
       const actor = currentUser(req);
       if (actor && actor.role === 'worker' && Array.isArray(rows)) {
         rows = rows.map(r => {
-          if (r?.table !== 'projects' || !r.fields || !('status' in r.fields)) return r;
-          const cur = q(`SELECT status FROM projects WHERE uid=?`).get(r.uid);
-          const serverStatus = cur ? cur.status : 'active'; // a brand-new project starts active
-          return (r.fields.status ?? 'active') === (serverStatus ?? 'active')
-            ? r : { ...r, fields: { ...r.fields, status: serverStatus } };
+          if (r?.table === 'projects' && r.fields && 'status' in r.fields) {
+            const cur = q(`SELECT status FROM projects WHERE uid=?`).get(r.uid);
+            const serverStatus = cur ? cur.status : 'active'; // a brand-new project starts active
+            return (r.fields.status ?? 'active') === (serverStatus ?? 'active')
+              ? r : { ...r, fields: { ...r.fields, status: serverStatus } };
+          }
+          // A worker cannot GRADE a finding through a crafted push either — keep the server's
+          // current severity / CVSS (only an admin or editor sets those).
+          if (r?.table === 'findings' && r.fields && ('severity' in r.fields || 'cvss' in r.fields)) {
+            const cur = q(`SELECT severity, cvss FROM findings WHERE uid=?`).get(r.uid) || {};
+            const fields = { ...r.fields };
+            if ('severity' in fields) fields.severity = cur.severity ?? null;
+            if ('cvss' in fields) fields.cvss = cur.cvss ?? null;
+            return { ...r, fields };
+          }
+          return r;
         });
       }
       const r = applyChanges(db, { rows: rows || [], tombstones: tombstones || [] });
+      // Credit any pushed findings now present in the ledger (attribution + latest severity).
+      for (const row of (rows || [])) if (row?.table === 'findings' && row.uid) creditFinding(row.uid);
       res.json({ ok: true, ...r, server_hlc: maxHlc(db) });
     } catch (e) { res.status(400).json({ error: e.message }); }
   });
@@ -1364,17 +1385,49 @@ app.delete('/api/items/:id', requireEdit, (req, res) => {
 });
 
 // ---- findings ----
-app.post('/api/targets/:id/findings', (req, res) => {
+// Whoever CREATES a finding is credited for it; only an admin/editor may GRADE it (set the
+// severity / CVSS). Given the request body, whether the actor may grade, and the current row,
+// resolve the {severity, cvss} to store: a valid CVSS v3.1 vector is authoritative (severity is
+// derived from it); otherwise a hand-picked severity is used. A worker's grading attempt is
+// dropped (the current values are kept), so a worker cannot set severity even via a crafted call.
+function gradeFields(body, mayGrade, cur = {}) {
+  if (!mayGrade) return { severity: cur.severity ?? null, cvss: cur.cvss ?? null };
+  let severity = cur.severity ?? null, vector = cur.cvss ?? null;
+  if ('cvss' in body) vector = body.cvss ? String(body.cvss) : null;
+  if ('severity' in body) severity = body.severity || null;
+  if (vector && cvss.isValidVector(vector)) severity = cvss.severityOf(cvss.score(vector)); // CVSS wins
+  else if (vector) vector = null; // a malformed vector is ignored rather than stored
+  return { severity, cvss: vector };
+}
+// Record/refresh a finding's contribution in the durable ranking ledger (server only). Called after
+// a finding is created or (re)graded — from the web UI and from an incoming sync push. Keyed by uid
+// so there's no double counting, and it NEVER deletes, so a later project deletion can't erase the
+// credit. Attribution is the recorder (author), even when an editor set the severity.
+function creditFinding(uid) {
+  if (!SERVER_MODE || !uid) return;
+  const f = q(`SELECT f.uid, f.author, f.severity, a.type AS asset_type, a.project_id
+    FROM findings f JOIN assets a ON a.id = f.asset_id WHERE f.uid=?`).get(uid);
+  if (!f || !f.author) return; // not present yet (deferred) or unattributed → nothing to credit
+  q(`INSERT INTO finding_credits (uid, author, project_id, asset_type, severity, updated_at)
+     VALUES (?,?,?,?,?, datetime('now'))
+     ON CONFLICT(uid) DO UPDATE SET author=excluded.author, severity=excluded.severity, updated_at=excluded.updated_at`)
+    .run(f.uid, f.author, f.project_id, f.asset_type, f.severity);
+}
+
+app.post('/api/targets/:id/findings', async (req, res) => {
   const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'asset not found' });
-  const { title, kind, severity, body, refs, fix_status } = req.body || {};
+  const { title, kind, body, refs, fix_status } = req.body || {};
   if (!title) return res.status(400).json({ error: 'title required' });
   // Attribute the finding to whoever recorded it — the team identity (username) so it stays
   // stable as the row syncs between a client and the server. Powers the admin ranking.
   const author = currentUser(req)?.username || null;
-  const info = q(`INSERT INTO findings (asset_id, title, kind, severity, body, refs, fix_status, author) VALUES (?,?,?,?,?,?,?,?)`)
-    .run(req.params.id, title, kind || 'note', severity || null, body || null, cleanRefs(refs), cleanFix(fix_status), author);
-  res.status(201).json(q(`SELECT * FROM findings WHERE id=?`).get(info.lastInsertRowid));
+  const { severity, cvss: vector } = gradeFields(req.body || {}, await canEdit(req)); // workers can't grade
+  const info = q(`INSERT INTO findings (asset_id, title, kind, severity, body, refs, fix_status, author, cvss) VALUES (?,?,?,?,?,?,?,?,?)`)
+    .run(req.params.id, title, kind || 'note', severity, body || null, cleanRefs(refs), cleanFix(fix_status), author, vector);
+  const row = q(`SELECT * FROM findings WHERE id=?`).get(info.lastInsertRowid);
+  creditFinding(row.uid);
+  res.status(201).json(row);
 });
 // Other findings in the same engagement, to link as an attack chain (or a retest reference).
 app.get('/api/targets/:id/finding-candidates', (req, res) => {
@@ -1386,18 +1439,19 @@ app.get('/api/targets/:id/finding-candidates', (req, res) => {
     WHERE fo.project_id=? AND f.uid IS NOT NULL ORDER BY f.created_at DESC`).all(folder?.project_id ?? -1));
 });
 
-app.patch('/api/findings/:id', (req, res) => {
+app.patch('/api/findings/:id', async (req, res) => {
   const cur = q(`SELECT * FROM findings WHERE id=?`).get(req.params.id);
   if (!cur) return res.status(404).json({ error: 'not found' });
   const b = req.body || {};
   if ('title' in b && !b.title) return res.status(400).json({ error: 'title cannot be empty' });
-  q(`UPDATE findings SET title=?, kind=?, severity=?, body=?, refs=?, fix_status=?, in_report=? WHERE id=?`).run(
-    b.title ?? cur.title, b.kind ?? cur.kind,
-    b.severity === undefined ? cur.severity : (b.severity || null),
+  const { severity, cvss: vector } = gradeFields(b, await canEdit(req), cur); // a worker's grade is dropped
+  q(`UPDATE findings SET title=?, kind=?, severity=?, body=?, refs=?, fix_status=?, in_report=?, cvss=? WHERE id=?`).run(
+    b.title ?? cur.title, b.kind ?? cur.kind, severity,
     b.body === undefined ? cur.body : (b.body || null),
     'refs' in b ? cleanRefs(b.refs) : cur.refs,
     'fix_status' in b ? cleanFix(b.fix_status) : cur.fix_status,
-    'in_report' in b ? (b.in_report ? 1 : 0) : cur.in_report, cur.id);
+    'in_report' in b ? (b.in_report ? 1 : 0) : cur.in_report, vector, cur.id);
+  creditFinding(cur.uid);
   res.json(q(`SELECT * FROM findings WHERE id=?`).get(cur.id));
 });
 

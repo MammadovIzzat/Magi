@@ -864,11 +864,11 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 /* Ranking leaderboard. */
 .ranktable { display: flex; flex-direction: column; }
 .rankhead, .rankrow {
-  display: grid; grid-template-columns: 34px 1fr 84px 92px 66px minmax(130px, 1.3fr);
+  display: grid; grid-template-columns: 30px minmax(120px, 1fr) 48px 48px minmax(120px, 1.1fr) 50px 58px;
   align-items: center; gap: 10px; padding: 10px 6px;
 }
 .rankhead {
-  font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase;
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase;
   color: var(--label); border-bottom: 1px solid var(--line-2);
 }
 .rankrow { border-top: 1px solid var(--line-faint); }
@@ -878,13 +878,39 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 .rank-n { font-family: var(--mono); font-size: 12px; color: var(--muted-2); text-align: center; }
 .rankrow.top .rank-n { color: var(--gold); font-weight: 700; }
 .rank-num { font-family: var(--mono); font-size: 13px; color: var(--text); text-align: center; }
-.rank-find { color: var(--fg); font-weight: 700; }
-.rankmixwrap { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
-.rankmix { display: inline-flex; align-items: center; gap: 4px; }
-@media (max-width: 720px) {
-  .rankhead, .rankrow { grid-template-columns: 26px 1fr 54px 60px; }
-  .rankhead span:nth-child(5), .rankhead span:nth-child(6), .rankrow > :nth-child(5), .rankrow > :nth-child(6) { display: none; }
+.rank-op { display: flex; align-items: center; gap: 7px; min-width: 0; flex-wrap: wrap; }
+.rank-focus { display: inline-flex; }
+.rank-score { color: var(--gold); font-weight: 700; }
+.rankrow.top .rank-score { color: var(--gold-hi); }
+/* severity mix chips */
+.sevchips { display: flex; flex-wrap: wrap; gap: 4px; }
+.sevchip { font-family: var(--mono); font-size: 9.5px; padding: 1px 5px; border: 1px solid var(--line-3); color: var(--text); white-space: nowrap; }
+.sevchip.sev-critical { border-color: var(--red); color: var(--red); }
+.sevchip.sev-high { border-color: var(--gold); color: var(--gold); }
+.sevchip.sev-medium { border-color: var(--line-hi); color: var(--text); }
+.sevchip.sev-low { border-color: var(--line-3); color: var(--muted); }
+@media (max-width: 760px) {
+  .rankhead, .rankrow { grid-template-columns: 26px 1fr 46px 58px; }
+  .rankhead span:nth-child(3), .rankhead span:nth-child(5), .rankhead span:nth-child(6),
+  .rankrow > :nth-child(3), .rankrow > :nth-child(5), .rankrow > :nth-child(6) { display: none; }
 }
+
+/* CVSS builder (finding editor, graders only) + finding CVSS display. */
+.cvss-box { border: 1px solid var(--line-2); padding: 10px 12px; margin: 0 0 8px; background: var(--panel-2); }
+.cvss-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.cvss-score { font-family: var(--mono); font-size: 12px; font-weight: 700; }
+.cvss-score.muted { color: var(--muted-3); font-weight: 400; }
+.cvss-score.sev-critical { color: var(--red); }
+.cvss-score.sev-high { color: var(--gold); }
+.cvss-score.sev-medium, .cvss-score.sev-low, .cvss-score.sev-info { color: var(--text); }
+.cvss-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.cvss-lab { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+.cvss-sel { background: var(--bg); border: 1px solid var(--line-3); color: var(--text); font-size: 12px; padding: 5px 6px; font-family: var(--mono); }
+.cvss-sel:focus { outline: none; border-color: var(--gold); }
+.fd-cvss { display: inline-flex; align-items: center; padding: 3px 8px; border: 1px solid var(--line-4); font-family: var(--mono); font-size: 10.5px; color: var(--muted-2); }
+.fd-vector { display: block; font-family: var(--mono); font-size: 11px; color: var(--muted); word-break: break-all; margin-bottom: 4px; }
+.readonly-sev { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+@media (max-width: 560px) { .cvss-grid { grid-template-columns: 1fr; } }
 
 .codebanner {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;

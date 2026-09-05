@@ -192,17 +192,39 @@ check('a PoC target carries no checklist', (await req('GET', `/api/targets/${poc
 const pocFind = await req('POST', `/api/targets/${pocT.json.id}/findings`, { token: adminTok, body: { title: 'Chained RCE', kind: 'vuln', severity: 'critical' } });
 check('a PoC target records normal findings', pocFind.status === 201 && !!pocFind.json?.id);
 
-// ---- worker ranking: findings attributed to whoever recorded them ----
-const wPoc = await req('POST', `/api/targets/${pocT.json.id}/findings`, { token: workerToken, device: dev1, body: { title: 'IDOR PoC', kind: 'vuln', severity: 'high' } });
-check('a worker can record a PoC finding', wPoc.status === 201);
+// ---- severity grading: workers record, admins/editors grade ----
+// A worker records a finding but CANNOT set its severity — a sent severity is dropped.
+const wPoc = await req('POST', `/api/targets/${pocT.json.id}/findings`, { token: workerToken, device: dev1, body: { title: 'IDOR PoC', kind: 'vuln', severity: 'critical' } });
+check('a worker records a finding but its severity is ignored', wPoc.status === 201 && wPoc.json?.severity == null);
+// An admin/editor grades it later — credit stays with the worker who found it.
+const graded = await req('PATCH', `/api/findings/${wPoc.json.id}`, { token: adminTok, body: { severity: 'high' } });
+check('an admin/editor can set a finding’s severity', graded.status === 200 && graded.json?.severity === 'high');
+// A worker vuln graded via a CVSS vector: severity is derived authoritatively (9.8 -> critical).
+const wVuln = await req('POST', `/api/targets/${webT.id}/findings`, { token: workerToken, device: dev1, body: { title: 'SQLi', kind: 'vuln' } });
+const cv = await req('PATCH', `/api/findings/${wVuln.json.id}`, { token: adminTok, body: { cvss: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H' } });
+check('a CVSS vector derives the severity (critical)', cv.status === 200 && cv.json?.severity === 'critical' && (cv.json?.cvss || '').includes('AV:N'));
+const wTamper = await req('PATCH', `/api/findings/${wVuln.json.id}`, { token: workerToken, device: dev1, body: { severity: 'info', cvss: '' } });
+check('a worker cannot change severity/CVSS via PATCH', wTamper.status === 200 && wTamper.json?.severity === 'critical' && (wTamper.json?.cvss || '').includes('AV:N'));
+
 const rank = await req('GET', '/api/admin/ranking', { token: adminTok });
-check('ranking endpoint returns attributed operators', rank.status === 200 && Array.isArray(rank.json?.ranking) && rank.json.ranking.length >= 2);
 const anaRank = (rank.json?.ranking || []).find(r => r.author === 'ana');
-check('ranking attributes findings to the worker who recorded them', !!anaRank && anaRank.findings >= 2 && anaRank.projects >= 1);
-check('ranking counts the worker’s PoC finding and reports role + focus', !!anaRank && anaRank.poc >= 1 && anaRank.role === 'worker' && !!anaRank.topType && anaRank.types?.poc >= 1);
-const adminRank = (rank.json?.ranking || []).find(r => r.author === 'admin');
-check('ranking attributes admin-recorded findings too (web + poc)', !!adminRank && adminRank.findings >= 3 && adminRank.poc >= 1 && adminRank.types?.web >= 2);
-check('ranking totals count attributed findings and operators', rank.json?.totals?.findings >= 5 && rank.json?.totals?.operators >= 2);
+check('ranking credits the finder (worker) with the graded severities', !!anaRank && anaRank.sev?.high >= 1 && anaRank.sev?.critical >= 1);
+check('ranking is severity-weighted (high 6 + critical 10)', !!anaRank && anaRank.score >= 16);
+check('ranking still reports role, projects, PoC and focus', anaRank.role === 'worker' && anaRank.projects >= 1 && anaRank.poc >= 1 && !!anaRank.topType);
+check('ranking totals count operators', rank.json?.totals?.operators >= 2);
+
+// ---- durability: deleting an old engagement must NOT reduce the ranking ----
+const anaBefore = anaRank.findings;
+const tmpProj = (await req('POST', '/api/projects', { token: adminTok, body: { name: 'Old engagement' } })).json;
+const tmpAsset = (await req('POST', `/api/projects/${tmpProj.id}/assets`, { token: adminTok, body: { grp: 'external', label: 'X' } })).json;
+const tmpT = (await req('POST', `/api/assets/${tmpAsset.id}/targets`, { token: adminTok, body: { type: 'web', label: 'https://old.test' } })).json;
+await req('POST', `/api/targets/${tmpT.id}/findings`, { token: workerToken, device: dev1, body: { title: 'old finding', kind: 'vuln' } });
+const anaMid = (await req('GET', '/api/admin/ranking', { token: adminTok })).json.ranking.find(r => r.author === 'ana')?.findings || 0;
+check('ranking counts a finding in a fresh project', anaMid === anaBefore + 1);
+const delOld = await req('DELETE', `/api/projects/${tmpProj.id}`, { token: adminTok });
+check('the old project is deleted', delOld.status === 200 || delOld.status === 204);
+const anaAfter = (await req('GET', '/api/admin/ranking', { token: adminTok })).json.ranking.find(r => r.author === 'ana')?.findings || 0;
+check('deleting the old project does NOT reduce the ranking', anaAfter === anaMid);
 const rf = await req('POST', `/api/targets/${rT.json.id}/findings`, { token: adminTok, body: { title: 'ACME-1', kind: 'vuln', fix_status: 'half_fixed' } });
 check('a retest finding stores its fix status', rf.status === 201 && rf.json?.fix_status === 'half_fixed');
 const badFix = await req('POST', `/api/targets/${rT.json.id}/findings`, { token: adminTok, body: { title: 'x', fix_status: 'nonsense' } });

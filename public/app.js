@@ -1149,6 +1149,66 @@ const FINDING_KINDS = [{ value: 'note', label: 'Note' }, { value: 'credential', 
 { value: 'vuln', label: 'Vulnerability' }];
 const SEVERITIES = [{ value: '', label: '—' }, { value: 'info', label: 'Info' }, { value: 'low', label: 'Low' },
 { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }, { value: 'critical', label: 'Critical' }];
+
+// CVSS v3.1 base — a live preview mirror of cvss.js (the server re-derives + is authoritative on
+// save). Keep the two in step. Only admins/editors ever see this; workers can't grade a finding.
+const CVSS_W = { AV: { N: .85, A: .62, L: .55, P: .2 }, AC: { L: .77, H: .44 }, UI: { N: .85, R: .62 },
+  C: { H: .56, L: .22, N: 0 }, I: { H: .56, L: .22, N: 0 }, A: { H: .56, L: .22, N: 0 },
+  PR: { U: { N: .85, L: .62, H: .27 }, C: { N: .85, L: .68, H: .5 } } };
+const CVSS_METRICS = [
+  { k: 'AV', label: 'Attack Vector', opts: [['N', 'Network'], ['A', 'Adjacent'], ['L', 'Local'], ['P', 'Physical']] },
+  { k: 'AC', label: 'Attack Complexity', opts: [['L', 'Low'], ['H', 'High']] },
+  { k: 'PR', label: 'Privileges Req.', opts: [['N', 'None'], ['L', 'Low'], ['H', 'High']] },
+  { k: 'UI', label: 'User Interaction', opts: [['N', 'None'], ['R', 'Required']] },
+  { k: 'S', label: 'Scope', opts: [['U', 'Unchanged'], ['C', 'Changed']] },
+  { k: 'C', label: 'Confidentiality', opts: [['H', 'High'], ['L', 'Low'], ['N', 'None']] },
+  { k: 'I', label: 'Integrity', opts: [['H', 'High'], ['L', 'Low'], ['N', 'None']] },
+  { k: 'A', label: 'Availability', opts: [['H', 'High'], ['L', 'Low'], ['N', 'None']] },
+];
+function parseCvss(v) { const o = {}; if (typeof v !== 'string') return o; for (const p of v.split('/')) { const i = p.indexOf(':'); if (i > 0) o[p.slice(0, i)] = p.slice(i + 1); } return o; }
+function cvssScore(v) {
+  const m = parseCvss(v), S = m.S; if (S !== 'U' && S !== 'C') return null;
+  const av = CVSS_W.AV[m.AV], ac = CVSS_W.AC[m.AC], ui = CVSS_W.UI[m.UI], pr = CVSS_W.PR[S]?.[m.PR], c = CVSS_W.C[m.C], i = CVSS_W.I[m.I], a = CVSS_W.A[m.A];
+  if ([av, ac, ui, pr, c, i, a].some(x => x === undefined)) return null;
+  const iss = 1 - (1 - c) * (1 - i) * (1 - a);
+  const impact = S === 'U' ? 6.42 * iss : 7.52 * (iss - .029) - 3.25 * Math.pow(iss - .02, 15);
+  if (impact <= 0) return 0;
+  const expl = 8.22 * av * ac * pr * ui;
+  return Math.ceil((S === 'U' ? Math.min(impact + expl, 10) : Math.min(1.08 * (impact + expl), 10)) * 10) / 10;
+}
+const cvssSev = (s) => (s == null ? null : s <= 0 ? 'info' : s < 4 ? 'low' : s < 7 ? 'medium' : s < 9 ? 'high' : 'critical');
+// The CVSS calculator shown to graders (admin/editor) in the vuln finding editor. A COMPLETE vector
+// drives `sevSel` (the severity dropdown) and fills a hidden `cvss` input the form submits; picking a
+// severity by hand instead clears the vector (a manual override). Returns the node to append.
+function cvssSection(sevSel, existingVector) {
+  const cur = parseCvss(existingVector || '');
+  const hidden = el('input', { type: 'hidden', name: 'cvss', value: existingVector || '' });
+  const readout = el('span', { className: 'cvss-score' });
+  const selects = {};
+  const grid = el('div', { className: 'cvss-grid' });
+  const recompute = () => {
+    if (!CVSS_METRICS.every(m => selects[m.k].value)) { readout.textContent = 'incomplete'; readout.className = 'cvss-score muted'; hidden.value = ''; return; }
+    const vec = 'CVSS:3.1/' + CVSS_METRICS.map(m => m.k + ':' + selects[m.k].value).join('/');
+    const s = cvssScore(vec), sv = cvssSev(s);
+    readout.textContent = s.toFixed(1) + ' · ' + sv.toUpperCase();
+    readout.className = 'cvss-score sev-' + sv;
+    hidden.value = vec; sevSel.value = sv;
+  };
+  for (const m of CVSS_METRICS) {
+    const sel = el('select', { className: 'cvss-sel' }, el('option', { value: '' }, m.k + ' —'),
+      ...m.opts.map(([v, lab]) => el('option', { value: v, selected: cur[m.k] === v }, `${v} · ${lab}`)));
+    sel.onchange = recompute; selects[m.k] = sel;
+    grid.append(el('label', { className: 'cvss-lab' }, el('span', {}, m.label), sel));
+  }
+  sevSel.addEventListener('change', () => {
+    if (hidden.value) { hidden.value = ''; for (const m of CVSS_METRICS) selects[m.k].value = ''; readout.textContent = 'cleared'; readout.className = 'cvss-score muted'; }
+  });
+  const box = el('div', { className: 'cvss-box', hidden: !existingVector },
+    el('div', { className: 'cvss-hd' }, el('span', { className: 'kicker' }, 'CVSS 3.1 base'), readout), grid);
+  const toggle = el('button', { type: 'button', className: 'btn line sm', style: 'margin:2px 0 8px', onclick: () => { box.hidden = !box.hidden; } }, icon('plus', 12), 'CVSS calculator');
+  if (existingVector) recompute();
+  return el('div', {}, hidden, toggle, box);
+}
 const FIX_STATUS = [{ value: 'not_fixed', label: 'Not fixed' }, { value: 'half_fixed', label: 'Partially fixed' }, { value: 'fixed', label: 'Fixed' }];
 const fixLabel = (v) => (FIX_STATUS.find(x => x.value === v)?.label || v);
 // A vuln's location(s) are stored as a "Location: a, b, c" first line of the body.
@@ -1215,7 +1275,9 @@ function findingDetail(f, id) {
     build: (b) => {
       b.append(el('div', { className: 'fd-badges' },
         f.severity ? el('span', { className: 'fd-sev sev-' + f.severity }, f.severity.toUpperCase()) : null,
+        f.cvss ? el('span', { className: 'fd-cvss', title: f.cvss }, 'CVSS ' + (cvssScore(f.cvss)?.toFixed(1) ?? '—')) : null,
         reportTick(f, () => renderTarget(id))));
+      if (f.cvss) { b.append(el('label', {}, 'CVSS vector')); b.append(el('code', { className: 'fd-vector' }, f.cvss)); }
       if (locs.length) { b.append(el('label', {}, locs.length > 1 ? 'Locations' : 'Location')); b.append(el('div', { className: 'fd-locs' }, ...locs.map(l => el('code', {}, l)))); }
       const bodyText = f.kind === 'vuln' ? stripLocationPrefix(f.body) : f.body;
       if (bodyText) { b.append(el('label', {}, f.kind === 'credential' ? 'Credentials' : 'Details')); b.append(el('pre', { className: 'fd-body' }, bodyText)); }
@@ -1300,7 +1362,9 @@ async function findingModal(assetId, finding = null, isRetest = false) {
       build: (b) => {
         field(b, 'Original finding ID', 'title', { value: finding?.title || '', ph: 'e.g. ACME-2024-014 — SQLi in /search' });
         const c1 = el('div'), c2 = el('div');
-        field(c1, 'Severity', 'severity', { value: finding?.severity || 'medium', options: SEVERITIES.filter(s => s.value) });
+        // Severity is a grader's (admin/editor) call; a worker just records the fix status.
+        if (isEditor()) field(c1, 'Severity', 'severity', { value: finding?.severity || 'medium', options: SEVERITIES.filter(s => s.value) });
+        else if (finding?.severity) c1.append(el('label', {}, 'Severity'), el('div', { className: 'readonly-sev' }, el('span', { className: 'fd-sev sev-' + finding.severity }, finding.severity.toUpperCase())));
         field(c2, 'Fix status', 'fix_status', { value: finding?.fix_status || 'not_fixed', options: FIX_STATUS });
         b.append(el('div', { className: 'field-row' }, c1, c2));
         field(b, 'Explanation', 'body', { value: finding?.body || '', textarea: true, ph: 'what you re-tested and the result' });
@@ -1340,7 +1404,19 @@ async function findingModal(assetId, finding = null, isRetest = false) {
           field(fields, 'Server / URL', 'cred_server', { ph: 'https://…  or  host' });
         } else {
           field(fields, 'Title', 'title', { value: finding?.title || '', ph: 'e.g. SQL injection in /search' });
-          field(fields, 'Severity', 'severity', { value: finding?.severity || 'medium', options: SEVERITIES.filter(s => s.value) });
+          // Severity is a grading decision — only admins/editors set it (optionally via CVSS). A
+          // worker records the finding; a lead grades it afterwards (and gets credited to the finder).
+          if (isEditor()) {
+            const sevSel = field(fields, 'Severity', 'severity', { value: finding?.severity || 'medium', options: SEVERITIES.filter(s => s.value) });
+            fields.append(cvssSection(sevSel, finding?.cvss));
+          } else if (finding?.severity || finding?.cvss) {
+            fields.append(el('label', {}, 'Severity (set by a lead)'),
+              el('div', { className: 'readonly-sev' },
+                finding.severity ? el('span', { className: 'fd-sev sev-' + finding.severity }, finding.severity.toUpperCase()) : null,
+                finding.cvss ? el('span', { className: 'fd-cvss', title: finding.cvss }, 'CVSS ' + (cvssScore(finding.cvss)?.toFixed(1) ?? '—')) : null));
+          } else {
+            fields.append(el('p', { className: 'muted small', style: 'margin:2px 0 8px' }, 'A lead will set the severity.'));
+          }
           // one or more affected locations (URLs / domains)
           fields.append(el('label', {}, 'Location(s) — URL / domain'));
           const locList = el('div', { className: 'loclist' });
@@ -1365,16 +1441,20 @@ async function findingModal(assetId, finding = null, isRetest = false) {
     onSubmit: async (fd) => {
       const raw = Object.fromEntries(fd);
       const kind = raw.kind;
-      let body = raw.body || '', severity = null;
+      let body = raw.body || '';
+      const payload = { title: '', kind, body, refs: [...selectedRefs] };
       if (kind === 'credential') {
         body = `Username: ${raw.cred_user || ''}\nPassword: ${raw.cred_pass || ''}\nServer: ${raw.cred_server || ''}`;
       } else if (kind === 'vuln') {
-        severity = raw.severity || null;
+        // Only present when a grader (admin/editor) filled them; the server ignores them from a worker.
+        if ('severity' in raw) payload.severity = raw.severity || null;
+        if ('cvss' in raw) payload.cvss = raw.cvss || null;
         const locs = [...document.querySelectorAll('.modal .locinput')].map(i => i.value.trim()).filter(Boolean);
         body = (locs.length ? `Location: ${locs.join(', ')}\n\n` : '') + (raw.body || '');
       }
-      const title = raw.title || (kind === 'credential' ? 'Credentials' : kind === 'vuln' ? 'Vulnerability' : 'Note');
-      await saveFinding(editing, finding, assetId, { title, kind, severity, body, refs: [...selectedRefs] }, images);
+      payload.body = body;
+      payload.title = raw.title || (kind === 'credential' ? 'Credentials' : kind === 'vuln' ? 'Vulnerability' : 'Note');
+      await saveFinding(editing, finding, assetId, payload, images);
       renderTarget(assetId);
     },
   });
@@ -2267,35 +2347,44 @@ async function adminBackup(ctx, A) {
   return [bcard];
 }
 
-// Ranking page: who is producing, attributed by findings.author. Sorted by total findings; a
-// separate strip highlights the PoC leaders. Findings recorded before attribution existed
-// (author NULL) aren't counted — noted in the header.
+// Severity mix chips (Critical/High/Medium/Low), only the non-zero bands.
+const SEV_ABBR = [['critical', 'C'], ['high', 'H'], ['medium', 'M'], ['low', 'L']];
+function sevChips(sev) {
+  const chips = SEV_ABBR.filter(([k]) => sev?.[k]).map(([k, ab]) => el('span', { className: 'sevchip sev-' + k, title: k }, `${ab} ${sev[k]}`));
+  return chips.length ? el('span', { className: 'sevchips' }, ...chips) : el('span', { className: 'muted small' }, '—');
+}
+// Ranking page: who is producing, attributed by findings.author. Sorted by a severity-weighted
+// score (an admin/editor's grade on a worker's finding lifts that worker), with a PoC-leaders strip.
+// Credits are durable — deleting an old engagement does not lower anyone's numbers.
 async function adminRanking(ctx, A) {
   const { ranking = [], totals = {} } = await A('/ranking');
   const out = [];
   const head = admCard('Operator ranking',
-    `${totals.operators || 0} operator${totals.operators === 1 ? '' : 's'} · ${totals.findings || 0} attributed finding${totals.findings === 1 ? '' : 's'}`);
+    `${totals.operators || 0} operator${totals.operators === 1 ? '' : 's'} · ${totals.findings || 0} finding${totals.findings === 1 ? '' : 's'}`);
+  head.append(el('p', { className: 'muted small' },
+    'Ranked by a severity-weighted score (critical 10 · high 6 · medium 3 · low 1). A finding is credited to whoever recorded it, even when a lead grades its severity later. Deleting an old engagement never lowers these numbers.'));
   if (totals.unattributed) head.append(el('p', { className: 'muted small' },
-    `${totals.unattributed} earlier finding${totals.unattributed === 1 ? '' : 's'} were recorded before author-tracking and aren’t counted.`));
+    `${totals.unattributed} finding${totals.unattributed === 1 ? '' : 's'} recorded before attribution existed aren’t counted.`));
   if (!ranking.length) { head.append(el('p', { className: 'muted' }, 'No attributed findings yet — as operators record findings, they’ll rank here.')); return [head]; }
   out.push(head);
 
   // Leaderboard table.
-  const board = admCard('Leaderboard', 'by total findings');
+  const board = admCard('Leaderboard', 'by severity-weighted score');
   const table = el('div', { className: 'ranktable' });
   table.append(el('div', { className: 'rankhead' },
-    el('span', {}, '#'), el('span', {}, 'Operator'), el('span', {}, 'Projects'),
-    el('span', {}, 'Findings'), el('span', {}, 'PoC'), el('span', {}, 'Focus')));
+    el('span', {}, '#'), el('span', {}, 'Operator'), el('span', {}, 'Proj'),
+    el('span', {}, 'Find'), el('span', {}, 'Severity'), el('span', {}, 'PoC'), el('span', {}, 'Score')));
   ranking.forEach((r, i) => {
-    const mix = Object.entries(r.types).slice(0, 4).map(([t, n]) =>
-      el('span', { className: 'rankmix' }, codeBadge(t, true), el('span', { className: 'muted small' }, String(n))));
     table.append(el('div', { className: 'rankrow' + (i === 0 ? ' top' : '') },
       el('span', { className: 'rank-n' }, String(i + 1)),
-      el('span', {}, el('strong', {}, r.author), r.role ? el('span', { className: 'pill', style: 'margin-left:6px' }, r.role) : null),
+      el('span', { className: 'rank-op' }, el('strong', {}, r.author),
+        r.role ? el('span', { className: 'pill' }, r.role) : null,
+        r.topType ? el('span', { className: 'rank-focus' }, codeBadge(r.topType, true)) : null),
       el('span', { className: 'rank-num' }, String(r.projects)),
-      el('span', { className: 'rank-num rank-find' }, String(r.findings)),
+      el('span', { className: 'rank-num' }, String(r.findings)),
+      el('span', {}, sevChips(r.sev)),
       el('span', { className: 'rank-num' }, r.poc ? el('span', { className: 'pill gold' }, String(r.poc)) : el('span', { className: 'muted' }, '0')),
-      el('span', { className: 'rankmixwrap' }, ...(mix.length ? mix : [el('span', { className: 'muted small' }, '—')]))));
+      el('span', { className: 'rank-num rank-score' }, String(r.score ?? 0))));
   });
   board.append(table);
   out.push(board);

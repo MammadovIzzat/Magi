@@ -1980,7 +1980,7 @@ function tplItemModal(type, item = null) {
 // ---------- settings: team server link ----------
 async function renderSettings() {
   setRail(null);
-  setCrumbs([{ label: 'engagements', go: () => location.hash = '' }, { label: 'settings' }]);
+  setCrumbs([{ label: 'settings' }]); // a top-level area, not nested under engagements
   topActions();
   try { LINK = await api('/link'); } catch { LINK = { linked: false, unavailable: true }; }
   renderAccount();
@@ -2265,7 +2265,7 @@ async function renderAdmin(section) {
   if (!section) section = (location.hash.match(/^#\/admin\/(\w+)/) || [])[1] || 'users';
   if (!ADMIN_SECTIONS[section]) section = 'users';
   setRail(null);
-  setCrumbs([{ label: 'engagements', go: () => location.hash = '' }, { label: 'admin' }, { label: section }]);
+  setCrumbs([{ label: 'admin', go: () => location.hash = '/admin' }, { label: section }]); // top-level area + its page
   const acts = [el('button', { className: 'btn', onclick: () => renderAdmin(section) }, icon('down', 12), el('span', { className: 'lbl' }, 'Refresh'))];
   if (section === 'users') acts.push(el('button', { className: 'btn gold', onclick: () => mintCodeDialog(ctx) }, icon('plus', 12), el('span', { className: 'lbl' }, 'New code')));
   topActions(...acts);

@@ -120,9 +120,9 @@ checks.push(['CVSS editor opens, scores, and applies to the finding', await ev(`
   const d = await (await fetch("/api/projects/" + p.id)).json();
   const fold = await (await fetch("/api/assets/" + d.assets[0].id)).json();
   addFinding(fold.targets[0].id); await new Promise(r => setTimeout(r, 300));
-  const kindSel = document.querySelector(".modal select[name=kind]");
+  const kindSel = document.querySelector(".modal [data-sel=kind]");
   kindSel.value = "vuln"; kindSel.dispatchEvent(new Event("change")); await new Promise(r => setTimeout(r, 150));
-  const hasSev = !!document.querySelector(".modal select[name=severity]");
+  const hasSev = !!document.querySelector(".modal [data-sel=severity]");
   [...document.querySelectorAll(".modal button")].find(b => /CVSS calculator/i.test(b.textContent))?.click();
   await new Promise(r => setTimeout(r, 120));
   const opts = document.querySelectorAll(".cvss-overlay .cvss-opt");
@@ -136,7 +136,7 @@ checks.push(['CVSS editor opens, scores, and applies to the finding', await ev(`
   document.querySelector('.cvss-hactions .iconbtn[title=Apply]')?.click();
   await new Promise(r => setTimeout(r, 100));
   const gone = !document.querySelector(".cvss-overlay");
-  const sev = document.querySelector(".modal select[name=severity]")?.value;
+  const sev = document.querySelector(".modal [data-sel=severity]")?.value;
   const cvssVal = document.querySelector(".modal input[name=cvss]")?.value || "";
   return hasSev && opts.length >= 20 && scored && oneSelected && gone && sev === "critical" && cvssVal.includes("AV:N")`)]);
 checks.push(['template library paints', await ev(`

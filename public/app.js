@@ -225,16 +225,61 @@ function modal(opts) {
     e.preventDefault();
     errEl.textContent = ''; submit.disabled = true;   // inline error, not a focus-stealing alert()
     try { await onSubmit(new FormData(form)); close(); }
-    catch (err) { errEl.textContent = err.message || String(err); form.querySelector('input,textarea,select')?.focus(); }
+    catch (err) { errEl.textContent = err.message || String(err); form.querySelector('input:not([type=hidden]),textarea,.sel-trigger')?.focus(); }
     finally { submit.disabled = false; }
   };
   root.replaceChildren(el('div', { className: 'overlay', onclick: (e) => { if (e.target.classList.contains('overlay')) close(); } }, form));
-  form.querySelector('input,textarea,select')?.focus();
+  form.querySelector('input:not([type=hidden]),textarea,.sel-trigger')?.focus();
+}
+// A fully app-styled dropdown replacing the native <select> — its option popup is OS chrome that
+// CSS can't theme reliably. Returns an element that behaves like a <select>: a `value` get/set
+// property, a 'change' event, and a hidden <input name> so FormData still serialises it. The menu
+// is portalled to <body> so the modal's overflow never clips it.
+function customSelect({ name, options, value, className = '' } = {}) {
+  const opts = options.map(o => ({ value: String(o.value), label: o.label }));
+  let idx = Math.max(0, opts.findIndex(o => o.value === String(value)));
+  const hidden = name ? el('input', { type: 'hidden', name }) : null;
+  const label = el('span', { className: 'sel-label' });
+  const trigger = el('button', { type: 'button', className: 'sel-trigger' }, label);
+  const root = el('div', { className: 'sel' + (className ? ' ' + className : '') }, ...(hidden ? [hidden] : []), trigger);
+  root.setAttribute('data-sel', name || '');
+  let menu = null;
+  const paint = () => { label.textContent = opts[idx]?.label ?? ''; if (hidden) hidden.value = opts[idx]?.value ?? ''; };
+  const fire = () => root.dispatchEvent(new Event('change', { bubbles: true }));
+  const position = () => {
+    const r = trigger.getBoundingClientRect();
+    menu.style.left = r.left + 'px'; menu.style.width = r.width + 'px';
+    const mh = Math.min(menu.scrollHeight, 260), below = window.innerHeight - r.bottom;
+    if (below < mh + 8 && r.top > below) { menu.style.top = 'auto'; menu.style.bottom = (window.innerHeight - r.top + 4) + 'px'; }
+    else { menu.style.bottom = 'auto'; menu.style.top = (r.bottom + 4) + 'px'; }
+  };
+  const onDown = (e) => { if (menu && !menu.contains(e.target) && !trigger.contains(e.target)) close(); };
+  const reposition = () => { if (menu) position(); };
+  const close = () => { if (!menu) return; menu.remove(); menu = null; root.classList.remove('open');
+    document.removeEventListener('mousedown', onDown, true); window.removeEventListener('scroll', reposition, true); window.removeEventListener('resize', close); };
+  const open = () => {
+    if (menu) return close();
+    menu = el('div', { className: 'sel-menu' }, ...opts.map((o, i) =>
+      el('div', { className: 'sel-opt' + (i === idx ? ' on' : ''),
+        onmousedown: (e) => { e.preventDefault(); idx = i; paint(); close(); fire(); } }, o.label)));
+    document.body.append(menu); root.classList.add('open'); position();
+    menu.children[idx]?.scrollIntoView({ block: 'nearest' });
+    document.addEventListener('mousedown', onDown, true); window.addEventListener('scroll', reposition, true); window.addEventListener('resize', close);
+  };
+  trigger.onclick = (e) => { e.preventDefault(); open(); };
+  trigger.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); idx = Math.min(opts.length - 1, Math.max(0, idx + (e.key === 'ArrowDown' ? 1 : -1))); paint(); fire(); }
+    else if (e.key === 'Escape') close();
+    else if ((e.key === 'Enter' || e.key === ' ') && !menu) { e.preventDefault(); open(); }
+  });
+  Object.defineProperty(root, 'value', { get: () => opts[idx]?.value ?? '', set: (v) => { const i = opts.findIndex(o => o.value === String(v)); if (i >= 0) { idx = i; paint(); } } });
+  paint();
+  return root;
 }
 function field(parent, label, name, { type = 'text', value = '', ph = '', textarea = false, options } = {}) {
   parent.append(el('label', {}, label));
   let input;
-  if (options) { input = el('select', { name }); for (const o of options) input.append(el('option', { value: o.value, selected: o.value === value }, o.label)); }
+  if (options) { input = customSelect({ name, options, value }); }
   else if (textarea) input = el('textarea', { name, value, placeholder: ph });
   else input = el('input', { name, type, value, placeholder: ph });
   // Date/time fields: pop the native calendar when the field is clicked or focused, so you never
@@ -994,8 +1039,8 @@ async function renderTarget(id) {
     const findList = el('div', { className: 'find-list' });
     const tabs = el('div', { className: 'evtabs' });
     const search = el('input', { className: 'evsearch', type: 'search', placeholder: 'Search findings…', value: EVID.q });
-    const sortSel = el('select', { className: 'evsort' },
-      ...[['new', 'Newest'], ['sev', 'Severity'], ['title', 'Name']].map(([v, l]) => el('option', { value: v, selected: EVID.sort === v }, l)));
+    const sortSel = customSelect({ className: 'evsort', value: EVID.sort,
+      options: [{ value: 'new', label: 'Newest' }, { value: 'sev', label: 'Severity' }, { value: 'title', label: 'Name' }] });
     const repaint = () => {
       [...tabs.children].forEach(b => b.classList.toggle('on', b.dataset.k === EVID.kind));
       const shown = filterSortFindings(a.findings);

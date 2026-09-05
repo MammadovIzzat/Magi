@@ -127,12 +127,18 @@ checks.push(['CVSS editor opens, scores, and applies to the finding', await ev(`
   await new Promise(r => setTimeout(r, 120));
   const opts = document.querySelectorAll(".cvss-overlay .cvss-opt");
   const scored = /^[0-9]/.test(document.querySelector(".cvss-badge-n")?.textContent || "");
+  // Clicking an option must leave EXACTLY ONE button highlighted in that metric (regression: the
+  // handler once compared a data-attribute el() never set, so a click deselected the whole row).
+  const conf = [...document.querySelectorAll(".cvss-overlay .cvss-metric")].find(m => /Confidentiality$/.test(m.querySelector(".cvss-mlabel")?.textContent || ""));
+  [...conf.querySelectorAll(".cvss-opt")].find(b => b.textContent.trim() === "None (N)").click();
+  await new Promise(r => setTimeout(r, 40));
+  const oneSelected = conf.querySelectorAll(".cvss-opt.on").length === 1 && /None/.test(conf.querySelector(".cvss-opt.on").textContent);
   document.querySelector('.cvss-hactions .iconbtn[title=Apply]')?.click();
   await new Promise(r => setTimeout(r, 100));
   const gone = !document.querySelector(".cvss-overlay");
   const sev = document.querySelector(".modal select[name=severity]")?.value;
   const cvssVal = document.querySelector(".modal input[name=cvss]")?.value || "";
-  return hasSev && opts.length >= 20 && scored && gone && sev === "critical" && cvssVal.includes("AV:N")`)]);
+  return hasSev && opts.length >= 20 && scored && oneSelected && gone && sev === "critical" && cvssVal.includes("AV:N")`)]);
 checks.push(['template library paints', await ev(`
   location.hash = "#/editor"; await new Promise(r => setTimeout(r, 1400));
   return document.querySelectorAll(".tpl-type").length > 0`)]);

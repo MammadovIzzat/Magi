@@ -1192,11 +1192,12 @@ function openCvssEditor(currentVector, onApply) {
     const grid = el('div', { className: 'cvss-mgrid' });
     for (const met of g.metrics) {
       const seg = el('div', { className: 'cvss-seg' });
-      const curVal = () => m[met.k] ?? met.opts[0][0];
+      const cur = m[met.k] ?? met.opts[0][0];
+      const btns = [];
       for (const [v, lab] of met.opts) {
-        seg.append(el('button', { type: 'button', className: 'cvss-opt' + (curVal() === v ? ' on' : ''), 'data-v': v,
-          onclick: () => { m[met.k] = v; for (const b of seg.children) b.classList.toggle('on', b.getAttribute('data-v') === v); recompute(); } },
-          `${lab} (${v})`));
+        const b = el('button', { type: 'button', className: 'cvss-opt' + (cur === v ? ' on' : ''),
+          onclick: () => { m[met.k] = v; btns.forEach(x => x.classList.toggle('on', x === b)); recompute(); } }, `${lab} (${v})`);
+        btns.push(b); seg.append(b);
       }
       grid.append(el('div', { className: 'cvss-metric' }, el('div', { className: 'cvss-mlabel' }, met.label), seg));
     }

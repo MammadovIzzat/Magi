@@ -907,7 +907,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 .readonly-sev { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 
 /* Full CVSS 3.1 editor — its own overlay above the finding modal, SysReptor-style. */
-.cvss-overlay { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, .6);
+.cvss-overlay { position: fixed; inset: 0; z-index: 70; background: rgba(0, 0, 0, .6);
   display: flex; align-items: flex-start; justify-content: center; padding: 24px 16px; overflow: auto; }
 .cvss-panel { width: 100%; max-width: 1120px; background: var(--panel); border: 1px solid var(--line-hi); }
 .cvss-header { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between;

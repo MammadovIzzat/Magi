@@ -26,11 +26,6 @@ import * as jwt from './jwt.js';
 import { exportProject } from './projects-io.js';
 import { importProject } from './projects-io.js';
 
-// The password is held in memory only during connect→approval, so the background poll can log in
-// for a token the moment an admin approves — without re-prompting and without persisting it. Lost
-// on restart (the user just logs in), never written to disk.
-let pendingSecret = null;
-
 const LINK_FILE = join(DATA_DIR, 'link.json');
 const TIMEOUT = 8000;
 
@@ -151,10 +146,8 @@ export function remoteFetch(path, { method = 'GET', body, headers = {}, link } =
  * starts a background poll that finalizes the link once approved. Local data is only set aside
  * on approval, not now — so a request that is never approved changes nothing.
  */
-export async function connect({ server_url, fingerprint, code, username, display_name, password }) {
-  if (!server_url || !code || !username || !display_name || !password)
-    return { ok: false, error: 'server address, code, username, display name and password are all required' };
-  if (String(password).length < 8) return { ok: false, error: 'password must be at least 8 characters' };
+export async function connect({ server_url, fingerprint, code, device_name }) {
+  if (!server_url || !code) return { ok: false, error: 'the server address and a one-time code are required' };
   linkGen++; // invalidate any in-flight sync from a previous link state
   stopSyncLoop();
   let cert;
@@ -162,73 +155,67 @@ export async function connect({ server_url, fingerprint, code, username, display
   catch (e) { return { ok: false, error: e.message }; }
 
   const device_id = randomUUID();
-  const pending = {
-    server_url, fingerprint: cert.fingerprint, cert_pem: cert.pem, device_id,
-    req_username: username, username, display_name, pending: true,
-  };
+  const name = String(device_name || 'device').trim().slice(0, 60) || 'device';
+  const pending = { server_url, fingerprint: cert.fingerprint, cert_pem: cert.pem, device_id, device_name: name, pending: true };
   let res;
-  try { res = await remoteFetch('/api/enroll', { method: 'POST', link: pending, body: { code, username, display_name, device_id, password } }); }
+  try { res = await remoteFetch('/api/enroll', { method: 'POST', link: pending, body: { code, device_id, device_name: name } }); }
   catch (e) { return { ok: false, error: `could not reach the server: ${e.message}` }; }
   if (res.status !== 202 || res.json?.status !== 'pending')
     return { ok: false, error: res.json?.error || `could not request access (${res.status})` };
 
   pending.request_id = res.json.request_id;
   pending.requested_at = new Date().toISOString();
-  saveLink(pending); // no token yet — the poll logs in for one once an admin approves
-  pendingSecret = { username, password };
+  saveLink(pending); // no device token yet — the poll picks it up once an admin accepts
   startApprovalPoll();
   return { ok: true, pending: true, link: publicLink(pending) };
 }
 
-// Ask the server for a fresh access token with a password (+ optional OTP). Returns the raw
+// Ask the server for an operator's access token. The DEVICE token (link.device_token) authenticates
+// the endpoint; the operator's username/password (+ OTP) authenticate the person. Returns the raw
 // response so callers can handle an MFA setup/required step.
-async function requestToken(link, password, otp) {
+async function requestToken(link, username, password, otp) {
   try {
-    return await remoteFetch('/api/auth/token', { method: 'POST', link,
-      body: { username: link.username || link.req_username, password, device_id: link.device_id, otp } });
+    // Bearer = the device token (not link.token, which is the operator's JWT and may not exist yet).
+    return await remoteFetch('/api/auth/token', { method: 'POST', link: { ...link, token: link.device_token },
+      body: { username, password, otp } });
   } catch (e) { return { status: 0, json: { error: e.message } }; }
 }
 
-// Persist a freshly-minted token and go fully linked. The password is used only to compute an
-// offline-login verifier and is then discarded — the JWT and the verifier are what we keep.
-function storeToken(link, password, loginJson) {
-  const full = {
-    server_url: link.server_url, fingerprint: link.fingerprint, cert_pem: link.cert_pem,
-    device_id: link.device_id, username: link.username || link.req_username,
-    token: loginJson.token,                       // carries role, epoch, exp, username, device_id
-    pass_verifier: hashPassword(String(password)), // scrypt — lets the client log in offline
-    connected_at: link.connected_at || new Date().toISOString(), stash_id: link.stash_id ?? null,
-    last_sync: link.last_sync || null, last_ok: link.last_ok || null, needs_reauth: 0,
-  };
+// Persist a freshly-minted operator token. The password is used only to compute an offline-login
+// verifier (kept per operator, so any of them can open the app offline) and is then discarded.
+function storeUserToken(username, password, loginJson) {
+  const link = loadLink(); if (!link) return { ok: false, error: 'not connected' };
+  link.token = loginJson.token;                  // operator JWT (carries role, epoch, exp, device_id)
+  link.username = username;                       // the operator currently signed in
+  link.verifiers = { ...(link.verifiers || {}), [username]: hashPassword(String(password)) };
+  link.needs_login = 0; link.needs_reauth = 0;
   linkGen++;
-  stopApprovalPoll();
-  saveLink(full);
-  // Once linked, the app opens with the SERVER identity only. Kill any leftover LOCAL-account
-  // sessions (user_id set) so the pre-link login (e.g. admin/admin) can no longer open this device.
-  // Link sessions (null user_id) are left alone, so refreshing an expired token doesn't log you out.
+  saveLink(link);
+  // Kill any leftover LOCAL-account sessions (e.g. admin/admin) so only the server operator opens this.
   try { db.prepare(`DELETE FROM sessions WHERE user_id IS NOT NULL`).run(); } catch { /* best effort */ }
-  pendingSecret = null;
   startSyncLoop();
-  return { ok: true, link: publicLink(full), recovery_codes: loginJson.recovery_codes };
+  return { ok: true, link: publicLink(loadLink()), recovery_codes: loginJson.recovery_codes };
 }
 
-// Log in for a token, storing it on success. Surfaces { mfa } when the server wants a second
-// factor (first-time setup or a required code) so the UI can collect it and call again.
-async function attemptLogin(link, password, otp) {
-  const r = await requestToken(link, password, otp);
-  if (r.status === 200 && r.json?.token) return storeToken(link, password, r.json);
+// Log an operator in for a token, storing it on success. Surfaces { mfa } when the server wants a
+// second factor (first-time setup or a required code) so the UI can collect it and call again.
+async function attemptLogin(username, password, otp) {
+  const link = loadLink();
+  if (!link?.device_token) return { ok: false, error: 'this device is not connected to the server' };
+  const r = await requestToken(link, username, password, otp);
+  if (r.status === 200 && r.json?.token) return storeUserToken(username, password, r.json);
   if (r.json?.mfa) return { ok: false, mfa: r.json.mfa, secret: r.json.secret, otpauth_uri: r.json.otpauth_uri };
   return { ok: false, error: r.json?.error || `login failed (${r.status})` };
 }
 
-// The UI calls this to finish a just-approved link (auto-login couldn't, e.g. it needs an OTP)
-// or to re-authenticate after the token expired / was revoked (epoch bump). On success the
-// mirror is untouched — we're already linked and only refreshing the token.
-export async function login({ password, otp } = {}) {
+// The UI calls this to sign an operator in on a connected device, or to re-authenticate after a
+// token expired / was revoked. On success the mirror is untouched — the device is connected and we
+// only mint the operator's token.
+export async function login({ username, password, otp } = {}) {
   const link = loadLink();
-  if (!link) return { ok: false, error: 'not linked' };
-  if (!password) return { ok: false, error: 'a password is required' };
-  return attemptLogin(link, password, otp);
+  if (!link) return { ok: false, error: 'not connected' };
+  if (!username || !password) return { ok: false, error: 'a username and password are required' };
+  return attemptLogin(username, password, otp);
 }
 
 // Change the linked user's password. On a linked client the password IS the server account's, so
@@ -238,19 +225,19 @@ export async function login({ password, otp } = {}) {
 // password is already changed — we surface needs_reauth so the normal sign-in flow completes it.
 export async function changePassword(current, next) {
   const link = loadLink();
-  if (!link?.token) return { ok: false, error: 'not linked' };
+  if (!link?.token || !link.username) return { ok: false, error: 'not signed in' };
   if (!current || !next) return { ok: false, error: 'both your current and new password are required' };
   let r;
   try { r = await remoteFetch('/api/change-password', { method: 'POST', link, body: { current, next } }); }
   catch (e) { return { ok: false, error: `could not reach the server: ${e.message}` }; }
   if (r.status !== 200) return { ok: false, error: r.json?.error || `could not change password (${r.status})` };
-  // The server accepted it and its epoch bump has now invalidated our device token. Update the
-  // offline verifier right away so an offline open uses the new password even if the re-auth below
-  // can't finish immediately.
-  const l = loadLink(); if (l) { l.pass_verifier = hashPassword(String(next)); saveLink(l); }
-  const relog = await attemptLogin(loadLink(), next);   // fresh device token (+ re-store verifier)
+  // The server accepted it and its epoch bump has now invalidated our operator token. Update this
+  // operator's offline verifier right away so an offline open uses the new password even if the
+  // re-auth below can't finish immediately.
+  const l = loadLink(); if (l) { l.verifiers = { ...(l.verifiers || {}), [l.username]: hashPassword(String(next)) }; saveLink(l); }
+  const relog = await attemptLogin(link.username, next);  // fresh operator token (+ re-store verifier)
   if (relog.ok) return { ok: true };
-  markNeedsReauth();                                     // MFA needed or server unreachable — finish via sign-in
+  markNeedsReauth();                                       // MFA needed or server unreachable — finish via sign-in
   return { ok: true, needs_reauth: true, mfa: relog.mfa };
 }
 
@@ -275,19 +262,16 @@ export async function pollApproval() {
   if (st === 'rejected') { stopApprovalPoll(); deleteLink(); return { pending: false, rejected: true }; }
   if (st !== 'approved') return { pending: true };
 
-  // Approved. Set local data aside once, move out of 'pending' into 'awaiting login', then try to
-  // log in for a token (auto, using the in-memory password). If the server wants an OTP, or we
-  // have no cached password, the link sits in needs_login and the UI collects credentials.
+  // Accepted. Store the DEVICE token, set local data aside once, and move into 'awaiting login' — an
+  // operator now signs in on top of the connected device (no auto-login: connect carries no account).
   if (link.stash_id === undefined) {
     try { link.stash_id = stashLocalProjects() ?? null; } catch (e) { return { pending: true, error: `could not set local data aside: ${e.message}` }; }
     sync.setWatermarks(db, { pull: '', push: '' });
   }
+  link.device_token = r.json.token || link.device_token;   // the device credential, delivered once
   link.pending = false; link.needs_login = true; saveLink(link);
   stopApprovalPoll();
-  if (!pendingSecret?.password) return { approved: true, needs_login: true };
-  const res = await attemptLogin(loadLink(), pendingSecret.password);
-  if (res.ok) return { approved: true, linked: true };
-  return { approved: true, ...res }; // mfa or error → UI completes via login()
+  return { approved: true, needs_login: true };
   } finally { approvalBusy = false; }
 }
 
@@ -321,14 +305,17 @@ function markNeedsReauth() {
   if (link && !link.pending && !link.needs_reauth) { link.needs_reauth = 1; saveLink(link); }
 }
 
-/** Offline identity check against the cached verifier — lets a linked user open the app while the
- *  server is unreachable. Grants no token; sync stays paused until an online login refreshes it. */
-export function offlineLogin(password) {
+/** Offline identity check for an operator, against their cached verifier — lets an operator who has
+ *  signed in online before open the app while the server is unreachable. Grants no token; sync stays
+ *  paused until an online login refreshes it. Sets them as the current operator. */
+export function offlineLogin(username, password) {
   const link = loadLink();
-  if (!link || link.pending) return { ok: false, error: 'not linked' };
-  if (!link.pass_verifier) return { ok: false, error: 'no cached credential — log in once while online' };
-  if (!verifyPassword(String(password || ''), link.pass_verifier)) return { ok: false, error: 'wrong password' };
-  return { ok: true, link: publicLink(link) };
+  if (!link || link.pending || !link.device_token) return { ok: false, error: 'not connected' };
+  const v = link.verifiers?.[username];
+  if (!v) return { ok: false, error: 'no cached credential — sign in once while online' };
+  if (!verifyPassword(String(password || ''), v)) return { ok: false, error: 'wrong password' };
+  link.username = username; link.needs_reauth = 1; saveLink(link); stopSyncLoop(); // current operator; sync paused until online
+  return { ok: true, link: publicLink(loadLink()) };
 }
 
 /** One push+pull cycle against the linked server. Safe to call often; self-serialises. */
@@ -517,26 +504,29 @@ let remoteDisplayName = null;
 function publicLink(link) {
   if (!link) return null;
   const claims = link.token ? jwt.decodeUnsafe(link.token) : null;
-  const username = link.username || link.req_username || claims?.username || null;
+  const username = link.username || claims?.username || null;
   return {
     server_url: link.server_url, fingerprint: link.fingerprint, device_id: link.device_id,
-    username, display_name: remoteDisplayName || username,
-    role: claims?.role || null,                    // authoritative source is the signed token
+    device_name: link.device_name || null,
+    username, display_name: remoteDisplayName || username,  // the current operator (if signed in)
+    role: claims?.role || null,                             // authoritative source is the signed token
     pending: !!link.pending, request_id: link.request_id || null,
+    connected: !!link.device_token,                         // the device itself is authorized
     needs_login: !!(link.needs_login && !link.token), needs_reauth: !!link.needs_reauth,
     jwt_exp: claims?.exp || null,
     connected_at: link.connected_at || null, last_ok: link.last_ok || null, last_sync: link.last_sync || null,
-    // The token lives in the database, so it is protected exactly when the workspace is encrypted.
+    // The tokens live in the database, so they're protected exactly when the workspace is encrypted.
     token_at_rest: isEncrypted() ? 'encrypted' : 'unencrypted',
   };
 }
 
-/** Non-secret link status for the UI: linked | pending | (neither). */
+/** Non-secret link status for the UI. A connected device with an operator signed in is "linked";
+ *  connected but nobody signed in is "needs_login"; a request awaiting acceptance is "pending". */
 export function status() {
   const link = loadLink();
   if (!link) return { linked: false };
   if (link.pending) return { linked: false, pending: true, link: publicLink(link) };
-  if (link.needs_login && !link.token) return { linked: false, needs_login: true, link: publicLink(link) };
+  if (!link.token) return { linked: false, needs_login: true, connected: !!link.device_token, link: publicLink(link) };
   return { linked: true, link: publicLink(link) };
 }
 

@@ -82,20 +82,18 @@ function blank(next, cur) { return next === undefined ? cur : (next || null); }
 // ---- auth ----
 // Auth is a bearer JWT on every request — no cookies. See bearerJwt / currentUser below.
 // A network client authenticates with the per-device bearer token it got at enrollment.
-// The token is device-bound: the client also states its device id, and a token presented
-// from a different device id is refused — a copied token is useless elsewhere and shows up.
-function bearerDevice(req) {
+// Verify a CONNECTED device's own token — the credential a device gets when an admin accepts it.
+// It is not bound to any account; it only proves "this endpoint is authorized", which gates login
+// (an operator signs in on top of it). Device-bound: a token presented from a different device id
+// is refused, so a copied token is useless elsewhere. Returns the device row, or null.
+function deviceFromToken(req) {
   const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
   if (!m) return null;
-  const dev = q(`SELECT d.id, d.user_id, d.display_name, u.username, u.role
-                 FROM devices d JOIN users u ON u.id=d.user_id
-                 WHERE d.token_hash=? AND d.revoked=0`).get(sha256(m[1]));
+  const dev = q(`SELECT id, revoked FROM devices WHERE token_hash=? AND revoked=0`).get(sha256(m[1]));
   if (!dev) return null;
-  // Enforce the device binding: a token with no (or a mismatched) device header is refused,
-  // so a token lifted from a log/capture is useless without also spoofing its exact device id.
   const claimed = req.headers['x-magi-device'];
   if (!claimed || claimed !== dev.id) return null;
-  return { id: dev.user_id, username: dev.username, role: dev.role, display_name: dev.display_name, device_id: dev.id };
+  return dev;
 }
 // A server-signed access token (JWT). Verifies signature + expiry, then re-checks live state the
 // token can't carry: the device must still be enrolled and not revoked, and the token's epoch must
@@ -111,11 +109,14 @@ function bearerJwt(req) {
   // matched by the x-magi-device header, and the token's epoch must equal the user's live one.
   if (claims.device_id) {
     if (req.headers['x-magi-device'] !== claims.device_id) return null;
-    const dev = q(`SELECT d.id, d.display_name, d.revoked, u.id AS uid, u.username, u.role, u.cred_epoch
-                   FROM devices d JOIN users u ON u.id=d.user_id WHERE d.id=?`).get(claims.device_id);
+    // The DEVICE must still be connected and not revoked (device ≠ account now: a shared portal).
+    const dev = q(`SELECT id, revoked FROM devices WHERE id=?`).get(claims.device_id);
     if (!dev || dev.revoked) return null;
-    if (dev.uid !== claims.sub || dev.cred_epoch !== claims.epoch) return null;
-    return { id: dev.uid, username: dev.username, role: dev.role, display_name: dev.display_name, device_id: dev.id };
+    // The OPERATOR (any account) is re-checked live: role + epoch from the DB, so a password/role
+    // change or a delete kills the token at once.
+    const u = q(`SELECT id, username, role, cred_epoch FROM users WHERE id=?`).get(claims.sub);
+    if (!u || u.cred_epoch !== claims.epoch) return null;
+    return { id: u.id, username: u.username, role: u.role, display_name: u.username, device_id: dev.id };
   }
   // A device-less token (the web UI, standalone or server): validated against the user's live
   // credential epoch, so a password change / reset kills it at once. Role/display come from the DB.
@@ -123,20 +124,20 @@ function bearerJwt(req) {
   if (!u || u.cred_epoch !== claims.epoch) return null;
   return { id: u.id, username: u.username, role: u.role, display_name: u.username, device_id: null };
 }
-// Is this install a LINKED CLIENT, and if so, who is the linked (server) user? Read straight from
-// the client_link row so this stays synchronous (localSession/login can't await). Null unless fully
-// linked — a token present and not a still-pending request. The role comes from the signed token;
-// the identity we trust locally (the token is the server's, not ours to verify — we hold no secret).
+// Is this install a CONNECTED CLIENT (a device an admin accepted), and who is the operator signed
+// in on it? Read straight from the client_link row so this stays synchronous. Returns null unless
+// the device is connected. `username` is the current operator (null if the device is connected but
+// nobody has signed in yet). Role comes from the operator's signed token.
 function linkedIdentity() {
   if (SERVER_MODE) return null;
   try {
     const row = q(`SELECT data FROM client_link WHERE id=1`).get();
     if (!row) return null;
     const link = JSON.parse(row.data);
-    if (link.pending || !link.token) return null;
-    const claims = jwt.decodeUnsafe(link.token) || {};
-    const username = link.username || claims.username || null;
-    return username ? { username, role: claims.role || 'worker' } : null;
+    if (link.pending || !link.device_token) return null;   // not a connected device
+    if (!link.username) return { username: null, role: null, connected: true }; // connected, nobody signed in
+    const claims = link.token ? (jwt.decodeUnsafe(link.token) || {}) : {};
+    return { username: link.username, role: claims.role || 'worker', connected: true };
   } catch { return null; }
 }
 // Standalone / linked-client local login: a plain opaque bearer token, minted at login and kept in
@@ -156,10 +157,11 @@ function localSession(req) {
   if (!row) return null;
   const li = linkedIdentity();
   if (li) {
-    if (row.user_id != null) return null; // a pre-link local session is not valid on a linked device
+    if (row.user_id != null) return null;   // a pre-connect local session is not valid on a connected device
+    if (!li.username) return null;           // connected but no operator signed in → session invalid
     return { id: null, username: li.username, role: li.role, display_name: li.username, device_id: null };
   }
-  if (row.user_id == null) return null;   // a link session, but the link is gone → invalid
+  if (row.user_id == null) return null;      // a link session, but the device is no longer connected → invalid
   const u = q(`SELECT id, username, role FROM users WHERE id=?`).get(row.user_id);
   return u ? { id: u.id, username: u.username, role: u.role, display_name: u.username, device_id: null } : null;
 }
@@ -167,7 +169,7 @@ function localSession(req) {
 // session (standalone/client). Cached on the request so repeat lookups are free.
 function currentUser(req) {
   if (req._authUser !== undefined) return req._authUser;
-  req._authUser = bearerJwt(req) || bearerDevice(req) || localSession(req) || null;
+  req._authUser = bearerJwt(req) || localSession(req) || null;
   return req._authUser;
 }
 
@@ -247,31 +249,28 @@ app.post('/api/auth/login', async (req, res) => {
   const wait = lockedFor(key);
   if (wait) return res.status(429).json({ error: `too many attempts — try again in ${Math.ceil(wait / 60)} min` });
 
-  // A device linked to a server opens with the SERVER identity ONLY — never a local users row, so a
-  // leftover local account (even the shipped admin/admin) cannot open it and read the team's synced
-  // data. The password is checked against the cached verifier (works offline; the same password you
-  // use with the server). A legacy link that has no verifier yet bootstraps one via a single online
-  // login (which also handles the server's 2FA); after that, opening is offline-capable.
+  // A device connected to a server opens with a SERVER OPERATOR account — never a local users row, so
+  // a leftover local account (even the shipped admin/admin) cannot open it and read the team's synced
+  // data. Any admin-created operator may sign in (shared portal). Online first (so the server enforces
+  // its 2FA and hands us a fresh token), falling back to the operator's cached verifier when offline.
   const li = linkedIdentity();
   if (li) {
-    if ((username || '') !== li.username) { noteFailure(key); return res.status(401).json({ error: 'invalid credentials' }); }
+    if (!username || !password) { noteFailure(key); return res.status(401).json({ error: 'a username and password are required' }); }
     const m = await import('./client-link.js');
     const mintLinkSession = (extra) => {
+      q(`DELETE FROM sessions`).run(); // one operator at a time on the client — a fresh session, others gone
       const token = randomBytes(32).toString('hex');
       q(`INSERT INTO sessions (token, user_id) VALUES (?, NULL)`).run(token);
       attempts.delete(key);
-      return res.json({ token, exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * SESSION_TTL_DAYS, username: li.username, role: li.role, ...(extra || {}) });
+      const cur = linkedIdentity();
+      return res.json({ token, exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * SESSION_TTL_DAYS, username: cur.username, role: cur.role, ...(extra || {}) });
     };
-    const off = m.offlineLogin(password || '');
+    const on = await m.login({ username, password, otp });
+    if (on.ok) return mintLinkSession(on.recovery_codes ? { recovery_codes: on.recovery_codes } : undefined);
+    if (on.mfa) return res.json({ mfa: on.mfa, secret: on.secret, otpauth_uri: on.otpauth_uri });
+    const off = m.offlineLogin(username, password); // server unreachable → the operator's cached verifier
     if (off.ok) return mintLinkSession();
-    if (/no cached credential/i.test(off.error || '')) {
-      // No offline verifier stored yet (legacy link) — do one real online login to establish it.
-      const on = await m.login({ password, otp });
-      if (on.ok) return mintLinkSession(on.recovery_codes ? { recovery_codes: on.recovery_codes } : undefined);
-      if (on.mfa) return res.json({ mfa: on.mfa, secret: on.secret, otpauth_uri: on.otpauth_uri });
-      noteFailure(key); return res.status(401).json({ error: on.error || 'invalid credentials' });
-    }
-    noteFailure(key); return res.status(401).json({ error: 'invalid credentials' });
+    noteFailure(key); return res.status(401).json({ error: on.error || 'invalid credentials' });
   }
 
   const u = q(`SELECT * FROM users WHERE username=?`).get(username || '');
@@ -325,30 +324,31 @@ app.post('/api/auth/login', async (req, res) => {
   return mint({ recovery_codes: codes });
 });
 
-// Client login → a short-lived JWT (server mode). Unlike /auth/login (which mints a browser
-// cookie for the server's own web UI), this authenticates a linked device: username + password
-// (+ server-side OTP) and the enrolled device_id, and returns a signed token the client presents
-// on every later sync. The role/display are NOT taken from the client — the token carries the
-// server's values and every request re-checks them.
+// Operator login on a CONNECTED device → a short-lived JWT (server mode). The device proves itself
+// with its own token (deviceFromToken); on top of that ANY admin-created operator signs in with
+// username + password (+ first-login OTP setup, then a code every time). The JWT is bound to that
+// operator AND this device; role/epoch are re-checked from the DB on every request. This is the
+// shared-portal model: any operator may sign in on any connected device.
 app.post('/api/auth/token', (req, res) => {
   if (!SERVER_MODE) return res.status(404).json({ error: 'access tokens are issued by a Magi server' });
-  const { username, password, device_id, otp } = req.body || {};
+  const { username, password, otp } = req.body || {};
   const key = throttleKey(req, username);
   const wait = lockedFor(key);
   if (wait) return res.status(429).json({ error: `too many attempts — try again in ${Math.ceil(wait / 60)} min` });
 
+  // 1) the request must come from a device an admin has accepted (not revoked)
+  const dev = deviceFromToken(req);
+  if (!dev) { noteFailure(key); return res.status(403).json({ error: 'this device is not connected to the server' }); }
+  // 2) the operator authenticates with their own account
   const u = q(`SELECT * FROM users WHERE username=?`).get(username || '');
   if (!u || !verifyPassword(password || '', u.pass_hash)) { noteFailure(key); return res.status(401).json({ error: 'invalid credentials' }); }
-  // the device must already be enrolled to THIS user (admin-approved) and not revoked
-  const dev = q(`SELECT id, revoked, user_id FROM devices WHERE id=?`).get(device_id || '');
-  if (!dev || dev.revoked || dev.user_id !== u.id) { noteFailure(key); return res.status(403).json({ error: 'this device is not enrolled for that account' }); }
   attempts.delete(key);
 
   const mint = (extra) => {
     const fresh = q(`SELECT role, cred_epoch FROM users WHERE id=?`).get(u.id); // pick up a just-enabled MFA / any change
     const token = jwt.sign({ sub: u.id, username: u.username, role: fresh.role, device_id: dev.id, epoch: fresh.cred_epoch }, JWT_SECRET);
-    q(`UPDATE devices SET last_seen=datetime('now') WHERE id=?`).run(dev.id);
-    return res.json({ token, exp: jwt.decodeUnsafe(token).exp, role: fresh.role, ...(extra || {}) });
+    q(`UPDATE devices SET last_seen=datetime('now'), user_id=? WHERE id=?`).run(u.id, dev.id); // remember the last operator on this device
+    return res.json({ token, exp: jwt.decodeUnsafe(token).exp, username: u.username, role: fresh.role, ...(extra || {}) });
   };
 
   if (!MFA_ENFORCED) return mint();
@@ -418,10 +418,11 @@ app.get('/api/me', (req, res) => {
   if (!u) {
     // Only ever surfaced in the desktop app, which opens no port — never over HTTP.
     const li = linkedIdentity();
-    // On a linked device the login screen signs in as the SERVER user — tell it who that is (and
-    // suppress the default-password hint, which is about the now-inaccessible local account).
+    // On a connected device the login screen signs in as a SERVER operator (any admin-created
+    // account) — tell it the device is connected (and suppress the default-password hint, which is
+    // about the now-inaccessible local account).
     const hint = !li && process.env.MAGI_EMBED === '1' && usingDefaultPassword() ? 'admin / admin' : undefined;
-    return res.status(401).json({ error: 'unauthorized', hint, link: li ? { username: li.username } : undefined });
+    return res.status(401).json({ error: 'unauthorized', hint, link: li ? { connected: true, server_url: undefined } : undefined });
   }
   res.json({ username: u.username, role: u.role, display_name: u.display_name, device: u.device_id ? true : false, server: SERVER_MODE, version: VERSION });
 });
@@ -500,39 +501,32 @@ app.post('/api/security/rekey', async (req, res) => {
   res.json({ ok: true, encrypted: true });
 });
 
-// ---- team server: enrollment (admin-approved) & admin ----
-// A client redeeming a code does NOT get a token straight away: it creates a PENDING request
-// that an admin approves or rejects from the Admin panel. The client then polls until decided.
+// ---- team server: device connection (admin-accepted) & admin ----
+// A device connecting with a one-time code does NOT get its token straight away: it creates a
+// PENDING request an admin accepts or rejects from the Devices page. No account is involved — the
+// device just registers itself. The client polls until decided; operators log in afterwards.
 app.post('/api/enroll', (req, res) => {
-  if (!SERVER_MODE) return res.status(404).json({ error: 'enrollment is only available on a Magi server' });
-  const { code, username, display_name, device_id, password } = req.body || {};
-  if (!code || !username || !display_name || !device_id)
-    return res.status(400).json({ error: 'code, username, display_name and device_id are all required' });
-  if (!/^[a-z0-9_.-]{2,40}$/i.test(username)) return res.status(400).json({ error: 'username must be 2-40 chars: letters, numbers, . _ -' });
+  if (!SERVER_MODE) return res.status(404).json({ error: 'connecting is only available on a Magi server' });
+  const { code, device_id, device_name } = req.body || {};
+  if (!code || !device_id) return res.status(400).json({ error: 'code and device_id are required' });
   if (!/^[a-z0-9-]{16,64}$/i.test(device_id)) return res.status(400).json({ error: 'device id must look like a UUID' });
-  if (String(display_name).trim().length < 1 || String(display_name).length > 60) return res.status(400).json({ error: 'display name must be 1-60 characters' });
-  // New clients pick a password now (they log in for a JWT after approval). Older clients omit it
-  // and fall back to a device token. Only the hash is ever stored.
-  if (password != null && String(password).length < 8) return res.status(400).json({ error: 'password must be at least 8 characters' });
-  const pass_hash = password != null ? hashPassword(String(password)) : null;
-  if (q(`SELECT 1 FROM devices WHERE id=?`).get(device_id)) return res.status(409).json({ error: 'this device is already enrolled' });
-  if (q(`SELECT 1 FROM users WHERE username=?`).get(username)) return res.status(409).json({ error: 'that username is taken — choose another' });
+  const name = String(device_name || '').trim().slice(0, 60) || 'device';
+  if (q(`SELECT 1 FROM devices WHERE id=?`).get(device_id)) return res.status(409).json({ error: 'this device is already connected' });
 
-  // Validate the code now, but do NOT consume it — that happens only if an admin approves.
-  const ec = q(`SELECT * FROM enroll_codes WHERE code_hash=? AND used_at IS NULL
+  // Validate the code now, but do NOT consume it — that happens only if an admin accepts.
+  const ec = q(`SELECT 1 FROM enroll_codes WHERE code_hash=? AND used_at IS NULL
                 AND (expires_at IS NULL OR expires_at > datetime('now'))`).get(sha256(code));
-  if (!ec) return res.status(403).json({ error: 'invalid, expired, or already-used enrollment code' });
-  const role = ec.role === 'admin' ? 'admin' : 'worker';
+  if (!ec) return res.status(403).json({ error: 'invalid, expired, or already-used code' });
 
   q(`DELETE FROM enroll_requests WHERE device_id=? AND status='pending'`).run(device_id); // one live request per device
-  const rid = q(`INSERT INTO enroll_requests (code_hash, role, username, display_name, device_id, pass_hash)
-                 VALUES (?,?,?,?,?,?)`).run(sha256(code), role, username, String(display_name).trim(), device_id, pass_hash).lastInsertRowid;
-  writeAudit(req, { username, display_name: String(display_name).trim(), device_id }, `requested to join as ${role}`);
+  const rid = q(`INSERT INTO enroll_requests (code_hash, device_id, device_name) VALUES (?,?,?)`)
+    .run(sha256(code), device_id, name).lastInsertRowid;
+  writeAudit(req, { display_name: name, device_id }, `device “${name}” requested to connect`);
   res.status(202).json({ status: 'pending', request_id: Number(rid) });
 });
 
-// The client polls this (pre-auth, gated by request_id + its own device id) until an admin
-// decides. On approval the token is handed over exactly once, then cleared.
+// The client polls this (pre-auth, gated by request_id + its own device id) until an admin decides.
+// On accept the device token is handed over exactly once, then cleared. Operators log in on top.
 app.get('/api/enroll/poll', (req, res) => {
   if (!SERVER_MODE) return res.status(404).json({ error: 'not a server' });
   const rq = q(`SELECT * FROM enroll_requests WHERE id=? AND device_id=?`).get(req.query.request_id, req.query.device_id || '');
@@ -540,7 +534,7 @@ app.get('/api/enroll/poll', (req, res) => {
   if (rq.status !== 'approved') return res.json({ status: rq.status }); // pending | rejected
   if (rq.token) {
     q(`UPDATE enroll_requests SET token=NULL WHERE id=?`).run(rq.id); // deliver once
-    return res.json({ status: 'approved', token: rq.token, username: rq.username, role: rq.role, display_name: rq.display_name });
+    return res.json({ status: 'approved', token: rq.token });
   }
   res.json({ status: 'approved' }); // already delivered
 });
@@ -552,14 +546,14 @@ function requireAdmin(req, res, next) {
   req.user = u;
   next();
 }
-// Pending join requests awaiting an admin decision.
+// Pending device-connection requests awaiting an admin decision.
 app.get('/api/admin/requests', requireAdmin, (req, res) => {
-  res.json(q(`SELECT id, username, display_name, device_id, role, created_at
+  res.json(q(`SELECT id, device_id, device_name, created_at
     FROM enroll_requests WHERE status='pending' ORDER BY created_at`).all());
 });
-// Approve: consume the code, create the user + device, issue the token (delivered on the
-// client's next poll). Guarded against a code that expired, or a username/device that appeared
-// while the request was pending.
+// Accept: consume the code and register the device with its own token (delivered on the client's
+// next poll). No account is created — operators log in separately. Guarded against a code that
+// expired or a device that appeared while the request was pending.
 app.post('/api/admin/requests/:id/approve', requireAdmin, (req, res) => {
   const rq = q(`SELECT * FROM enroll_requests WHERE id=? AND status='pending'`).get(req.params.id);
   if (!rq) return res.status(404).json({ error: 'no such pending request' });
@@ -568,38 +562,29 @@ app.post('/api/admin/requests/:id/approve', requireAdmin, (req, res) => {
      WHERE code_hash=? AND used_at IS NULL AND (expires_at IS NULL OR expires_at > datetime('now'))`).run(rq.code_hash);
   if (!consumed.changes) {
     q(`UPDATE enroll_requests SET status='rejected', decided_at=datetime('now'), decided_by=? WHERE id=?`).run(decidedBy, rq.id);
-    return res.status(409).json({ error: 'the enrollment code is no longer valid — reject and re-issue' });
+    return res.status(409).json({ error: 'the code is no longer valid — reject and re-issue' });
   }
-  if (q(`SELECT 1 FROM users WHERE username=?`).get(rq.username) || q(`SELECT 1 FROM devices WHERE id=?`).get(rq.device_id)) {
+  if (q(`SELECT 1 FROM devices WHERE id=?`).get(rq.device_id)) {
     q(`UPDATE enroll_codes SET used_at=NULL WHERE code_hash=?`).run(rq.code_hash);
     q(`UPDATE enroll_requests SET status='rejected', decided_at=datetime('now'), decided_by=? WHERE id=?`).run(decidedBy, rq.id);
-    return res.status(409).json({ error: 'that username or device already exists' });
+    return res.status(409).json({ error: 'that device already exists' });
   }
-  const ec = q(`SELECT id FROM enroll_codes WHERE code_hash=?`).get(rq.code_hash);
-  // The admin picks the role at approval time (the code itself is role-agnostic now). Falls back
-  // to the request's role for older clients that still send one.
-  const role = cleanRole(req.body?.role || rq.role);
-  // New flow: the user chose a password at request time (stored hashed) → they can log in for a
-  // JWT. Legacy flow: no password → a random one, and the device token is their credential.
-  const uid = q(`INSERT INTO users (username, pass_hash, role) VALUES (?,?,?)`)
-    .run(rq.username, rq.pass_hash || hashPassword(randomBytes(24).toString('hex')), role).lastInsertRowid;
-  q(`UPDATE enroll_codes SET used_by=? WHERE id=?`).run(uid, ec.id);
   const token = randomBytes(32).toString('hex');
-  q(`INSERT INTO devices (id, user_id, display_name, token_hash) VALUES (?,?,?,?)`).run(rq.device_id, uid, rq.display_name, sha256(token));
-  q(`UPDATE enroll_requests SET status='approved', role=?, token=?, decided_at=datetime('now'), decided_by=? WHERE id=?`).run(role, token, decidedBy, rq.id);
-  writeAudit(req, req.user, `approved ${rq.display_name} (${rq.username}) as ${role}`);
-  res.json({ ok: true, username: rq.username, role });
+  q(`INSERT INTO devices (id, display_name, token_hash) VALUES (?,?,?)`).run(rq.device_id, rq.device_name, sha256(token));
+  q(`UPDATE enroll_requests SET status='approved', token=?, decided_at=datetime('now'), decided_by=? WHERE id=?`).run(token, decidedBy, rq.id);
+  writeAudit(req, req.user, `accepted device “${rq.device_name}”`);
+  res.json({ ok: true, device: rq.device_name });
 });
 app.post('/api/admin/requests/:id/reject', requireAdmin, (req, res) => {
   const rq = q(`SELECT * FROM enroll_requests WHERE id=? AND status='pending'`).get(req.params.id);
   if (!rq) return res.status(404).json({ error: 'no such pending request' });
   q(`UPDATE enroll_requests SET status='rejected', decided_at=datetime('now'), decided_by=? WHERE id=?`)
     .run(req.user.display_name || req.user.username, rq.id);
-  writeAudit(req, req.user, `rejected join request from ${rq.display_name} (${rq.username})`);
+  writeAudit(req, req.user, `rejected connection from device “${rq.device_name}”`);
   res.json({ ok: true });
 });
-// Mint a single-use code. The code is just a join ticket now — role-agnostic; the admin picks the
-// new member's role when approving the request. The raw code is returned once; only its hash is stored.
+// Mint a single-use code that lets a device connect (it's a device ticket, not tied to a role or
+// account). The raw code is returned once; only its hash is stored.
 app.post('/api/admin/enroll-codes', requireAdmin, (req, res) => {
   const b = req.body || {};
   const hours = Math.min(24 * 30, Math.max(0, Math.floor(Number(b.expires_in_hours) || 0)));
@@ -631,9 +616,20 @@ app.delete('/api/admin/enroll-codes/:id', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 app.get('/api/admin/users', requireAdmin, (req, res) => {
-  res.json(q(`SELECT id, username, role, created_at, mfa_enabled,
-    (SELECT COUNT(*) FROM devices d WHERE d.user_id=users.id AND d.revoked=0) AS devices
-    FROM users ORDER BY id`).all());
+  res.json(q(`SELECT id, username, role, created_at, mfa_enabled FROM users ORDER BY id`).all());
+});
+// Admin creates an operator account (username + initial password + role). Accounts exist
+// independently of devices — an operator then signs in on any connected device. Share the
+// password over a trusted channel; the operator enrols their authenticator on first sign-in.
+app.post('/api/admin/users', requireAdmin, (req, res) => {
+  const { username, password, role } = req.body || {};
+  if (!/^[a-z0-9_.-]{2,40}$/i.test(username || '')) return res.status(400).json({ error: 'username must be 2-40 chars: letters, numbers, . _ -' });
+  if (!password || String(password).length < 8) return res.status(400).json({ error: 'password must be at least 8 characters' });
+  if (q(`SELECT 1 FROM users WHERE username=?`).get(username)) return res.status(409).json({ error: 'that username is taken' });
+  const r = cleanRole(role);
+  const uid = q(`INSERT INTO users (username, pass_hash, role) VALUES (?,?,?)`).run(username, hashPassword(String(password)), r).lastInsertRowid;
+  writeAudit(req, req.user, `created operator ${username} (${r})`);
+  res.status(201).json({ id: Number(uid), username, role: r });
 });
 // Lost-phone recovery: clear a user's MFA so they re-enrol at next sign-in. Bumping the epoch
 // invalidates every live token, so a device/browser that was already signed in is booted too.
@@ -681,21 +677,17 @@ app.delete('/api/admin/users/:id', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 app.get('/api/admin/devices', requireAdmin, (req, res) => {
-  res.json(q(`SELECT d.id, d.display_name, d.created_at, d.last_seen, d.revoked, u.username, u.role
-    FROM devices d JOIN users u ON u.id=d.user_id ORDER BY d.created_at DESC`).all());
+  // last_user is just the operator most recently seen on the device (a device isn't owned by one).
+  res.json(q(`SELECT d.id, d.display_name, d.created_at, d.last_seen, d.revoked, u.username AS last_user
+    FROM devices d LEFT JOIN users u ON u.id=d.user_id ORDER BY d.created_at DESC`).all());
 });
-// Revoking a device kills its token immediately (someone left, or a laptop was lost); the
-// record is kept for the list/audit. ?hard=1 deletes it outright — and its account too if that
-// was its last device — to tidy the list. Synced data stays on the server; audit keeps names.
+// Revoking a device kills every operator token on it immediately (a laptop was lost); the record
+// is kept for the list/audit. ?hard=1 deletes it outright. Accounts are untouched — a device is not
+// an account now — so operators can just connect a new device and sign in again.
 app.delete('/api/admin/devices/:id', requireAdmin, (req, res) => {
   if (req.query.hard) {
-    const dev = q(`SELECT user_id FROM devices WHERE id=?`).get(req.params.id);
-    q(`DELETE FROM devices WHERE id=?`).run(req.params.id);
-    if (dev && dev.user_id !== req.user.id && !q(`SELECT 1 FROM devices WHERE user_id=?`).get(dev.user_id)) {
-      q(`DELETE FROM enroll_codes WHERE used_by=?`).run(dev.user_id); // drop their now-orphaned redeemed codes
-      q(`DELETE FROM users WHERE id=?`).run(dev.user_id);
-    }
-    return res.json({ ok: true, deleted: !!dev });
+    const r = q(`DELETE FROM devices WHERE id=?`).run(req.params.id);
+    return res.json({ ok: true, deleted: !!r.changes });
   }
   const r = q(`UPDATE devices SET revoked=1 WHERE id=?`).run(req.params.id);
   res.json({ ok: true, revoked: r.changes });
@@ -811,26 +803,26 @@ if (!SERVER_MODE) {
   app.get('/api/link/ping', async (req, res) => { const m = await linkMod(); res.json(await m.heartbeat()); });
   app.post('/api/link/connect', async (req, res) => {
     const m = await linkMod();
-    const { server_url, fingerprint, code, username, display_name, password } = req.body || {};
-    const r = await m.connect({ server_url, fingerprint, code, username, display_name, password });
+    const { server_url, fingerprint, code, device_name } = req.body || {};
+    const r = await m.connect({ server_url, fingerprint, code, device_name });
     if (!r.ok) return res.status(400).json({ error: r.error });
     res.status(201).json(r.link);
   });
-  // Finish a just-approved link that needs a second factor, or re-authenticate after the token
-  // expired / was revoked. Returns { mfa } (with a setup key on first enrolment) when the server
-  // wants an OTP, so the UI can collect it and call again.
+  // Sign an operator in on a connected device, or re-authenticate after their token expired / was
+  // revoked. Returns { mfa } (with a setup key on first enrolment) when the server wants an OTP.
   app.post('/api/link/login', async (req, res) => {
     const m = await linkMod();
-    const { password, otp } = req.body || {};
-    const r = await m.login({ password, otp });
+    const { username, password, otp } = req.body || {};
+    const r = await m.login({ username, password, otp });
     if (r.ok) return res.json({ ok: true, link: r.link, recovery_codes: r.recovery_codes });
     if (r.mfa) return res.json({ ok: false, mfa: r.mfa, secret: r.secret, otpauth_uri: r.otpauth_uri });
     res.status(400).json({ error: r.error || 'login failed' });
   });
-  // Offline: prove identity against the cached password verifier (no server contact).
+  // Offline: prove an operator's identity against their cached verifier (no server contact).
   app.post('/api/link/offline-login', async (req, res) => {
     const m = await linkMod();
-    const r = m.offlineLogin((req.body || {}).password);
+    const b = req.body || {};
+    const r = m.offlineLogin(b.username, b.password);
     if (!r.ok) return res.status(401).json({ error: r.error });
     res.json({ ok: true, link: r.link });
   });

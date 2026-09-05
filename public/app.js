@@ -2013,9 +2013,9 @@ async function renderSettings() {
     const L = LINK.link || {};
     page.append(el('div', { className: 'setcard' },
       el('div', { className: 'setcard-hd' }, el('span', { className: 'linkbadge pending' }, el('span', { className: 'dot' }), 'Waiting for approval')),
-      el('p', { className: 'muted' }, 'Your request to join was sent. An admin on the server has to approve it before you are connected — this screen updates on its own when they do.'),
+      el('p', { className: 'muted' }, 'This device asked to connect. An admin on the server has to accept it before you can sign in — this screen updates on its own when they do.'),
       kv('Server', L.server_url),
-      kv('Requested as', `${L.display_name} · ${L.username}`),
+      kv('Device', L.device_name || '—'),
       el('div', { className: 'setcard-actions' },
         el('button', { className: 'btn', onclick: checkApproval }, 'Check now'),
         el('button', { className: 'btn danger', onclick: cancelPending }, icon('x'), 'Cancel request'))));
@@ -2024,15 +2024,15 @@ async function renderSettings() {
   } else if (LINK.needs_login) {
     const L = LINK.link || {};
     page.append(el('div', { className: 'setcard' },
-      el('div', { className: 'setcard-hd' }, el('span', { className: 'linkbadge on' }, el('span', { className: 'dot' }), 'Approved')),
-      el('p', { className: 'muted' }, `Your request to join ${L.server_url || 'the server'} was approved. Sign in with your password to finish linking.`),
+      el('div', { className: 'setcard-hd' }, el('span', { className: 'linkbadge on' }, el('span', { className: 'dot' }), 'Connected')),
+      el('p', { className: 'muted' }, `This device is connected to ${L.server_url || 'the server'}. Sign in with your team-server operator account to start syncing.`),
       el('div', { className: 'setcard-actions' },
         el('button', { className: 'btn gold', onclick: () => linkSignIn() }, icon('server'), 'Sign in'),
-        el('button', { className: 'btn danger', onclick: disconnectDialog }, icon('x'), 'Cancel'))));
+        el('button', { className: 'btn danger', onclick: disconnectDialog }, icon('x'), 'Disconnect'))));
   } else if (!LINK.linked) {
     page.append(el('div', { className: 'setcard' },
       el('div', { className: 'setcard-hd' }, el('span', { className: 'linkbadge' }, el('span', { className: 'dot' }), 'Working locally')),
-      el('p', { className: 'muted' }, 'Everything you create stays in this install. Connect to a team server to share engagements — you will need the server address, a one-time code from an admin, a name and a password. The admin then approves your request.'),
+      el('p', { className: 'muted' }, 'Everything you create stays in this install. Connect this device to a team server to share engagements — you need the server address and a one-time code from an admin. The admin accepts your device, then you sign in with your operator account.'),
       el('div', { className: 'setcard-actions' },
         el('button', { className: 'btn gold', onclick: connectDialog }, icon('server'), 'Connect to a server'))));
   } else {
@@ -2045,8 +2045,8 @@ async function renderSettings() {
         el('div', {}, el('strong', {}, 'Sign-in required'), el('div', { className: 'muted small' }, 'Your session expired or an admin reset your access — syncing is paused. Your local work is safe.')),
         el('button', { className: 'btn gold', onclick: () => linkSignIn({ reauth: true }) }, 'Sign in')) : null,
       kv('Server', L.server_url),
-      kv('Signed as', `${L.display_name} · ${L.username} · ${L.role}`),
-      kv('This device', L.device_id),
+      kv('Signed in as', `${L.username} · ${L.role}`),
+      kv('This device', `${L.device_name || 'device'} · ${String(L.device_id || '').slice(0, 8)}…`),
       kv('Fingerprint', el('code', { className: 'fp' }, L.fingerprint || '—')),
       el('div', { className: 'kv' }, el('span', { className: 'k' }, 'Token at rest'), el('span', { className: 'v' }, atRest)),
       L.token_at_rest !== 'encrypted' ? el('p', { className: 'muted small' },
@@ -2119,25 +2119,22 @@ function rekeyDialog(isChange) {
   });
 }
 function connectDialog() {
+  let host = '';
+  try { host = (window.location?.hostname && window.location.hostname !== 'localhost') ? window.location.hostname : ''; } catch {}
   modal({
-    kicker: 'Team server', title: 'Request to join a server', cta: 'Send request',
-    note: 'Get the address and a one-time code from an admin, and pick a password — they approve your request and give you a role. Your local engagements are set aside on approval and restored if you disconnect.',
+    kicker: 'Team server', title: 'Connect this device to a server', cta: 'Send request',
+    note: 'Get the server address and a one-time code from an admin. This connects your DEVICE — an admin accepts it, then you sign in with your own operator account. Your local engagements are set aside on connect and restored if you disconnect.',
     build: (b) => {
       field(b, 'Server address', 'server_url', { ph: 'https://magi.corp.local:8443' });
       field(b, 'One-time code', 'code', { ph: 'from your admin' });
-      field(b, 'Username', 'username', { ph: 'a new login name' });
-      field(b, 'Your display name', 'display_name', { ph: 'shown on your changes, e.g. Ana R.' });
-      field(b, 'Password', 'password', { type: 'password', ph: 'at least 8 characters' });
-      field(b, 'Confirm password', 'confirm', { type: 'password' });
+      field(b, 'This device’s name', 'device_name', { value: host, ph: 'e.g. ana-laptop' });
     },
     onSubmit: async (fd) => {
       const o = Object.fromEntries(fd);
-      if ((o.password || '').length < 8) throw new Error('password must be at least 8 characters');
-      if (o.password !== o.confirm) throw new Error('the two passwords do not match');
-      delete o.confirm;
+      if (!o.server_url || !o.code) throw new Error('the server address and a one-time code are required');
       const link = await api('/link/connect', { method: 'POST', body: o });
       LINK = { linked: false, pending: true, link };
-      toast('Request sent — waiting for an admin to approve');
+      toast('Request sent — waiting for an admin to accept');
       renderSettings();
     },
   });
@@ -2148,15 +2145,19 @@ function connectDialog() {
 function linkSignIn({ reauth } = {}) {
   const root = $('#modalRoot');
   const close = () => root.replaceChildren();
-  let phase = 'password', setup = null, savedPw = '';
+  let phase = 'password', setup = null, savedPw = '', savedUser = (LINK?.link?.username) || '';
   function render() {
     const body = el('div', { className: 'modal-body' },
-      el('h3', {}, reauth ? 'Sign in to resume sync' : 'Sign in to finish connecting'),
+      el('h3', {}, reauth ? 'Sign in to resume sync' : 'Sign in on this device'),
       el('p', { className: 'modal-note' }, reauth
-        ? 'Your session expired or an admin reset your access. Enter your password to keep syncing — your local work is safe.'
-        : 'Your request was approved. Enter your password to finish linking.'));
-    let pw, otp;
-    if (phase === 'password') { pw = el('input', { type: 'password', value: savedPw }); body.append(el('label', {}, 'Password'), pw); }
+        ? 'Your session expired or an admin reset your access. Sign in with your operator account to keep syncing — your local work is safe.'
+        : 'This device is connected. Sign in with your team-server operator account.'));
+    let un, pw, otp;
+    if (phase === 'password') {
+      un = el('input', { value: savedUser, autocomplete: 'username', placeholder: 'operator username' });
+      pw = el('input', { type: 'password', value: savedPw, autocomplete: 'current-password' });
+      body.append(el('label', {}, 'Operator'), un, el('label', {}, 'Password'), pw);
+    }
     if (phase === 'setup') {
       body.append(el('p', { className: 'muted small' }, 'This server requires two-factor. Scan or add the key, then enter the code:'));
       const qr = typeof qrMatrix === 'function' ? qrEl(setup.otpauth_uri) : null;
@@ -2174,7 +2175,8 @@ function linkSignIn({ reauth } = {}) {
       e.preventDefault(); err.textContent = ''; submit.disabled = true;
       try {
         if (pw) savedPw = pw.value;
-        const r = await api('/link/login', { method: 'POST', body: { password: savedPw, otp: otp?.value || undefined } });
+        if (un) savedUser = un.value.trim();
+        const r = await api('/link/login', { method: 'POST', body: { username: savedUser, password: savedPw, otp: otp?.value || undefined } });
         if (r.ok) { close(); if (r.recovery_codes) showRecoveryCodes(r.recovery_codes); toast('Signed in — syncing resumed'); REAUTH_PROMPTED = false; try { LINK = await api('/link'); } catch {} renderAccount(); route(); return; }
         if (r.mfa === 'setup') { setup = { secret: r.secret, otpauth_uri: r.otpauth_uri }; phase = 'setup'; render(); return; }
         if (r.mfa === 'required') { phase = 'code'; render(); return; }
@@ -2182,7 +2184,7 @@ function linkSignIn({ reauth } = {}) {
       } catch (ex) { err.textContent = ex.message; } finally { submit.disabled = false; }
     };
     root.replaceChildren(el('div', { className: 'overlay', onclick: (e) => { if (e.target.classList.contains('overlay')) close(); } }, form));
-    (otp || pw)?.focus();
+    (otp || (savedUser ? pw : un) || pw)?.focus();
   }
   render();
 }
@@ -2267,7 +2269,7 @@ async function renderAdmin(section) {
   setRail(null);
   setCrumbs([{ label: 'admin', go: () => location.hash = '/admin' }, { label: section }]); // top-level area + its page
   const acts = [el('button', { className: 'btn', onclick: () => renderAdmin(section) }, icon('down', 12), el('span', { className: 'lbl' }, 'Refresh'))];
-  if (section === 'users') acts.push(el('button', { className: 'btn gold', onclick: () => mintCodeDialog(ctx) }, icon('plus', 12), el('span', { className: 'lbl' }, 'New code')));
+  if (section === 'devices') acts.push(el('button', { className: 'btn gold', onclick: () => mintCodeDialog(ctx) }, icon('plus', 12), el('span', { className: 'lbl' }, 'New code')));
   topActions(...acts);
 
   const view = $('#view');
@@ -2278,7 +2280,7 @@ async function renderAdmin(section) {
     page.append(el('div', { className: 'page-head' }, el('div', {}, el('div', { className: 'kicker' }, 'Team server'), el('h1', {}, 'Admin'))));
     page.append(el('nav', { className: 'admtabs' }, ...ADMIN_TAB_LIST.map(t =>
       el('a', { className: 'admtab' + (t.key === section ? ' on' : ''), href: '#/admin/' + t.key },
-        t.label, (t.key === 'users' && ADMIN_PENDING) ? el('span', { className: 'tabcount' }, String(ADMIN_PENDING)) : null))));
+        t.label, (t.key === 'devices' && ADMIN_PENDING) ? el('span', { className: 'tabcount' }, String(ADMIN_PENDING)) : null))));
     page.append(el('div', { className: 'admbody' }, ...(Array.isArray(content) ? content : [content])));
     return page;
   };
@@ -2295,69 +2297,95 @@ async function renderAdmin(section) {
   view.replaceChildren(shell(nodes));
   view.dataset.adminSection = section;
   if (same) view.scrollTop = savedY; // stay where the reader was on a live-refresh
-  // Only the Users page live-refreshes (join requests are time-sensitive); it won't yank the view
+  // Only the Devices page live-refreshes (connection requests are time-sensitive); it won't yank the view
   // out from under an open dialog.
   clearTimeout(window.__adminPoll);
-  if (section === 'users') window.__adminPoll = setTimeout(() => { if (location.hash.startsWith('#/admin') && !$('#modalRoot').hasChildNodes()) renderAdmin(section); }, 5000);
+  if (section === 'devices') window.__adminPoll = setTimeout(() => { if (location.hash.startsWith('#/admin') && !$('#modalRoot').hasChildNodes()) renderAdmin(section); }, 5000);
 }
 
-// Users page: who can join (requests + codes) and who has (members).
+// Users page: operator ACCOUNTS — admin creates and manages them. (Connecting a device is separate,
+// on the Devices page.)
 async function adminUsers(ctx, A) {
-  const [requests, users, codes] = await Promise.all([A('/requests'), A('/users'), A('/enroll-codes')]);
-  ADMIN_PENDING = requests.length; renderAccount();
-  const out = [];
-
-  const reqCard = admCard(`Join requests (${requests.length})`);
-  if (!requests.length) reqCard.append(el('p', { className: 'muted' }, 'No pending requests.'));
-  for (const r of requests) reqCard.append(admRow(
-    [el('strong', {}, r.display_name), el('span', { className: 'muted' }, ' wants to join as '), el('span', { className: 'pill' }, r.role),
-      el('div', { className: 'muted small' }, `username ${r.username} · device ${String(r.device_id).slice(0, 8)}… · ${new Date(r.created_at).toLocaleString()}`)],
-    el('button', { className: 'btn gold', onclick: () => approveDialog(ctx, r.id, r.display_name) }, icon('check', 12), 'Approve'),
-    el('button', { className: 'btn danger', onclick: () => decide(ctx, r.id, 'reject', r.display_name) }, icon('x', 12), 'Reject')));
-  out.push(reqCard);
-
-  const memCard = admCard(`Members (${users.length})`);
+  const users = await A('/users');
+  const memCard = admCard(`Operators (${users.length})`);
+  memCard.append(el('div', { className: 'setcard-actions', style: 'margin-bottom:12px' },
+    el('button', { className: 'btn gold', onclick: () => createUserDialog(ctx) }, icon('plus', 12), 'New operator')));
   for (const m of users) memCard.append(admRow(
     [el('strong', {}, m.username), el('span', { className: 'muted' }, ' · '), el('span', { className: 'pill' }, m.role),
       el('div', { className: 'muted small' }, m.mfa_enabled ? 'two-factor on' : 'two-factor not set up yet')],
     el('button', { className: 'btn', onclick: () => manageUserDialog(ctx, m) }, icon('edit', 12), 'Manage')));
-  out.push(memCard);
+  return [memCard];
+}
+function createUserDialog(ctx) {
+  modal({
+    kicker: 'Admin', title: 'New operator', cta: 'Create',
+    note: 'Creates an operator account. Share the initial password over a trusted channel — they enrol their authenticator on first sign-in, and can then sign in on any connected device.',
+    build: (b) => {
+      field(b, 'Username', 'username', { ph: 'e.g. ana' });
+      field(b, 'Role', 'role', { value: 'worker', options: [
+        { value: 'worker', label: 'Worker — use checklists, record findings' },
+        { value: 'editor', label: 'Editor — also add/edit/delete engagements & targets' },
+        { value: 'admin', label: 'Admin — full server management' },
+      ] });
+      field(b, 'Initial password', 'password', { type: 'password', ph: 'at least 8 characters' });
+      field(b, 'Confirm', 'confirm', { type: 'password' });
+    },
+    onSubmit: async (fd) => {
+      const o = Object.fromEntries(fd);
+      if ((o.password || '').length < 8) throw new Error('password must be at least 8 characters');
+      if (o.password !== o.confirm) throw new Error('the two passwords do not match');
+      await api(`${ctx.base}/users`, { method: 'POST', body: { username: o.username, password: o.password, role: o.role } });
+      toast(`Operator ${o.username} created`); renderAdmin('users');
+    },
+  });
+}
 
-  const codeCard = admCard('Enrollment codes');
+// Devices page: one-time codes, pending connection requests, and connected devices. Connecting a
+// device is about authorizing an ENDPOINT — no account is involved (operators sign in separately).
+async function adminDevices(ctx, A) {
+  const [devices, requests, codes] = await Promise.all([A('/devices'), A('/requests'), A('/enroll-codes')]);
+  ADMIN_PENDING = requests.length; renderAccount();
+  const out = [];
+
+  const reqCard = admCard(`Connection requests (${requests.length})`);
+  if (!requests.length) reqCard.append(el('p', { className: 'muted' }, 'No devices waiting to connect.'));
+  for (const r of requests) reqCard.append(admRow(
+    [el('strong', {}, r.device_name), el('div', { className: 'muted small' }, `device ${String(r.device_id).slice(0, 8)}… · ${new Date(r.created_at).toLocaleString()}`)],
+    el('button', { className: 'btn gold', onclick: () => decide(ctx, r.id, 'approve', r.device_name) }, icon('check', 12), 'Accept'),
+    el('button', { className: 'btn danger', onclick: () => decide(ctx, r.id, 'reject', r.device_name) }, icon('x', 12), 'Reject')));
+  out.push(reqCard);
+
+  const codeCard = admCard('One-time codes');
   const now = Date.now();
   const active = codes.filter(c => !c.used_at && !(c.expires_at && new Date(c.expires_at).getTime() < now));
   const usedCount = codes.length - active.length;
   if (LAST_CODE && !active.some(c => c.id === LAST_CODE.id)) LAST_CODE = null;
   if (LAST_CODE) codeCard.append(el('div', { className: 'codebanner' },
-    el('div', {}, el('div', { className: 'muted small' }, 'New enrollment code — copy it now, it is not shown again'), el('code', { className: 'codebox' }, LAST_CODE.code)),
+    el('div', {}, el('div', { className: 'muted small' }, 'New code — copy it now, it is not shown again'), el('code', { className: 'codebox' }, LAST_CODE.code)),
     el('div', { style: 'display:flex;gap:7px' },
       el('button', { className: 'btn', onclick: () => { navigator.clipboard?.writeText(LAST_CODE.code); toast('Code copied'); } }, 'Copy'),
-      el('button', { className: 'btn', title: 'Dismiss', onclick: () => { LAST_CODE = null; renderAdmin('users'); } }, icon('x', 12)))));
-  codeCard.append(el('p', { className: 'muted' }, `${active.length} active code${active.length === 1 ? '' : 's'}. Codes are stored hashed — a value shows once when minted (above, or in the terminal). Mint with “New code”, then approve the request here.`));
+      el('button', { className: 'btn', title: 'Dismiss', onclick: () => { LAST_CODE = null; renderAdmin('devices'); } }, icon('x', 12)))));
+  codeCard.append(el('p', { className: 'muted' }, `${active.length} active code${active.length === 1 ? '' : 's'}. A code lets one device connect; you accept it above. Mint with “New code”, then hand it to the operator.`));
   for (const c of active) codeCard.append(admRow(
-    [el('strong', {}, c.role), c.note ? el('span', { className: 'muted' }, ` · ${c.note}`) : null,
+    [el('strong', {}, 'code'), c.note ? el('span', { className: 'muted' }, ` · ${c.note}`) : null,
       el('div', { className: 'muted small' }, `minted ${new Date(c.created_at).toLocaleString()}${c.expires_at ? ' · expires ' + new Date(c.expires_at).toLocaleString() : ''}`)],
     el('button', { className: 'btn danger', onclick: () => killCode(ctx, c.id) }, icon('trash', 12), 'Kill')));
   if (!active.length) codeCard.append(el('p', { className: 'muted small' }, 'No active codes right now.'));
   if (usedCount) codeCard.append(el('div', { className: 'setcard-actions', style: 'margin-top:10px' },
     el('button', { className: 'btn', onclick: () => clearUsedCodes(ctx, usedCount) }, icon('trash', 12), `Clear ${usedCount} used/expired`)));
   out.push(codeCard);
-  return out;
-}
 
-// Devices page: enrolled devices, revoke / remove.
-async function adminDevices(ctx, A) {
-  const devices = await A('/devices');
-  const devCard = admCard(`Devices (${devices.filter(d => !d.revoked).length} active${devices.length ? ` · ${devices.length} total` : ''})`);
-  if (!devices.length) devCard.append(el('p', { className: 'muted' }, 'No devices enrolled yet.'));
+  const devCard = admCard(`Connected devices (${devices.filter(d => !d.revoked).length} active${devices.length ? ` · ${devices.length} total` : ''})`);
+  if (!devices.length) devCard.append(el('p', { className: 'muted' }, 'No devices connected yet.'));
   for (const d of devices) devCard.append(admRow(
     [el('strong', { style: d.revoked ? 'text-decoration:line-through;opacity:.55' : '' }, d.display_name),
-      el('span', { className: 'muted' }, ` · ${d.username} · `), el('span', { className: 'pill' }, d.role),
+      d.last_user ? el('span', { className: 'muted' }, ` · last operator: ${d.last_user}`) : null,
       el('div', { className: 'muted small' }, `last seen ${d.last_seen ? new Date(d.last_seen).toLocaleString() : 'never'}`)],
     ...(d.revoked
       ? [el('span', { className: 'pill warn' }, 'revoked'), el('button', { className: 'btn danger', onclick: () => removeDevice(ctx, d.id, d.display_name) }, icon('trash', 12), 'Remove')]
       : [el('button', { className: 'btn danger', onclick: () => revokeDevice(ctx, d.id, d.display_name) }, 'Revoke')])));
-  return [devCard];
+  out.push(devCard);
+  return out;
 }
 
 // Logs page: the full audit trail (kept in the database), newest first, with a quick filter.
@@ -2484,27 +2512,14 @@ function removeDevice(ctx, id, name) {
 }
 function mintCodeDialog(ctx) {
   modal({
-    kicker: 'Admin', title: 'New enrollment code', cta: 'Create',
-    note: 'A single-use join ticket. Share it with the person joining; you pick their role when you approve their request.',
+    kicker: 'Admin', title: 'New device code', cta: 'Create',
+    note: 'A single-use code that lets one device connect. Hand it to the operator; you accept their device here, then they sign in with their own account.',
     build: (b) => { field(b, 'Note (optional)', 'note', { ph: 'e.g. Ana laptop' }); },
     onSubmit: async (fd) => {
       const r = await api(`${ctx.base}/enroll-codes`, { method: 'POST', body: Object.fromEntries(fd) });
       LAST_CODE = { id: r.id, code: r.code };
-      renderAdmin();
+      renderAdmin('devices');
     },
-  });
-}
-// Approve a join request, choosing the new member's role.
-function approveDialog(ctx, id, name) {
-  modal({
-    kicker: 'Admin', title: `Approve ${name}`, cta: 'Approve',
-    note: 'Choose their role — you can change it later from Members.',
-    build: (b) => field(b, 'Role', 'role', { value: 'worker', options: [
-      { value: 'worker', label: 'Worker — use checklists, record findings' },
-      { value: 'editor', label: 'Editor — also add/edit/delete engagements & targets' },
-      { value: 'admin', label: 'Admin — full server management' },
-    ] }),
-    onSubmit: async (fd) => { await api(`${ctx.base}/requests/${id}/approve`, { method: 'POST', body: { role: Object.fromEntries(fd).role } }); toast(`Approved ${name}`); renderAdmin(); },
   });
 }
 // Manage a member: change role, reset password / two-factor, or remove them.
@@ -2656,10 +2671,10 @@ function loginPasswordStep() {
   const p = el('input', { name: 'password', type: 'password', autocomplete: 'current-password' });
   const err = el('div', { className: 'loginerr' });
   const hint = el('div', { className: 'login-hint' });
-  // On a linked device you sign in with your SERVER account, not a local one — lock the username to
-  // it and say so. (A local account can no longer open a device that's connected to a server.)
+  // On a device connected to a server you sign in with your team-server operator account (any
+  // admin-created account) — a local account can no longer open a connected device.
   fetch('/api/me').then(r => r.json()).then(d => {
-    if (d?.link?.username) { u.value = d.link.username; u.readOnly = true; hint.textContent = 'sign in with your team-server account'; }
+    if (d?.link?.connected) { hint.textContent = 'sign in with your team-server operator account'; }
     else if (d?.hint) { hint.textContent = `default login — ${d.hint}`; }
   }).catch(() => {});
   const box = loginShell(el('div', { className: 'login-card' },

@@ -283,12 +283,14 @@ CREATE TABLE IF NOT EXISTS enroll_codes (
   used_by     INTEGER REFERENCES users(id) ON DELETE SET NULL
 );
 
--- One row per enrolled client device. The bearer token is device-bound: only its hash is
--- kept, and a token presented from a different device id is rejected. revoked=1 kills it.
+-- One row per connected client device. A device is an authorized ENDPOINT, not an account: it
+-- connects with a one-time code an admin accepts, and its device-bound token then authorizes an
+-- operator to LOG IN (any admin-created user can sign in on any connected device — a shared portal).
+-- user_id is just the operator last seen on it (for the list), never a binding. revoked=1 kills it.
 CREATE TABLE IF NOT EXISTS devices (
   id           TEXT PRIMARY KEY,                -- client-generated UUID
-  user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  display_name TEXT NOT NULL,                   -- human name shown in attribution
+  user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,  -- last operator seen (display only)
+  display_name TEXT NOT NULL,                   -- the device's own name (hostname), set at connect
   token_hash   TEXT NOT NULL,
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   last_seen    TEXT,
@@ -297,19 +299,17 @@ CREATE TABLE IF NOT EXISTS devices (
 CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);
 CREATE INDEX IF NOT EXISTS idx_devices_token ON devices(token_hash);
 
--- A client redeeming a code creates a PENDING request here; an admin approves or rejects it
--- from the Admin panel. Only on approval is the code consumed, the user/device created, and a
--- token issued (delivered once to the polling client via the token column, then cleared).
+-- A device connecting with a one-time code creates a PENDING request here; an admin accepts or
+-- rejects it from the Devices page. No account is involved — only on accept is the code consumed,
+-- the device registered, and its device token issued (delivered once to the polling client, then
+-- cleared). Operators log in separately, afterwards.
 CREATE TABLE IF NOT EXISTS enroll_requests (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   code_hash    TEXT NOT NULL,
-  role         TEXT NOT NULL DEFAULT 'worker',
-  username     TEXT NOT NULL,
-  display_name TEXT NOT NULL,
   device_id    TEXT NOT NULL,
-  pass_hash    TEXT,                              -- the user's chosen password (new JWT flow); null = legacy token flow
+  device_name  TEXT NOT NULL,                     -- the connecting device's own name (hostname)
   status       TEXT NOT NULL DEFAULT 'pending',   -- pending | approved | rejected
-  token        TEXT,                              -- raw token, handed to the client once then cleared
+  token        TEXT,                              -- raw device token, handed to the client once then cleared
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   decided_at   TEXT,
   decided_by   TEXT                               -- admin display name / username
@@ -431,8 +431,20 @@ if (!uCols.has('mfa_secret')) db.exec(`ALTER TABLE users ADD COLUMN mfa_secret T
 if (!uCols.has('mfa_enabled')) db.exec(`ALTER TABLE users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0`);
 if (!uCols.has('recovery_hashes')) db.exec(`ALTER TABLE users ADD COLUMN recovery_hashes TEXT`);
 if (!uCols.has('cred_epoch')) db.exec(`ALTER TABLE users ADD COLUMN cred_epoch INTEGER NOT NULL DEFAULT 0`);
+// enroll_requests is device-only now (connecting ≠ creating an account). Rebuild an older
+// account-shaped table (it had username/role/pass_hash). Pending requests are transient, so a
+// clean recreate is fine — a waiting device just re-requests.
 const erCols = new Set(db.prepare(`PRAGMA table_info(enroll_requests)`).all().map(r => r.name));
-if (!erCols.has('pass_hash')) db.exec(`ALTER TABLE enroll_requests ADD COLUMN pass_hash TEXT`);
+if (erCols.has('username') || !erCols.has('device_name')) {
+  db.exec(`
+    DROP TABLE IF EXISTS enroll_requests;
+    CREATE TABLE enroll_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, code_hash TEXT NOT NULL, device_id TEXT NOT NULL,
+      device_name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', token TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')), decided_at TEXT, decided_by TEXT);
+    CREATE INDEX IF NOT EXISTS idx_enroll_requests_status ON enroll_requests(status);
+  `);
+}
 const sInfo = db.prepare(`PRAGMA table_info(sessions)`).all();
 const sCols = new Set(sInfo.map(r => r.name));
 if (!sCols.has('pending')) {
@@ -453,6 +465,23 @@ if (sInfo.find(c => c.name === 'user_id')?.notnull === 1) {
       pending     INTEGER NOT NULL DEFAULT 0,
       created_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
+  `);
+}
+// devices are decoupled from users now (shared portal): user_id must be nullable. Rebuild older
+// databases that declared it NOT NULL, preserving the connected devices and their live tokens.
+const dInfo = db.prepare(`PRAGMA table_info(devices)`).all();
+if (dInfo.find(c => c.name === 'user_id')?.notnull === 1) {
+  db.exec(`
+    ALTER TABLE devices RENAME TO devices_old;
+    CREATE TABLE devices (
+      id TEXT PRIMARY KEY, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      display_name TEXT NOT NULL, token_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')), last_seen TEXT, revoked INTEGER NOT NULL DEFAULT 0);
+    INSERT INTO devices (id, user_id, display_name, token_hash, created_at, last_seen, revoked)
+      SELECT id, user_id, display_name, token_hash, created_at, last_seen, revoked FROM devices_old;
+    DROP TABLE devices_old;
+    CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);
+    CREATE INDEX IF NOT EXISTS idx_devices_token ON devices(token_hash);
   `);
 }
 

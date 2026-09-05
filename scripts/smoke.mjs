@@ -148,7 +148,7 @@ checks.push(['settings screen paints (local)', await ev(`
 checks.push(['connect-to-server dialog opens', await ev(`
   [...document.querySelectorAll(".setcard-actions .btn")].find(b => /connect to a server/i.test(b.textContent))?.click();
   await new Promise(r => setTimeout(r, 400));
-  return ["server_url","code","username","display_name"].every(n => document.querySelector(".modal input[name="+n+"]"))`)]);
+  return ["server_url","code","device_name"].every(n => document.querySelector(".modal input[name="+n+"]"))`)]);
 // Admin is split into tabbed pages; the Ranking page renders a leaderboard. This standalone
 // install isn't a server, so force admin context (ME.role is already 'admin' here) and stub the
 // admin API, then verify the tab nav and the ranking table actually paint.
@@ -177,8 +177,13 @@ checks.push(['admin tabs + ranking page paint', await ev(`
   const activeIsRanking = /ranking/i.test(document.querySelector(".admtab.on")?.textContent || "");
   location.hash = "#/admin/users"; await new Promise(r => setTimeout(r, 700));
   const usersActive = /users/i.test(document.querySelector(".admtab.on")?.textContent || "");
+  // Users page has "New operator"; the connection requests + codes moved to the Devices page.
+  const usersHasCreate = [...document.querySelectorAll(".admbody button")].some(b => /new operator/i.test(b.textContent));
+  location.hash = "#/admin/devices"; await new Promise(r => setTimeout(r, 700));
+  const devicesText = document.querySelector(".admbody")?.textContent || "";
+  const devicesHasCodesAndRequests = /connection requests/i.test(devicesText) && /one-time codes/i.test(devicesText);
   window.fetch = real;
-  return rankRows === 2 && tabs === 5 && activeIsRanking && usersActive && hasSev && hasScore`)]);
+  return rankRows === 2 && tabs === 5 && activeIsRanking && usersActive && hasSev && hasScore && usersHasCreate && devicesHasCodesAndRequests`)]);
 // Regression: an MFA-enabled account returns 401 {mfa:'required'} on password-only login. The
 // login flow must READ that challenge and show the code screen — not treat the 401 as a hard error.
 // (This standalone server never enforces MFA, so stub fetch to return the challenge just for the login.)

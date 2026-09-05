@@ -115,36 +115,56 @@ const login = await req('POST', '/api/auth/login', { body: { username: 'admin', 
 const adminTok = login.json?.token;
 check('admin login works', login.status === 200 && typeof adminTok === 'string' && adminTok.split('.').length === 3);
 
-const mk = await req('POST', '/api/admin/enroll-codes', { token: adminTok, body: { role: 'worker', note: 'test laptop' } });
-check('admin mints a worker code', mk.status === 201 && typeof mk.json?.code === 'string');
-const workerCode = mk.json?.code;
+const mk = await req('POST', '/api/admin/enroll-codes', { token: adminTok, body: { note: 'test laptop' } });
+check('admin mints a device code', mk.status === 201 && typeof mk.json?.code === 'string');
 
-// request -> admin approves -> client polls the token
+// New model: connect the device (code only), admin accepts, then CREATE the operator account and
+// log the operator in on that device → their user JWT. Used for the role/RBAC tests further down.
 async function enrollApprove(code, username, display_name, device_id, role) {
-  const rq = await req('POST', '/api/enroll', { body: { code, username, display_name, device_id } });
+  const rq = await req('POST', '/api/enroll', { body: { code, device_id, device_name: display_name } });
   if (rq.status !== 202 || !rq.json?.request_id) return { ok: false, rq };
-  const appr = await req('POST', `/api/admin/requests/${rq.json.request_id}/approve`, { token: adminTok, body: role ? { role } : {} });
+  await req('POST', `/api/admin/requests/${rq.json.request_id}/approve`, { token: adminTok });
   const poll = await req('GET', `/api/enroll/poll?request_id=${rq.json.request_id}&device_id=${device_id}`);
-  return { ok: appr.status === 200 && poll.json?.status === 'approved' && !!poll.json.token, token: poll.json?.token, role: poll.json?.role, rq };
+  const deviceToken = poll.json?.token;
+  await req('POST', '/api/admin/users', { token: adminTok, body: { username, password: username + '-pass-8', role: role || 'worker' } });
+  const lg = await req('POST', '/api/auth/token', { token: deviceToken, device: device_id, body: { username, password: username + '-pass-8' } });
+  return { ok: lg.status === 200 && !!lg.json?.token, token: lg.json?.token, role: lg.json?.role, deviceToken };
 }
 
-// a join request first lands as PENDING (no token) and shows up for the admin
+// ---- device connects (code only), lands PENDING, admin accepts, device polls its token ----
 const dev1 = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
-const wreq = await req('POST', '/api/enroll', { body: { code: workerCode, username: 'ana', display_name: 'Ana R.', device_id: dev1 } });
-check('a join request is pending, not an immediate token', wreq.status === 202 && wreq.json?.request_id && !wreq.json?.token);
+const conn = await req('POST', '/api/enroll', { body: { code: mk.json.code, device_id: dev1, device_name: 'ana-laptop' } });
+check('a device connect is pending, not an immediate token', conn.status === 202 && conn.json?.request_id && !conn.json?.token);
 const pend = await req('GET', '/api/admin/requests', { token: adminTok });
-check('admin sees the pending request', pend.status === 200 && pend.json.some(r => r.device_id === dev1 && r.display_name === 'Ana R.'));
-const appr = await req('POST', `/api/admin/requests/${wreq.json.request_id}/approve`, { token: adminTok });
-check('admin approves the request', appr.status === 200);
-const poll = await req('GET', `/api/enroll/poll?request_id=${wreq.json.request_id}&device_id=${dev1}`);
-check('approved client polls and receives its token', poll.json?.status === 'approved' && typeof poll.json?.token === 'string' && poll.json?.role === 'worker');
-const workerToken = poll.json?.token;
-const poll2 = await req('GET', `/api/enroll/poll?request_id=${wreq.json.request_id}&device_id=${dev1}`);
-check('the token is delivered only once', poll2.json?.status === 'approved' && !poll2.json?.token);
+check('admin sees the pending device — no account involved', pend.status === 200 && pend.json.some(r => r.device_id === dev1 && r.device_name === 'ana-laptop') && !pend.json.some(r => 'username' in r));
+const acc = await req('POST', `/api/admin/requests/${conn.json.request_id}/approve`, { token: adminTok });
+check('admin accepts the device', acc.status === 200 && acc.json?.device === 'ana-laptop');
+const poll = await req('GET', `/api/enroll/poll?request_id=${conn.json.request_id}&device_id=${dev1}`);
+check('device polls and receives its device token', poll.json?.status === 'approved' && typeof poll.json?.token === 'string');
+const deviceToken = poll.json?.token;
+const poll2 = await req('GET', `/api/enroll/poll?request_id=${conn.json.request_id}&device_id=${dev1}`);
+check('the device token is delivered only once', poll2.json?.status === 'approved' && !poll2.json?.token);
+// a bare device token does NOT authorize API — an operator must log in on top of it
+check('a device token alone does not authorize API', (await req('GET', '/api/projects', { token: deviceToken, device: dev1 })).status === 401);
 
-// the token authorizes API use...
+// ---- admin creates operator accounts (independent of devices) ----
+const cu = await req('POST', '/api/admin/users', { token: adminTok, body: { username: 'ana', password: 'ana-pass-8', role: 'worker' } });
+check('admin creates an operator account', cu.status === 201 && cu.json?.username === 'ana' && cu.json?.role === 'worker');
+check('a duplicate username is refused', (await req('POST', '/api/admin/users', { token: adminTok, body: { username: 'ana', password: 'x-pass-8', role: 'worker' } })).status === 409);
+
+// ---- an operator signs in on the connected device → a user JWT (MFA off in this test) ----
+const lg = await req('POST', '/api/auth/token', { token: deviceToken, device: dev1, body: { username: 'ana', password: 'ana-pass-8' } });
+check('an operator signs in on the connected device', lg.status === 200 && typeof lg.json?.token === 'string' && lg.json?.role === 'worker');
+const workerToken = lg.json.token;
+check('login needs the right password', (await req('POST', '/api/auth/token', { token: deviceToken, device: dev1, body: { username: 'ana', password: 'nope' } })).status === 401);
+check('login is refused from a device that is not connected', (await req('POST', '/api/auth/token', { token: 'deadbeef', device: 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb', body: { username: 'ana', password: 'ana-pass-8' } })).status === 403);
+// shared portal: a DIFFERENT operator can sign in on the SAME device
+await req('POST', '/api/admin/users', { token: adminTok, body: { username: 'bob', password: 'bob-pass-8', role: 'editor' } });
+check('a different operator can sign in on the same device (shared portal)', (await req('POST', '/api/auth/token', { token: deviceToken, device: dev1, body: { username: 'bob', password: 'bob-pass-8' } })).json?.role === 'editor');
+
+// the operator's token authorizes API use...
 const list = await req('GET', '/api/projects', { token: workerToken, device: dev1 });
-check('device token authorizes API', list.status === 200 && Array.isArray(list.json));
+check('the operator token authorizes API', list.status === 200 && Array.isArray(list.json));
 // RBAC: engagement STRUCTURE + templates are admin-only; workers work checklists + findings.
 const wProj = await req('POST', '/api/projects', { token: workerToken, device: dev1, body: { name: 'Acme Q3' } });
 check('a worker cannot create an engagement', wProj.status === 403);
@@ -264,19 +284,20 @@ check('the team server reports encryption is not app-manageable', secStatus.json
 const secRekey = await req('POST', '/api/security/rekey', { token: adminTok, body: { next: 'irrelevant12' } });
 check('the team server refuses an app-level rekey', secRekey.status === 400);
 
-// ── JWT access tokens: enroll WITH a password, then log in for a signed, epoch-bound token ──
-const jwtCode = (await req('POST', '/api/admin/enroll-codes', { token: adminTok, body: { role: 'worker' } })).json.code;
+// ── operator JWTs: connect a device, create the account, log in for a signed, epoch-bound token ──
+const jwtCode = (await req('POST', '/api/admin/enroll-codes', { token: adminTok })).json.code;
 const jdev = 'cccccccc-3333-4333-8333-cccccccccccc';
-const jenroll = await req('POST', '/api/enroll', { body: { code: jwtCode, username: 'tokenuser', display_name: 'Token User', device_id: jdev, password: 'super-secret-8' } });
-check('a client can enroll with a chosen password', jenroll.status === 202 && !!jenroll.json?.request_id);
-await req('POST', `/api/admin/requests/${jenroll.json.request_id}/approve`, { token: adminTok });
+const jconn = await req('POST', '/api/enroll', { body: { code: jwtCode, device_id: jdev, device_name: 'jdev' } });
+await req('POST', `/api/admin/requests/${jconn.json.request_id}/approve`, { token: adminTok });
+const jDeviceToken = (await req('GET', `/api/enroll/poll?request_id=${jconn.json.request_id}&device_id=${jdev}`)).json.token;
+await req('POST', '/api/admin/users', { token: adminTok, body: { username: 'tokenuser', password: 'super-secret-8', role: 'worker' } });
 
-const badLogin = await req('POST', '/api/auth/token', { body: { username: 'tokenuser', password: 'wrong', device_id: jdev } });
+const badLogin = await req('POST', '/api/auth/token', { token: jDeviceToken, device: jdev, body: { username: 'tokenuser', password: 'wrong' } });
 check('a wrong password mints no token', badLogin.status === 401 && !badLogin.json?.token);
-const wrongDevLogin = await req('POST', '/api/auth/token', { body: { username: 'tokenuser', password: 'super-secret-8', device_id: 'dddddddd-4444-4444-8444-dddddddddddd' } });
-check('a login from an un-enrolled device is refused', wrongDevLogin.status === 403);
+const wrongDevLogin = await req('POST', '/api/auth/token', { token: 'deadbeef', device: 'dddddddd-4444-4444-8444-dddddddddddd', body: { username: 'tokenuser', password: 'super-secret-8' } });
+check('a login from a device that is not connected is refused', wrongDevLogin.status === 403);
 
-const jwtLogin = await req('POST', '/api/auth/token', { body: { username: 'tokenuser', password: 'super-secret-8', device_id: jdev } });
+const jwtLogin = await req('POST', '/api/auth/token', { token: jDeviceToken, device: jdev, body: { username: 'tokenuser', password: 'super-secret-8' } });
 check('the right password mints a JWT', jwtLogin.status === 200 && typeof jwtLogin.json?.token === 'string' && jwtLogin.json?.role === 'worker');
 const jwtTok = jwtLogin.json?.token;
 
@@ -289,20 +310,20 @@ const tuid = (await req('GET', '/api/admin/users', { token: adminTok })).json.fi
 await req('POST', `/api/admin/users/${tuid}/reset-password`, { token: adminTok, body: { password: 'a-new-one-9' } });
 const afterReset = await req('GET', '/api/me', { token: jwtTok, device: jdev });
 check('an admin password reset bumps the epoch and kills the old token', afterReset.status === 401);
-const reLogin = await req('POST', '/api/auth/token', { body: { username: 'tokenuser', password: 'a-new-one-9', device_id: jdev } });
-check('the user logs back in with the new password for a fresh token', reLogin.status === 200 && !!reLogin.json?.token);
+const reLogin = await req('POST', '/api/auth/token', { token: jDeviceToken, device: jdev, body: { username: 'tokenuser', password: 'a-new-one-9' } });
+check('the operator logs back in with the new password for a fresh token', reLogin.status === 200 && !!reLogin.json?.token);
 
-// the code was consumed on approval — a new request with it is refused
-const reuse = await req('POST', '/api/enroll', { body: { code: workerCode, username: 'eve', display_name: 'Eve', device_id: 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb' } });
-check('the code is single-use (consumed on approval)', reuse.status === 403);
+// the code was consumed on accept — connecting a new device with it is refused
+const reuse = await req('POST', '/api/enroll', { body: { code: mk.json.code, device_id: 'ffffffff-6666-4666-8666-ffffffffffff', device_name: 'reuse' } });
+check('the code is single-use (consumed on accept)', reuse.status === 403);
 
-// a rejected request yields no token
-const rc = (await req('POST', '/api/admin/enroll-codes', { token: adminTok, body: { role: 'worker' } })).json.code;
+// a rejected device request yields no token
+const rc = (await req('POST', '/api/admin/enroll-codes', { token: adminTok })).json.code;
 const rdev = 'eeeeeeee-5555-4555-8555-eeeeeeeeeeee';
-const rreq = await req('POST', '/api/enroll', { body: { code: rc, username: 'mallory', display_name: 'Mallory', device_id: rdev } });
+const rreq = await req('POST', '/api/enroll', { body: { code: rc, device_id: rdev, device_name: 'mallory-box' } });
 await req('POST', `/api/admin/requests/${rreq.json.request_id}/reject`, { token: adminTok });
 const rpoll = await req('GET', `/api/enroll/poll?request_id=${rreq.json.request_id}&device_id=${rdev}`);
-check('a rejected request yields no token', rpoll.json?.status === 'rejected' && !rpoll.json?.token);
+check('a rejected device request yields no token', rpoll.json?.status === 'rejected' && !rpoll.json?.token);
 
 const wrongDev = await req('GET', '/api/projects', { token: workerToken, device: 'cccccccc-3333-4333-8333-cccccccccccc' });
 check('token replayed from another device is refused', wrongDev.status === 401);
@@ -328,10 +349,10 @@ check('admin-role device enrolls via approval', enrollA.ok && enrollA.role === '
 const adminUsers = await req('GET', '/api/admin/users', { token: enrollA.token, device: dev2 });
 check('admin-role device reaches the admin surface', adminUsers.status === 200 && adminUsers.json?.length >= 3);
 
-// attribution: the worker's finding write is in the audit log under their display name
+// attribution: the worker's finding write is in the audit log under their account
 const audit = await req('GET', '/api/admin/audit', { token: enrollA.token, device: dev2 });
 check('audit log attributes the write to the worker', audit.status === 200
-  && audit.json?.some(r => r.display_name === 'Ana R.' && (r.path || '').includes('/findings')));
+  && audit.json?.some(r => r.username === 'ana' && (r.path || '').includes('/findings')));
 
 // ── the editor role: builds engagement structure, but is walled off from server management ──
 const edev = '77777777-8888-4888-8888-777777777777';
@@ -365,18 +386,17 @@ const rmMember = await req('DELETE', `/api/admin/users/${rollsId}`, { token: adm
 const usersAfter = await req('GET', '/api/admin/users', { token: adminTok });
 check('an admin can remove a member', rmMember.status === 200 && !usersAfter.json.some(u => u.username === 'rolls'));
 
-// hard-delete removes a device, its orphaned account, AND that account's redeemed codes
-const tdev = 'ffffffff-6666-4666-8666-ffffffffffff';
-const tcode = (await req('POST', '/api/admin/enroll-codes', { token: adminTok, body: { role: 'worker', note: 'temp code' } })).json.code;
-await enrollApprove(tcode, 'temp', 'Temp User', tdev);
+// hard-delete removes the DEVICE only — an account is not a device, so it stays (the operator can
+// connect a new device and sign in again). Revoking/removing a device never touches accounts now.
+const tdev = 'aaaaaaaa-7777-4777-8777-aaaaaaaaaaaa';
+const tcode = (await req('POST', '/api/admin/enroll-codes', { token: adminTok, body: { note: 'temp code' } })).json.code;
+await enrollApprove(tcode, 'temp', 'temp-box', tdev, 'worker');
 await req('DELETE', `/api/admin/devices/${tdev}`, { token: adminTok });           // soft revoke
 const purge = await req('DELETE', `/api/admin/devices/${tdev}?hard=1`, { token: adminTok }); // hard delete
 const devs = await req('GET', '/api/admin/devices', { token: adminTok });
 const users = await req('GET', '/api/admin/users', { token: adminTok });
-const codesPostPurge = await req('GET', '/api/admin/enroll-codes', { token: adminTok });
-check('hard-delete removes the device, its account and its redeemed code', purge.json?.deleted === true
-  && !devs.json.some(d => d.id === tdev) && !users.json.some(u => u.username === 'temp')
-  && !codesPostPurge.json.some(c => c.note === 'temp code'));
+check('hard-delete removes the device but keeps the operator account', purge.json?.deleted === true
+  && !devs.json.some(d => d.id === tdev) && users.json.some(u => u.username === 'temp'));
 
 // killing an unused code removes it and makes it unredeemable
 const kc = await req('POST', '/api/admin/enroll-codes', { token: adminTok, body: { role: 'worker', note: 'to kill' } });

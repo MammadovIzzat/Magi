@@ -79,17 +79,21 @@ const syncNow = async () => { let r; for (let i = 0; i < 40; i++) { r = await li
 const serverDb = new DatabaseSync(join(serverDir, 'magi.db')); // read-only-ish verification handle
 const sName = (uid) => serverDb.prepare('SELECT name FROM projects WHERE uid=?').get(uid)?.name;
 
-// connect (a pending request), admin-approve it, poll to finalize the link — then drive sync
-// deterministically for the test.
+// connect a device (a pending request), admin-accept it, create the operator account, then sign the
+// operator in — and drive sync deterministically for the test. The operator is a WORKER (section 1b
+// checks a worker can't finish an engagement through a crafted sync push).
 async function connectApprove(username, display_name) {
-  const r = await link.connect({ server_url: `https://127.0.0.1:${PORT}`, code: await mkCode(), username, display_name, password: username + '-secret-8' });
+  const r = await link.connect({ server_url: `https://127.0.0.1:${PORT}`, code: await mkCode(), device_name: display_name });
   if (!r.ok) return { ok: false, error: r.error };
   const pending = (await req('GET', '/api/admin/requests', { token: adminTok })).json;
-  const rid = (pending || []).find(x => x.display_name === display_name)?.id;
+  const rid = (pending || []).find(x => x.device_name === display_name)?.id;
   if (rid) await req('POST', `/api/admin/requests/${rid}/approve`, { token: adminTok });
   await link.pollApproval();
+  link.stopApprovalPoll();
+  await req('POST', '/api/admin/users', { token: adminTok, body: { username, password: username + '-secret-8', role: 'worker' } });
+  const lg = await link.login({ username, password: username + '-secret-8' });
   link.stopSyncLoop();
-  return { ok: link.status().linked === true };
+  return { ok: lg.ok && link.status().linked === true };
 }
 
 const c1 = await connectApprove('ana', 'Ana R.');

@@ -75,66 +75,74 @@ cli = spawn(process.execPath, ['server.js'], {
 cli.stderr.on('data', d => { cliErr += d; });
 for (let i = 0; i < 80; i++) { try { if ((await reqCli('GET', '/api/me')).status) break; } catch {} if (cli.exitCode != null) die('client exited early'); await sleep(150); }
 
-// ---- team admin mints a worker enrollment code ----
+// ---- team admin mints a device code + creates operator accounts ----
 const adminTok = (await reqTeam('POST', '/api/auth/login', { body: { username: 'admin', password: TEAM_PASS } })).json?.token;
 if (!adminTok) die('team admin login failed');
-const code = (await reqTeam('POST', '/api/admin/enroll-codes', { token: adminTok, body: { role: 'worker' } })).json?.code;
+const code = (await reqTeam('POST', '/api/admin/enroll-codes', { token: adminTok })).json?.code;
+await reqTeam('POST', '/api/admin/users', { token: adminTok, body: { username: 'ana', password: 'ana-secret-8', role: 'worker' } });
+await reqTeam('POST', '/api/admin/users', { token: adminTok, body: { username: 'bob', password: 'bob-secret-8', role: 'editor' } });
 
-// A) BEFORE linking, the local admin/admin opens the standalone client.
+// A) BEFORE connecting, the local admin/admin opens the standalone client.
 const preLocal = await reqCli('POST', '/api/auth/login', { body: { username: 'admin', password: 'admin' } });
 check('standalone: the local admin account can open the app', preLocal.status === 200 && !!preLocal.json?.token);
 const localTok = preLocal.json.token;
 
-// Link this client to the team server as "ana" (uses the local session to reach the gated route).
-const conn = await reqCli('POST', '/api/link/connect', { token: localTok, body: { server_url: `https://127.0.0.1:${TEAM}`, fingerprint, code, username: 'ana', display_name: 'Ana R.', password: 'ana-secret-8' } });
-check('client submits a join request (pending)', conn.status === 201);
+// The DEVICE connects (code only, no account) — uses the local session to reach the gated route.
+const conn = await reqCli('POST', '/api/link/connect', { token: localTok, body: { server_url: `https://127.0.0.1:${TEAM}`, fingerprint, code, device_name: 'ana-laptop' } });
+check('device submits a connect request (pending)', conn.status === 201);
 const pend = (await reqTeam('GET', '/api/admin/requests', { token: adminTok })).json || [];
-const rid = pend.find(r => r.display_name === 'Ana R.')?.id;
-if (!rid) die('the join request never reached the team server');
-await reqTeam('POST', `/api/admin/requests/${rid}/approve`, { token: adminTok, body: { role: 'worker' } });
+const rid = pend.find(r => r.device_name === 'ana-laptop')?.id;
+if (!rid) die('the connect request never reached the team server');
+await reqTeam('POST', `/api/admin/requests/${rid}/approve`, { token: adminTok });
 
-// Wait for the client's background poll to finalize the link — signalled by /api/me (unauth)
-// reporting the linked username. We poll THAT, not /api/auth/login, so the login throttle stays
-// clean for the real sign-in attempt below.
+// Wait for the client's background poll to register the device — /api/me (unauth) then reports the
+// device is connected (but no operator signed in yet).
 for (let i = 0; i < 80; i++) {
-  if ((await reqCli('GET', '/api/me')).json?.link?.username === 'ana') break;
-  if (cli.exitCode != null) die('client exited during linking');
+  const anon = (await reqCli('GET', '/api/me')).json;
+  if (anon?.link?.connected) break;
+  if (cli.exitCode != null) die('client exited during connect');
   await sleep(200);
 }
+const anonConnected = await reqCli('GET', '/api/me');
+check('connected device, no operator yet: login screen is told it is connected', anonConnected.status === 401 && anonConnected.json?.link?.connected === true && !anonConnected.json?.link?.username);
+
+// An operator signs in on the connected device (online: device token + user password).
 const anaLogin = await reqCli('POST', '/api/auth/login', { body: { username: 'ana', password: 'ana-secret-8' } });
 const anaTok = anaLogin.json?.token || null;
-check('linked: the server user opens the app with their server password (offline verifier)', anaLogin.status === 200 && !!anaTok);
+check('an operator signs in on the connected device', anaLogin.status === 200 && !!anaTok);
 
-// B) THE FIX: once linked, the leftover local admin/admin can NO LONGER open the device.
+// B) once connected, the leftover local admin/admin can NO LONGER open the device.
 const postLocal = await reqCli('POST', '/api/auth/login', { body: { username: 'admin', password: 'admin' } });
-check('linked: a local account (admin/admin) can no longer open the device', postLocal.status === 401);
-// and the old local session token is dead too
+check('connected: a local account (admin/admin) can no longer open the device', postLocal.status === 401);
 const oldSession = await reqCli('GET', '/api/me', { token: localTok });
-check('linked: the pre-link local session is invalidated', oldSession.status === 401);
+check('connected: the pre-connect local session is invalidated', oldSession.status === 401);
 
-// The link session resolves to the SERVER identity + role (from the signed token).
+// The operator session resolves to the server identity + role (from the signed token).
 const me = await reqCli('GET', '/api/me', { token: anaTok });
-check('linked session resolves to the server identity and role', me.status === 200 && me.json?.username === 'ana' && me.json?.role === 'worker');
-// The login screen is told who to sign in as.
-const anon = await reqCli('GET', '/api/me');
-check('the login screen is told the server username to use', anon.status === 401 && anon.json?.link?.username === 'ana');
-// A wrong server password is refused (no fallback to any local account).
+check('the operator session resolves to the server identity and role', me.status === 200 && me.json?.username === 'ana' && me.json?.role === 'worker');
+// A wrong password is refused.
 const wrong = await reqCli('POST', '/api/auth/login', { body: { username: 'ana', password: 'not-the-password' } });
-check('linked: a wrong server password is refused', wrong.status === 401);
+check('connected: a wrong password is refused', wrong.status === 401);
+// Shared portal: a DIFFERENT operator can sign in on the SAME device.
+const bobLogin = await reqCli('POST', '/api/auth/login', { body: { username: 'bob', password: 'bob-secret-8' } });
+check('shared portal: a different operator can sign in on the same device', bobLogin.status === 200 && (await reqCli('GET', '/api/me', { token: bobLogin.json.token })).json?.role === 'editor');
+// sign ana back in for the password-change test below
+await reqCli('POST', '/api/auth/login', { body: { username: 'ana', password: 'ana-secret-8' } });
+const anaTok2 = (await reqCli('POST', '/api/auth/login', { body: { username: 'ana', password: 'ana-secret-8' } })).json.token;
 
-// D) a linked user can change their (server) password from the client. It changes on the server,
-// the cached offline verifier is refreshed, the local app session survives, old password stops
-// working and the new one opens the app.
-const chg = await reqCli('POST', '/api/change-password', { token: anaTok, body: { current: 'ana-secret-8', next: 'ana-fresh-pass-11' } });
-check('linked: changing your (server) password from the client succeeds', chg.status === 200 && chg.json?.ok === true);
-check('linked: the app session survives the password change', (await reqCli('GET', '/api/me', { token: anaTok })).status === 200);
-check('linked: the OLD password no longer opens the app', (await reqCli('POST', '/api/auth/login', { body: { username: 'ana', password: 'ana-secret-8' } })).status === 401);
+// D) an operator can change their (server) password from the client. It changes on the server, the
+// cached offline verifier is refreshed, the local app session survives, old password stops working
+// and the new one opens the app.
+const chg = await reqCli('POST', '/api/change-password', { token: anaTok2, body: { current: 'ana-secret-8', next: 'ana-fresh-pass-11' } });
+check('an operator can change their password from the client', chg.status === 200 && chg.json?.ok === true);
+check('the app session survives the password change', (await reqCli('GET', '/api/me', { token: anaTok2 })).status === 200);
+check('the OLD password no longer opens the app', (await reqCli('POST', '/api/auth/login', { body: { username: 'ana', password: 'ana-secret-8' } })).status === 401);
 const newPw = await reqCli('POST', '/api/auth/login', { body: { username: 'ana', password: 'ana-fresh-pass-11' } });
-check('linked: the NEW password opens the app (offline verifier refreshed)', newPw.status === 200 && !!newPw.json?.token);
+check('the NEW password opens the app', newPw.status === 200 && !!newPw.json?.token);
 check('the password actually changed on the server', (await reqTeam('POST', '/api/auth/login', { body: { username: 'ana', password: 'ana-fresh-pass-11' } })).status === 200);
 
 // C) after disconnect, the device is standalone again and the local admin works.
-await reqCli('POST', '/api/link/disconnect', { token: anaTok });
+await reqCli('POST', '/api/link/disconnect', { token: newPw.json.token });
 const backLocal = await reqCli('POST', '/api/auth/login', { body: { username: 'admin', password: 'admin' } });
 check('after disconnect, the local admin account can open the app again', backLocal.status === 200 && !!backLocal.json?.token);
 const anaGone = await reqCli('POST', '/api/auth/login', { body: { username: 'ana', password: 'ana-secret-8' } });

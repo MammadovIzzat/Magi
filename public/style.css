@@ -108,6 +108,11 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 
 @keyframes magiPulse { 0%,100% { opacity: .35 } 50% { opacity: 1 } }
 @keyframes magiRise { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
+@keyframes magiFade { from { opacity: 0 } to { opacity: 1 } }
+/* A view "opens" on real navigation (a hashchange toggles .nav-in) rather than appearing instantly.
+   Auto-refreshes (live sync, the admin poll) don't touch the hash, so they never re-trigger it. */
+#view.nav-in { animation: magiRise .2s ease both; }
+@media (prefers-reduced-motion: reduce) { #view.nav-in, .modal, .overlay, .cvss-overlay, .cvss-panel { animation: none !important; } }
 
 /* mono uppercase eyebrow used all over the UI */
 .kicker {
@@ -669,7 +674,15 @@ input, textarea, select {
 }
 input:focus, textarea:focus, select:focus { border-color: var(--blue); }
 textarea { min-height: 84px; resize: vertical; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; }
-select { appearance: none; cursor: pointer; }
+/* Custom chevron (appearance:none drops the native one) + themed option list. Chromium/Firefox
+   honour option colours, so the dropdown popup matches the app instead of a translucent default. */
+select {
+  appearance: none; cursor: pointer; padding-right: 30px;
+  background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="%238C8C95" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg>');
+  background-repeat: no-repeat; background-position: right 11px center;
+}
+select option { background: var(--panel-2); color: var(--fg); }
+select option:checked { background: var(--gold-wash); color: var(--gold); }
 /* Date/time fields open the calendar on click — make the whole field read as clickable and the
    picker icon visible against the dark theme (the default black glyph vanishes on dark). */
 input[type="date"], input[type="time"], input[type="month"],
@@ -689,6 +702,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 .overlay {
   position: fixed; inset: 0; background: rgba(4,5,8,.72); backdrop-filter: blur(2px);
   display: grid; place-items: center; z-index: 60; padding: 20px;
+  animation: magiFade .15s ease both;
 }
 .modal {
   width: min(520px, 94vw); max-height: 86vh; overflow: auto; background: var(--panel);
@@ -908,8 +922,10 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 
 /* Full CVSS 3.1 editor — its own overlay above the finding modal, SysReptor-style. */
 .cvss-overlay { position: fixed; inset: 0; z-index: 70; background: rgba(0, 0, 0, .6);
-  display: flex; align-items: flex-start; justify-content: center; padding: 24px 16px; overflow: auto; }
-.cvss-panel { width: 100%; max-width: 1120px; background: var(--panel); border: 1px solid var(--line-hi); }
+  display: flex; align-items: flex-start; justify-content: center; padding: 24px 16px; overflow: auto;
+  animation: magiFade .15s ease both; }
+.cvss-panel { width: 100%; max-width: 1120px; background: var(--panel); border: 1px solid var(--line-hi);
+  animation: magiRise .2s ease both; }
 .cvss-header { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between;
   gap: 16px; padding: 12px 16px; background: var(--panel-2); border-bottom: 1px solid var(--line); }
 .cvss-title { font-family: var(--display); font-size: 15px; color: var(--fg); }

@@ -63,10 +63,14 @@ app.use((req, res, next) => {
   const file = embedded[req.path === '/' ? '/index.html' : req.path];
   if (!file) return next();
   res.type(file.type);
-  res.setHeader('Cache-Control', req.path.startsWith('/fonts/') ? 'public, max-age=604800' : 'no-cache');
+  // Fonts are content-hashed-stable → cache hard. The app shell (html/js/css) is no-store so a new
+  // build is picked up immediately — a stale cached app.js once made a shipped fix look absent.
+  res.setHeader('Cache-Control', req.path.startsWith('/fonts/') ? 'public, max-age=604800' : 'no-store');
   res.end(file.body);
 });
-app.use(express.static(join(__dirname, 'public')));
+app.use(express.static(join(__dirname, 'public'), {
+  setHeaders: (res, p) => { if (/\.(?:html|js|css)$/.test(p)) res.setHeader('Cache-Control', 'no-store'); },
+}));
 
 // ---- helpers ----
 const q = (sql) => db.prepare(sql);

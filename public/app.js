@@ -358,6 +358,12 @@ async function route() {
   }
 }
 window.addEventListener('hashchange', route);
+// Replay the "open" animation on genuine navigation only. Auto-refreshes (live sync, admin poll)
+// re-render without a hashchange, so they never re-trigger it — the view just updates in place.
+window.addEventListener('hashchange', () => {
+  const v = $('#view'); if (!v) return;
+  v.classList.remove('nav-in'); void v.offsetWidth; v.classList.add('nav-in');
+});
 $('#homeBtn').onclick = () => location.hash = '';
 // Universal back: walk the hash history, or fall home if this is the first screen.
 $('#backBtn').onclick = () => { if (history.length > 1) history.back(); else location.hash = ''; };

@@ -307,6 +307,9 @@ function renderAccount() {
   const badge = LINK?.pending
     ? el('button', { className: 'linkbadge pending', title: 'Join request awaiting approval — open settings', onclick: () => location.hash = '/settings' },
         el('span', { className: 'dot' }), lbl('pending'))
+    : LINK?.needs_reconnect
+      ? el('button', { className: 'linkbadge reauth', title: 'This device link is from an older version — reconnect from settings', onclick: () => location.hash = '/settings' },
+          el('span', { className: 'dot' }), lbl('reconnect'))
     : (LINK?.linked && LINK.link?.needs_reauth)
       ? el('button', { className: 'linkbadge reauth', title: 'Session expired — sync is paused. Click to sign in and resume.', onclick: () => linkSignIn({ reauth: true }) },
           el('span', { className: 'dot' }), lbl('sign in'))
@@ -2029,6 +2032,18 @@ async function renderSettings() {
       el('div', { className: 'setcard-actions' },
         el('button', { className: 'btn gold', onclick: () => linkSignIn() }, icon('server'), 'Sign in'),
         el('button', { className: 'btn danger', onclick: disconnectDialog }, icon('x'), 'Disconnect'))));
+  } else if (LINK.needs_reconnect) {
+    const L = LINK.link || {};
+    page.append(el('div', { className: 'setcard' },
+      el('div', { className: 'setcard-hd' }, el('span', { className: 'linkbadge reauth' }, el('span', { className: 'dot' }), 'Reconnect required')),
+      el('div', { className: 'duebanner' },
+        el('div', {}, el('strong', {}, 'This device link is from an older version'),
+          el('div', { className: 'muted small' }, 'Magi changed how devices connect: a device is now enrolled separately from your operator account. Ask an admin for a new one-time code and reconnect — your synced work and your set-aside local engagements are kept, sync just resumes.')),
+        el('button', { className: 'btn gold', onclick: () => connectDialog(L) }, icon('server'), 'Reconnect')),
+      kv('Server', L.server_url || '—'),
+      kv('This device', L.device_name || '—'),
+      el('div', { className: 'setcard-actions' },
+        el('button', { className: 'btn danger', onclick: disconnectDialog }, icon('exit'), 'Disconnect instead'))));
   } else if (!LINK.linked) {
     page.append(el('div', { className: 'setcard' },
       el('div', { className: 'setcard-hd' }, el('span', { className: 'linkbadge' }, el('span', { className: 'dot' }), 'Working locally')),
@@ -2118,16 +2133,21 @@ function rekeyDialog(isChange) {
     },
   });
 }
-function connectDialog() {
+// `prefill` (from a reconnect) seeds the server address + device name so the operator only needs a
+// fresh one-time code; a first-time connect passes nothing.
+function connectDialog(prefill) {
   let host = '';
   try { host = (window.location?.hostname && window.location.hostname !== 'localhost') ? window.location.hostname : ''; } catch {}
+  const reconnect = !!(prefill && prefill.server_url);
   modal({
-    kicker: 'Team server', title: 'Connect this device to a server', cta: 'Send request',
-    note: 'Get the server address and a one-time code from an admin. This connects your DEVICE — an admin accepts it, then you sign in with your own operator account. Your local engagements are set aside on connect and restored if you disconnect.',
+    kicker: 'Team server', title: reconnect ? 'Reconnect this device' : 'Connect this device to a server', cta: reconnect ? 'Reconnect' : 'Send request',
+    note: reconnect
+      ? 'Ask an admin for a new one-time code, then reconnect. Your synced work and your set-aside local engagements are kept — sync resumes once an admin accepts the device and you sign in.'
+      : 'Get the server address and a one-time code from an admin. This connects your DEVICE — an admin accepts it, then you sign in with your own operator account. Your local engagements are set aside on connect and restored if you disconnect.',
     build: (b) => {
-      field(b, 'Server address', 'server_url', { ph: 'https://magi.corp.local:8443' });
+      field(b, 'Server address', 'server_url', { value: prefill?.server_url || '', ph: 'https://magi.corp.local:8443' });
       field(b, 'One-time code', 'code', { ph: 'from your admin' });
-      field(b, 'This device’s name', 'device_name', { value: host, ph: 'e.g. ana-laptop' });
+      field(b, 'This device’s name', 'device_name', { value: prefill?.device_name || host, ph: 'e.g. ana-laptop' });
     },
     onSubmit: async (fd) => {
       const o = Object.fromEntries(fd);

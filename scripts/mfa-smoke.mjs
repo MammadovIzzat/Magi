@@ -87,26 +87,39 @@ check('a recovery code completes the second factor', rc1.status === 200 && !!rc1
 const rcReuse = await loginOtp(recovery[0]);
 check('a used recovery code cannot be reused', rcReuse.status === 401 && !rcReuse.json?.token);
 
-// 4b) the CLIENT token endpoint (/api/auth/token) is MFA-gated too: a linked device mints a JWT
-// only after the second factor — first a setup challenge, then a required code on later logins.
-// (This is the path an app uses when it logs in to a server; issue: "not asked mfa" must not happen.)
+// 4b) the CLIENT token endpoint (/api/auth/token) is MFA-gated too. v0.9.0 model: a device connects
+// anonymously (code only) and an admin accepts it → a device token. An admin then creates the
+// operator account separately. The operator signs in on the connected device (device token as the
+// Bearer) with username + password + the second factor — first a setup challenge, then a required
+// code on later logins. (Issue this guards: "not asked mfa" must not happen.)
 const cAdmin = (await loginOtp(totp.currentCode(secret))).json.token;
 const codeT = (await req('POST', '/api/admin/enroll-codes', { token: cAdmin, body: { note: 'tok' } })).json.code;
 const devT = 'aa11bb22-cc33-4d44-8e55-ff66aa77bb88';
-const enT = await req('POST', '/api/enroll', { body: { code: codeT, username: 'dana', display_name: 'Dana', device_id: devT, password: 'dana-secret-8' } });
-await req('POST', `/api/admin/requests/${enT.json.request_id}/approve`, { token: cAdmin, body: { role: 'worker' } });
+const enT = await req('POST', '/api/enroll', { body: { code: codeT, device_id: devT, device_name: 'dana-laptop' } });
+await req('POST', `/api/admin/requests/${enT.json.request_id}/approve`, { token: cAdmin });
+// the device token is handed over exactly once, on the client's next poll
+const devTok = (await req('GET', `/api/enroll/poll?request_id=${enT.json.request_id}&device_id=${devT}`)).json.token;
+check('an accepted device is issued a device token', typeof devTok === 'string' && devTok.length > 0);
+// admin creates the operator account (independent of the device)
+const mkDana = await req('POST', '/api/admin/users', { token: cAdmin, body: { username: 'dana', password: 'dana-secret-8', role: 'worker' } });
+check('admin creates the operator account', mkDana.status === 201);
+// from here the DEVICE token authorizes the endpoint; the operator authenticates on top
+const dev = { token: devTok, device: devT };
 
-const tok0 = await req('POST', '/api/auth/token', { body: { username: 'dana', password: 'dana-secret-8', device_id: devT } });
+const tok0 = await req('POST', '/api/auth/token', { ...dev, body: { username: 'dana', password: 'dana-secret-8' } });
 check('a client login with no code is met with an MFA setup challenge (no token)', !tok0.json?.token && tok0.json?.mfa === 'setup' && typeof tok0.json?.secret === 'string');
 const tSecret = tok0.json.secret;
-const tokBad = await req('POST', '/api/auth/token', { body: { username: 'dana', password: 'dana-secret-8', device_id: devT, otp: '000000' } });
+const tokBad = await req('POST', '/api/auth/token', { ...dev, body: { username: 'dana', password: 'dana-secret-8', otp: '000000' } });
 check('a wrong setup code mints no client token', tokBad.status === 401 && !tokBad.json?.token);
-const tokOk = await req('POST', '/api/auth/token', { body: { username: 'dana', password: 'dana-secret-8', device_id: devT, otp: totp.currentCode(tSecret) } });
+const tokOk = await req('POST', '/api/auth/token', { ...dev, body: { username: 'dana', password: 'dana-secret-8', otp: totp.currentCode(tSecret) } });
 check('the right setup code mints a client JWT + recovery codes', tokOk.status === 200 && typeof tokOk.json?.token === 'string' && Array.isArray(tokOk.json?.recovery_codes));
-const tokNoOtp = await req('POST', '/api/auth/token', { body: { username: 'dana', password: 'dana-secret-8', device_id: devT } });
+const tokNoOtp = await req('POST', '/api/auth/token', { ...dev, body: { username: 'dana', password: 'dana-secret-8' } });
 check('once enrolled, a client login without a code is refused', tokNoOtp.status === 401 && tokNoOtp.json?.mfa === 'required' && !tokNoOtp.json?.token);
-const tokReq = await req('POST', '/api/auth/token', { body: { username: 'dana', password: 'dana-secret-8', device_id: devT, otp: totp.currentCode(tSecret) } });
+const tokReq = await req('POST', '/api/auth/token', { ...dev, body: { username: 'dana', password: 'dana-secret-8', otp: totp.currentCode(tSecret) } });
 check('a returning client mints a JWT with its code', tokReq.status === 200 && typeof tokReq.json?.token === 'string');
+// a bare device token (no operator auth) must NOT itself authorize the API
+const bareDev = await req('GET', '/api/me', dev);
+check('a device token alone does not authorize the API', bareDev.status === 401);
 
 // 5) admin reset clears MFA → the account is sent back into setup at next sign-in
 const cAuthed = (await loginOtp(totp.currentCode(secret))).json.token;

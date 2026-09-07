@@ -54,7 +54,19 @@ export function loadLink() {
   migrateLegacyLink();
   const row = db.prepare(`SELECT data FROM client_link WHERE id=1`).get();
   if (!row) return null;
-  try { return JSON.parse(row.data); } catch { return null; }
+  let link; try { link = JSON.parse(row.data); } catch { return null; }
+  // v0.9.0 changed the enrolment model: a device now holds its OWN token (link.device_token),
+  // distinct from an operator's JWT (link.token). A link written by an older version has an
+  // operator/user token but never had a device token, and that old token can't authenticate
+  // against the new server. Flag it once for a guided reconnect (which reuses the pinned server +
+  // the stashed personal engagements, so nothing is lost) and drop the unusable token so nothing
+  // keeps trying to sync with it.
+  if (link.token && !link.device_token && !link.pending && !link.needs_reconnect) {
+    delete link.token;
+    link.needs_reconnect = 1;
+    saveLink(link);
+  }
+  return link;
 }
 
 // One-time import of a link.json written by an older version: decrypt its token (via the keychain
@@ -157,6 +169,11 @@ export async function connect({ server_url, fingerprint, code, device_name }) {
   const device_id = randomUUID();
   const name = String(device_name || 'device').trim().slice(0, 60) || 'device';
   const pending = { server_url, fingerprint: cert.fingerprint, cert_pem: cert.pem, device_id, device_name: name, pending: true };
+  // Reconnecting an already-linked device (e.g. after a v0.9.0 upgrade left it needs_reconnect):
+  // carry the existing stash forward so approval does NOT re-stash — the local mirror and the
+  // personal engagements set aside on the first connect stay exactly as they are, and sync just
+  // resumes from where it left off. A fresh connect (no prior link) has no stash to carry.
+  try { const prev = loadLink(); if (prev && !prev.pending && prev.stash_id !== undefined) pending.stash_id = prev.stash_id; } catch { /* fresh connect */ }
   let res;
   try { res = await remoteFetch('/api/enroll', { method: 'POST', link: pending, body: { code, device_id, device_name: name } }); }
   catch (e) { return { ok: false, error: `could not reach the server: ${e.message}` }; }
@@ -512,6 +529,7 @@ function publicLink(link) {
     role: claims?.role || null,                             // authoritative source is the signed token
     pending: !!link.pending, request_id: link.request_id || null,
     connected: !!link.device_token,                         // the device itself is authorized
+    needs_reconnect: !!link.needs_reconnect,                // pre-0.9.0 link — must re-enrol the device
     needs_login: !!(link.needs_login && !link.token), needs_reauth: !!link.needs_reauth,
     jwt_exp: claims?.exp || null,
     connected_at: link.connected_at || null, last_ok: link.last_ok || null, last_sync: link.last_sync || null,
@@ -526,6 +544,7 @@ export function status() {
   const link = loadLink();
   if (!link) return { linked: false };
   if (link.pending) return { linked: false, pending: true, link: publicLink(link) };
+  if (link.needs_reconnect) return { linked: false, needs_reconnect: true, link: publicLink(link) };
   if (!link.token) return { linked: false, needs_login: true, connected: !!link.device_token, link: publicLink(link) };
   return { linked: true, link: publicLink(link) };
 }

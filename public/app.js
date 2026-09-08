@@ -695,7 +695,8 @@ async function renderProject(id) {
     p.client || p.scope ? el('div', { className: 'lede' }, [p.client, p.scope].filter(Boolean).join(' · ')) : null,
     el('div', { className: 'stats' },
       stat('Coverage', pct(handled, total) + '%', 'gold'),
-      stat('Findings', String(findings + flags), 'red'),
+      stat('Findings', String(findings), 'red'),
+      stat('Revisit', String(flags), 'purple'),
       stat('Targets', String(allTargets.length))),
     el('div', { className: 'srule' },
       el('span', { className: 'kicker' }, 'Targets'), el('span', { className: 'rule' }),
@@ -966,9 +967,9 @@ async function renderTarget(id) {
 
   const filters = el('div', { className: 'filters' });
   for (const f of [{ k: 'all', l: 'All', n: actionable.length }, { k: 'open', l: 'Open', n: openCount },
-  { k: 'flag', l: 'Findings', n: flagged }, { k: 'done', l: 'Handled', n: handled }]) {
+  { k: 'flag', l: 'Revisit', n: flagged }, { k: 'done', l: 'Handled', n: handled }]) {
     filters.append(el('button', {
-      className: 'filt' + (FILTER === f.k ? ' on' : ''),
+      className: 'filt filt-' + f.k + (FILTER === f.k ? ' on' : ''),
       onclick: () => {
         FILTER = f.k;
         if (f.k !== 'all') groups.forEach(g => openGroups.add(g.key)); // show what you filtered for
@@ -1136,9 +1137,11 @@ function renderItem(it, assetId, num, depth, childrenBy = {}) {
   const actions = el('div', { className: 'iactions' });
   if (!isSelect && !isGroup) {
     const stBox = el('div', { className: 'status' });
+    // Order is Yes · No · Flag (and Handled · N/A · Flag for plain checks): flag always sits last,
+    // and means "check later" — a purple revisit bookmark, not a finding.
     const opts = isTrigger
-      ? [{ k: 'yes', i: 'check', c: 'done', t: 'Yes' }, { k: 'no', i: 'na', c: 'na', t: 'No' }, { k: 'flag', i: 'flag', c: 'flag', t: 'Finding' }]
-      : [{ k: 'done', i: 'check', c: 'done', t: 'Handled' }, { k: 'flag', i: 'flag', c: 'flag', t: 'Finding' }, { k: 'na', i: 'na', c: 'na', t: 'Not applicable' }];
+      ? [{ k: 'yes', i: 'check', c: 'done', t: 'Yes' }, { k: 'no', i: 'na', c: 'na', t: 'No' }, { k: 'flag', i: 'flag', c: 'flag', t: 'Flag — check later' }]
+      : [{ k: 'done', i: 'check', c: 'done', t: 'Handled' }, { k: 'na', i: 'na', c: 'na', t: 'Not applicable' }, { k: 'flag', i: 'flag', c: 'flag', t: 'Flag — check later' }];
     for (const s of opts) {
       const b = el('button', { className: 'st ' + s.c + (it.status === s.k ? ' on-' + s.c : ''), title: s.t }, icon(s.i, 12));
       b.onclick = async () => {

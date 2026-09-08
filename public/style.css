@@ -57,6 +57,9 @@
   --jade-bg:   #1C1C20;
   --violet:    #FFB000;   /* triggers / follow-ups → amber */
   --violet-hi: #FFC63D;
+  --purple:    #9B7BFF;   /* flag → "check later" / revisit */
+  --purple-ink:#FFFFFF;
+  --purple-bg: #16112A;
   --rail-bg:   #0B0D13;   /* left rail — a shade off the app background */
   --danger-line:#3A1C1C; --danger-bg:#140C0E;  /* destructive-action box */
 
@@ -80,6 +83,7 @@
   --red:#BE3428; --red-ink:#FFFFFF; --red-bg:#FAE9E7;
   --jade:#B2B2AA; --jade-text:#3A3A40; --jade-bg:#EDEDE7;
   --violet:#A05C00; --violet-hi:#8A4E00;
+  --purple:#6D4BD8; --purple-ink:#FFFFFF; --purple-bg:#EDE7FB;
   --rail-bg:#EAEAE3; --danger-line:#E7C4BF; --danger-bg:#FBEDEB;
 }
 
@@ -319,6 +323,7 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
   margin-top: 6px; line-height: 1; color: var(--fg);
 }
 .stat-value.gold { color: var(--gold); }
+.stat-value.purple { color: var(--purple); }
 .stat-value.red { color: var(--red); }
 
 /* ── target list (project page) ────────────────────────── */
@@ -334,7 +339,7 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .tmeta { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
 .tprog { display: flex; align-items: center; gap: 10px; }
 .tflag { font-family: var(--mono); font-size: 10.5px; text-align: right; color: var(--dim); }
-.tflag.on { color: var(--red); }
+.tflag.on { color: var(--purple); }
 
 /* ── target checklist (the core screen) ────────────────── */
 .target { display: flex; height: 100%; min-height: 0; overflow-x: auto; }
@@ -352,10 +357,10 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .segbar { flex: 1; display: flex; gap: 2px; height: 6px; }
 .segbar > span { background: var(--line); display: block; position: relative; overflow: hidden; }
 .segbar > span > span { position: absolute; inset: 0 auto 0 0; background: var(--jade); }
-.segbar > span.has-flag > span { background: var(--red); }
+.segbar > span.has-flag > span { background: var(--purple); }
 .count { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
 .count b { font-weight: 400; color: var(--label); }
-.flagcount { font-family: var(--mono); font-size: 11.5px; color: var(--red); display: flex; align-items: center; gap: 5px; }
+.flagcount { font-family: var(--mono); font-size: 11.5px; color: var(--purple); display: flex; align-items: center; gap: 5px; }
 
 .filters { display: flex; margin-top: 14px; }
 .filt {
@@ -366,6 +371,8 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .filt:hover { color: var(--text); }
 .filt.on { border-bottom-color: var(--gold); color: var(--fg); }
 .filt span { color: var(--muted); margin-left: 4px; }
+.filt-flag span { color: var(--purple); }
+.filt-flag.on { border-bottom-color: var(--purple); }
 
 .checklist { padding: 8px 26px 90px; }
 .group { margin-top: 26px; }
@@ -383,7 +390,7 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
   color: var(--text-2); flex: 1; min-width: 0;
 }
 .ghdr.open .gtitle { color: var(--fg); }
-.gflag { font-family: var(--mono); font-size: 10.5px; color: var(--red); }
+.gflag { font-family: var(--mono); font-size: 10.5px; color: var(--purple); }
 .gcount { font-family: var(--mono); font-size: 11px; color: var(--muted-3); }
 .gcount b { font-weight: 400; color: var(--muted-2); }
 .ghdr .bar { width: 54px; flex: none; }
@@ -398,14 +405,14 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .item.child { margin-left: 30px; border-left-color: var(--gold); }
 .item.done { background: var(--void); border-left-color: var(--line-hi); }
 .item.na   { background: var(--void); opacity: .72; }
-.item.flag { background: var(--red-bg); border-left-color: var(--red); }
+.item.flag { background: var(--purple-bg); border-left-color: var(--purple); }
 .inum { font-family: var(--mono); font-size: 11.5px; color: var(--muted); width: 26px; flex: none; padding-top: 2px; }
 .item.child .inum { color: var(--violet-hi); }
 .ibody { flex: 1; min-width: 0; }
 .irow { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .ititle { font-size: 15px; font-weight: 500; line-height: 1.45; color: var(--fg-item); }
 .item.done .ititle, .item.na .ititle { color: var(--dim); }
-.item.flag .ititle { color: var(--red-ink); }
+.item.flag .ititle { color: var(--fg); }
 .tag {
   font-family: var(--mono); font-size: 9px; letter-spacing: .16em; text-transform: uppercase;
   padding: 2px 6px; border: 1px solid var(--gold); color: var(--gold); border-radius: 2px;
@@ -452,7 +459,7 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .st:first-child { margin-left: 0; }
 .st:hover { border-color: var(--line-hi); color: var(--fg); z-index: 1; }
 .st.on-done { border-color: var(--line-hi); background: var(--line-hi); color: var(--fg); z-index: 2; }
-.st.on-flag { border-color: var(--red);  background: var(--red); color: #fff; z-index: 2; }
+.st.on-flag { border-color: var(--purple);  background: var(--purple); color: var(--purple-ink); z-index: 2; }
 .st.on-na   { border-color: var(--line-2); background: var(--line); color: var(--muted); z-index: 2; }
 .itools { display: flex; gap: 1px; }
 .ibtn {

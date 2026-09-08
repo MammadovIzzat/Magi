@@ -626,6 +626,93 @@ function railForProject(project, activeTargetId) {
       el('button', { className: 'dashbtn', onclick: () => addTargetToProject(project.id) }, icon('plus', 12), 'Add target')) : null];
 }
 
+// Which parent targets are collapsed on the engagement page (hide their sub-targets). Per session.
+const collapsedTargets = new Set();
+
+// Host portion of a target label ("https://a.b.example.com/x" -> "a.b.example.com").
+function assetHost(label) {
+  let s = String(label || '').trim().toLowerCase();
+  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//, '');   // scheme
+  s = s.split('/')[0].split('?')[0].split('#')[0]; // path/query/frag
+  s = s.split('@').pop();                           // credentials
+  s = s.replace(/:\d+$/, '');                       // port
+  return s;
+}
+// IPv4 label -> integer, or null. CIDR ("10.0.0.0/24" or a bare IP as /32) -> {start,end,bits}.
+function ipv4(s) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(s).trim());
+  if (!m) return null;
+  const p = m.slice(1).map(Number);
+  if (p.some(n => n > 255)) return null;
+  return p[0] * 16777216 + p[1] * 65536 + p[2] * 256 + p[3];
+}
+function ipRange(label) {
+  const [ip, bitsRaw] = String(label || '').trim().split('/');
+  const base = ipv4(ip);
+  if (base == null) return null;
+  const bits = bitsRaw === undefined ? 32 : Number(bitsRaw);
+  if (!Number.isInteger(bits) || bits < 0 || bits > 32) return null;
+  const size = 2 ** (32 - bits);
+  const start = Math.floor(base / size) * size;
+  return { start, end: start + size - 1, bits };
+}
+const HOST_TYPES = new Set(['web', 'api', 'domain']); // labels that look like hostnames -> subdomain nesting
+const IP_TYPES = new Set(['ip', 'subnet', 'exthost']); // labels that look like IPs/CIDRs -> subnet nesting
+
+// Arrange a folder's targets into a forest: a sub-target nests under its parent when it was spawned
+// from it (metadata.parent_target), when its hostname is a subdomain of another target's, or when
+// its IP/range falls inside another target's subnet. Deepest match wins; ties broken so the tree is
+// acyclic. Roots and children are sorted by label. Returns [{item, children:[…]}].
+function buildTargetForest(items) {
+  const byUid = new Map(items.filter(i => i.uid).map(i => [i.uid, i]));
+  const host = new Map(), range = new Map();
+  for (const i of items) {
+    if (HOST_TYPES.has(i.type)) { const h = assetHost(i.label); if (h && /[a-z]/.test(h)) host.set(i, h); }
+    if (IP_TYPES.has(i.type)) { const r = ipRange(i.label); if (r) range.set(i, r); }
+  }
+  const parentOf = new Map(); // child.id -> parent item
+  for (const it of items) {
+    // 1) explicit spawn link
+    const pu = it.metadata?.parent_target;
+    if (pu && byUid.has(pu) && byUid.get(pu) !== it) { parentOf.set(it.id, byUid.get(pu)); continue; }
+    // 2) subdomain: the OTHER host that is the longest strict suffix (closest ancestor domain)
+    const h = host.get(it);
+    if (h) {
+      let best = null;
+      for (const [other, oh] of host) if (other !== it && oh !== h && h.endsWith('.' + oh) && (!best || oh.length > host.get(best).length)) best = other;
+      if (best) { parentOf.set(it.id, best); continue; }
+    }
+    // 3) IP inside a subnet: the smallest OTHER range that strictly contains this one
+    const r = range.get(it);
+    if (r) {
+      let best = null;
+      for (const [other, orr] of range) {
+        if (other === it) continue;
+        const contains = orr.start <= r.start && orr.end >= r.end && (orr.start < r.start || orr.end > r.end || orr.bits < r.bits);
+        if (contains && (!best || range.get(best).bits < orr.bits)) best = other;
+      }
+      if (best) { parentOf.set(it.id, best); continue; }
+    }
+  }
+  // build the forest, guarding against any accidental cycle (treat a looping node as a root)
+  const node = new Map(items.map(i => [i.id, { item: i, children: [] }]));
+  const ancestorLoops = (id) => {
+    const seen = new Set(); let p = parentOf.get(id);
+    while (p) { if (p.id === id || seen.has(p.id)) return true; seen.add(p.id); p = parentOf.get(p.id); }
+    return false;
+  };
+  const roots = [];
+  for (const i of items) {
+    const p = parentOf.get(i.id);
+    if (p && node.has(p.id) && p.id !== i.id && !ancestorLoops(i.id)) node.get(p.id).children.push(node.get(i.id));
+    else roots.push(node.get(i.id));
+  }
+  const byLabel = (a, b) => String(a.item.label).localeCompare(String(b.item.label));
+  const sortRec = (list) => { list.sort(byLabel); for (const n of list) sortRec(n.children); };
+  sortRec(roots);
+  return roots;
+}
+
 // ---------- engagement (project) — lists Asset folders ----------
 async function renderProject(id) {
   const p = await api('/projects/' + id);
@@ -652,12 +739,22 @@ async function renderProject(id) {
   const stat = (label, value, cls) => el('div', { className: 'stat' },
     el('div', { className: 'kicker' }, label), el('div', { className: 'stat-value ' + (cls || '') }, value));
 
-  const targetRow = (a) => {
+  const targetRow = (a, depth = 0, kids = 0) => {
     const t = TYPES.find(x => x.type === a.type) || {};
     const cov = pct(a.handled, a.total);
     const del = isEditor() ? el('button', { className: 'ibtn del', title: 'Delete target' }, icon('trash')) : null;
     if (del) del.onclick = (e) => { e.stopPropagation(); delTarget(a, () => renderProject(id)); };
-    return el('button', { className: 'trow', onclick: () => location.hash = `/target/${a.id}` },
+    const collapsed = collapsedTargets.has(a.id);
+    // A caret to fold/unfold a target's sub-targets; a spacer keeps names aligned when there are none.
+    let toggle;
+    if (kids) {
+      toggle = el('span', { className: 'tcaret' + (collapsed ? '' : ' open'), title: collapsed ? `Show ${kids} sub-target${kids === 1 ? '' : 's'}` : 'Hide sub-targets' }, '▶');
+      toggle.onclick = (e) => { e.stopPropagation(); collapsed ? collapsedTargets.delete(a.id) : collapsedTargets.add(a.id); renderProject(id); };
+    } else {
+      toggle = el('span', { className: 'tcaret none' });
+    }
+    return el('button', { className: 'trow' + (depth ? ' sub' : ''), style: depth ? `padding-left:${12 + depth * 22}px` : '', onclick: () => location.hash = `/target/${a.id}` },
+      toggle,
       codeBadge(a.type),
       el('span', { className: 'tgrow' },
         el('span', { className: 'tname' }, a.label),
@@ -686,7 +783,12 @@ async function renderProject(id) {
         el('span', { className: 'kicker' }, `${groupLabel(f.grp)}`), el('span', { className: 'rule' }),
         el('span', { className: 'muted small' }, `${f.items.length} target${f.items.length === 1 ? '' : 's'}`)));
       const list = el('div', { className: 'tlist' });
-      for (const a of f.items) list.append(targetRow(a));
+      const renderNode = (n, depth) => {
+        list.append(targetRow(n.item, depth, n.children.length));
+        if (n.children.length && !collapsedTargets.has(n.item.id))
+          for (const c of n.children) renderNode(c, depth + 1);
+      };
+      for (const root of buildTargetForest(f.items)) renderNode(root, 0);
       body.append(list);
     }
   }

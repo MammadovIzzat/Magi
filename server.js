@@ -847,14 +847,15 @@ if (!SERVER_MODE) {
 }
 
 const insertItem = q(`INSERT INTO items
-  (asset_id, parent_id, group_key, group_title, title, detail, payloads, kind, spawns, catalog, options, opt_key, sort)
-  VALUES (@asset_id,@parent_id,@group_key,@group_title,@title,@detail,@payloads,@kind,@spawns,@catalog,@options,@opt_key,@sort)`);
+  (asset_id, parent_id, group_key, group_title, title, detail, payloads, kind, spawns, catalog, options, opt_key, spawn_type, sort)
+  VALUES (@asset_id,@parent_id,@group_key,@group_title,@title,@detail,@payloads,@kind,@spawns,@catalog,@options,@opt_key,@spawn_type,@sort)`);
 function addItem(assetId, r) {
   insertItem.run({
     asset_id: assetId, parent_id: r.parent_id ?? null,
     group_key: r.group_key, group_title: r.group_title, title: r.title, detail: r.detail || '',
     payloads: r.payloads ?? '[]', kind: r.kind || 'check', spawns: r.spawns ?? null,
-    catalog: r.catalog ?? null, options: r.options ?? '[]', opt_key: r.opt_key ?? null, sort: r.sort ?? 0,
+    catalog: r.catalog ?? null, options: r.options ?? '[]', opt_key: r.opt_key ?? null,
+    spawn_type: r.spawn_type ?? null, sort: r.sort ?? 0,
   });
 }
 // delete an item and all of its descendants (tree)
@@ -876,13 +877,14 @@ function tplGroup(type, kind, catalog, gkey) {
 }
 // A Target (checklist-bearing) lives in an Asset folder; assets.project_id is kept
 // denormalised so the project-wide roll-up queries stay simple.
-function createTarget(folderId, projectId, type, label, metadata = {}) {
-  const info = q(`INSERT INTO assets (project_id, folder_id, type, label, metadata) VALUES (?,?,?,?,?)`)
-    .run(projectId, folderId, type, label, JSON.stringify(metadata));
+function createTarget(folderId, projectId, type, label, metadata = {}, assignee = null) {
+  const info = q(`INSERT INTO assets (project_id, folder_id, type, label, metadata, assignee) VALUES (?,?,?,?,?,?)`)
+    .run(projectId, folderId, type, label, JSON.stringify(metadata), assignee || null);
   const targetId = info.lastInsertRowid;
   for (const r of tplRows(type)) addItem(targetId, {
     group_key: r.group_key, group_title: r.group_title, title: r.title, detail: r.detail,
-    payloads: r.payloads, kind: r.kind, spawns: r.spawns, catalog: r.catalog, options: r.options, sort: r.sort,
+    payloads: r.payloads, kind: r.kind, spawns: r.spawns, catalog: r.catalog, options: r.options,
+    spawn_type: r.spawn_type, sort: r.sort,
   });
   return targetId;
 }
@@ -1165,12 +1167,12 @@ app.get('/api/projects/:id', (req, res) => {
       (SELECT COUNT(*) FROM findings fi JOIN assets a ON a.id=fi.asset_id WHERE a.folder_id=f.id) AS findings
       FROM folders f WHERE f.project_id=? ORDER BY f.created_at, f.id`).all(req.params.id);
   for (const f of assets) {
-    f.items = q(`SELECT a.id, a.type, a.label,
+    f.items = q(`SELECT a.id, a.uid, a.type, a.label, a.assignee, a.metadata,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group')) AS total,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group') AND i.status IN ('done','na','yes','no')) AS handled,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.status='flag') AS flags,
       (SELECT COUNT(*) FROM findings fi WHERE fi.asset_id=a.id) AS findings
-      FROM assets a WHERE a.folder_id=? ORDER BY a.created_at, a.id`).all(f.id);
+      FROM assets a WHERE a.folder_id=? ORDER BY a.created_at, a.id`).all(f.id).map(assetSummary);
   }
   res.json({ ...p, assets });
 });
@@ -1390,6 +1392,27 @@ app.post('/api/items/:id/spawn', (req, res) => {
     kind: item.kind || 'check', spawns: item.spawns || null, sort: sort++,
   });
   res.status(201).json({ ok: true, added: sg.items.length, instance: n });
+});
+
+// Spin up a full new target from a spawn_type item (e.g. a web target per subdomain). The new
+// target lands in the SAME asset folder, gets the whole checklist for that type, and inherits the
+// parent target's assignee (so the same person owns the sub). Its metadata links it back to the
+// item + parent, so the UI can list the subs under the item. Not gated on edit rights: adding a
+// sub-target is part of executing the checklist (like ticking a box), not structuring the engagement.
+app.post('/api/items/:id/spawn-target', (req, res) => {
+  const it = q(`SELECT * FROM items WHERE id=?`).get(req.params.id);
+  if (!it) return res.status(404).json({ error: 'not found' });
+  if (!it.spawn_type) return res.status(400).json({ error: 'this item does not spawn targets' });
+  const parent = q(`SELECT * FROM assets WHERE id=?`).get(it.asset_id);
+  if (!parent || parent.folder_id == null) return res.status(400).json({ error: 'the target has no engagement folder' });
+  const type = q(`SELECT type, soon FROM tpl_types WHERE type=?`).get(it.spawn_type);
+  if (!type) return res.status(400).json({ error: `unknown target type "${it.spawn_type}"` });
+  if (type.soon) return res.status(400).json({ error: 'that target type is not selectable yet' });
+  const label = String(req.body?.label || '').trim().slice(0, 200);
+  if (!label) return res.status(400).json({ error: 'a name is required' });
+  const metadata = { spawned_from_item: it.uid || null, parent_target: parent.uid || null };
+  const tid = createTarget(parent.folder_id, parent.project_id, it.spawn_type, label, metadata, parent.assignee || null);
+  res.status(201).json(assetSummary(q(`SELECT * FROM assets WHERE id=?`).get(tid)));
 });
 
 // Toggle a `select` option -> unfold (or remove) that option's catalog checklist as children.

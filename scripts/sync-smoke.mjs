@@ -130,6 +130,8 @@ const localServerProj = db.prepare("SELECT id,uid FROM projects WHERE name='Serv
 check('client received the server-made project', !!localServerProj);
 const localTargetItems = localServerProj ? db.prepare(`SELECT COUNT(*) c FROM items i JOIN assets a ON a.id=i.asset_id JOIN folders f ON f.id=a.folder_id WHERE f.project_id=?`).get(localServerProj.id).c : 0;
 check('client received the server target’s full checklist', localTargetItems > 20);
+check('spawn_type replicates to the client (the subdomain item spawns web targets)',
+  db.prepare(`SELECT 1 FROM items WHERE spawn_type='web' AND asset_id IN (SELECT id FROM assets WHERE label='https://srv.test')`).get() != null);
 
 // ---- 2c) a target assignment ("who's on this") replicates both ways ----
 await req('PATCH', `/api/targets/${sTarget.json.id}/assignee`, { token: adminTok, body: { assignee: 'admin' } });

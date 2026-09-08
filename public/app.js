@@ -893,6 +893,13 @@ async function renderTarget(id) {
   const pid = a.project?.id ?? a.folder?.project_id;
   const project = pid ? await api('/projects/' + pid) : null;   // engagement → all targets for the rail
   setRail(project ? railForProject(project, id) : null);
+  // Sub-targets spun up from a spawn_type item (e.g. a web target per subdomain), grouped by the
+  // item uid that created them, so each such item can list its subs with live coverage.
+  const spawnedByItem = {};
+  for (const f of (project?.assets || [])) for (const tg of (f.items || [])) {
+    const from = tg.metadata?.spawned_from_item;
+    if (from) (spawnedByItem[from] ||= []).push(tg);
+  }
   setCrumbs([
     { label: 'engagements', go: () => location.hash = '' },
     { label: a.project?.name || 'engagement', go: () => location.hash = `/project/${pid}` },
@@ -1046,7 +1053,7 @@ async function renderTarget(id) {
       let n = 0;
       const walk = (it, depth) => {
         if (!survives(it)) return;
-        body.append(renderItem(it, id, ++n, depth, childrenBy));
+        body.append(renderItem(it, id, ++n, depth, childrenBy, spawnedByItem));
         for (const k of (childrenBy[it.id] || []).sort((x, y) => x.sort - y.sort)) walk(k, depth + 1);
       };
       for (const it of roots) walk(it, 0);
@@ -1098,7 +1105,7 @@ async function renderTarget(id) {
   const col = $('.target-col'); if (col) col.scrollTop = y;
 }
 
-function renderItem(it, assetId, num, depth, childrenBy = {}) {
+function renderItem(it, assetId, num, depth, childrenBy = {}, spawnedByItem = {}) {
   const isTrigger = it.kind === 'trigger';
   const isSelect = it.kind === 'select';
   const isGroup = it.kind === 'group';
@@ -1135,6 +1142,38 @@ function renderItem(it, assetId, num, depth, childrenBy = {}) {
       }, (on ? '✓ ' : '') + o.label));
     }
     body.append(chips);
+  }
+
+  // A spawn_type item spins up a full sub-target per entry (e.g. a web target per subdomain). Each
+  // sub inherits this target's assignee and must be worked end to end; they're listed here with live
+  // coverage and a link, and a small box adds a new one.
+  if (it.spawn_type) {
+    const subs = (spawnedByItem[it.uid] || []).slice().sort((x, y) => String(x.label).localeCompare(String(y.label)));
+    const wrap = el('div', { className: 'subspawn' });
+    if (subs.length) {
+      const lst = el('div', { className: 'sub-list' });
+      for (const s of subs) {
+        const cov = pct(s.handled, s.total);
+        lst.append(el('button', { className: 'sub-item', onclick: () => location.hash = `/target/${s.id}` },
+          codeBadge(s.type),
+          el('span', { className: 'sub-name' }, s.label),
+          s.assignee ? el('span', { className: 'sub-asg', title: 'Assigned to ' + s.assignee },
+            el('span', { className: 'avatar sm' }, s.assignee[0].toUpperCase())) : null,
+          el('span', { className: 'sub-cov' + (cov >= 100 ? ' done' : '') }, cov + '%')));
+      }
+      wrap.append(lst);
+    }
+    const inp = el('input', { className: 'sub-input', placeholder: `add a ${it.spawn_type === 'web' ? 'subdomain' : it.spawn_type} — opens its own full checklist` });
+    const add = async () => {
+      const label = inp.value.trim(); if (!label) return;
+      try { await api('/items/' + it.id + '/spawn-target', { method: 'POST', body: { label } });
+        inp.value = ''; toast(`Added ${it.spawn_type} target · ${label}`); renderTarget(assetId);
+      } catch (e) { toast(e.message); }
+    };
+    inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } };
+    wrap.append(el('div', { className: 'sub-add' }, inp,
+      el('button', { className: 'btn line sm', onclick: add }, icon('plus', 12), 'Add sub-target')));
+    body.append(wrap);
   }
 
   if (pcount && pOpen) {

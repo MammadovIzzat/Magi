@@ -199,6 +199,7 @@ CREATE TABLE IF NOT EXISTS items (
   catalog     TEXT,                      -- for select items: which catalog to draw options from
   options     TEXT NOT NULL DEFAULT '[]',-- for select items: JSON [{key,label}] selectable options
   opt_key     TEXT,                      -- for child items: which parent option produced them
+  spawn_type  TEXT,                      -- when set (e.g. 'web'), this item spawns full targets of that type (one per entry, e.g. a subdomain)
   status      TEXT NOT NULL DEFAULT 'todo', -- todo | done | na | flag | yes | no
   answer      TEXT,                      -- free text answer/result
   sort        INTEGER NOT NULL DEFAULT 0,
@@ -367,6 +368,7 @@ CREATE TABLE IF NOT EXISTS tpl_items (
   spawns      TEXT,
   catalog     TEXT,
   options     TEXT NOT NULL DEFAULT '[]',
+  spawn_type  TEXT,                      -- instantiated items of this template spawn full targets of this type
   sort        INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_tpl_items_type ON tpl_items(type);
@@ -413,6 +415,17 @@ const assetCols = new Set(db.prepare(`PRAGMA table_info(assets)`).all().map(r =>
 if (!assetCols.has('folder_id')) db.exec(`ALTER TABLE assets ADD COLUMN folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE`);
 if (!assetCols.has('assignee')) db.exec(`ALTER TABLE assets ADD COLUMN assignee TEXT`); // who's on this target (display only); synced
 db.exec(`CREATE INDEX IF NOT EXISTS idx_assets_folder ON assets(folder_id)`);
+// items/tpl_items gained spawn_type (an item that spins up full sub-targets, e.g. a web target per subdomain).
+if (!new Set(db.prepare(`PRAGMA table_info(items)`).all().map(r => r.name)).has('spawn_type'))
+  db.exec(`ALTER TABLE items ADD COLUMN spawn_type TEXT`);
+if (!new Set(db.prepare(`PRAGMA table_info(tpl_items)`).all().map(r => r.name)).has('spawn_type'))
+  db.exec(`ALTER TABLE tpl_items ADD COLUMN spawn_type TEXT`);
+// Backfill the web "Subdomain enumeration" item on existing DBs so it spawns web sub-targets — the
+// default template (new targets) and any already-instantiated web targets. Idempotent (only touches
+// rows still missing spawn_type). Matched by title, so a renamed item is left alone.
+db.exec(`UPDATE tpl_items SET spawn_type='web' WHERE type='web' AND title='Subdomain enumeration' AND (spawn_type IS NULL OR spawn_type='')`);
+db.exec(`UPDATE items SET spawn_type='web' WHERE title='Subdomain enumeration' AND (spawn_type IS NULL OR spawn_type='')
+  AND asset_id IN (SELECT id FROM assets WHERE type='web')`);
 
 // tpl_types gained engagement-group columns after the first releases.
 const tplCols = new Set(db.prepare(`PRAGMA table_info(tpl_types)`).all().map(r => r.name));
@@ -531,8 +544,8 @@ try { db.exec(`DELETE FROM audit WHERE at < datetime('now', '-${AUDIT_TTL_DAYS} 
 // --- seeding the editable templates from seed/templates.js ---
 const insType = db.prepare(`INSERT INTO tpl_types (type,label,icon,hint,grp,soon,sort) VALUES (?,?,?,?,?,?,?)`);
 const insTplItem = db.prepare(`INSERT INTO tpl_items
-  (type,group_key,group_title,title,detail,payloads,kind,spawns,catalog,options,sort)
-  VALUES (@type,@group_key,@group_title,@title,@detail,@payloads,@kind,@spawns,@catalog,@options,@sort)`);
+  (type,group_key,group_title,title,detail,payloads,kind,spawns,catalog,options,spawn_type,sort)
+  VALUES (@type,@group_key,@group_title,@title,@detail,@payloads,@kind,@spawns,@catalog,@options,@spawn_type,@sort)`);
 const insGroup = db.prepare(`INSERT INTO tpl_groups (type,kind,catalog,gkey,title,sort) VALUES (?,?,?,?,?,?)`);
 const insGroupItem = db.prepare(`INSERT INTO tpl_group_items
   (group_id,title,detail,payloads,kind,spawns,sort) VALUES (?,?,?,?,?,?,?)`);
@@ -543,7 +556,8 @@ export function seedTypeItems(type) {
     insTplItem.run({
       type, group_key: r.group_key, group_title: r.group_title, title: r.title,
       detail: r.detail || '', payloads: r.payloads ?? '[]', kind: r.kind || 'check',
-      spawns: r.spawns ?? null, catalog: r.catalog ?? null, options: r.options ?? '[]', sort: r.sort,
+      spawns: r.spawns ?? null, catalog: r.catalog ?? null, options: r.options ?? '[]',
+      spawn_type: r.spawn_type ?? null, sort: r.sort,
     });
   }
 }

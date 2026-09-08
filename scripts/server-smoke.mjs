@@ -475,6 +475,20 @@ check('the assignee is returned with the target', asgSeen.json?.assignee === 'an
 const asgClear = await req('PATCH', `/api/targets/${webT.id}/assignee`, { token: adminTok, body: { assignee: '' } });
 check('assigning empty clears the assignee', asgClear.status === 200 && asgClear.json?.assignee == null);
 
+// ---- spawn a full sub-target (a web target per subdomain), inheriting the assignee ----
+await req('PATCH', `/api/targets/${webT.id}/assignee`, { token: adminTok, body: { assignee: 'ana' } });
+const webItems = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.items;
+const subItem = webItems.find(i => i.spawn_type === 'web');
+check('the web checklist has a subdomain item that spawns web targets', !!subItem && /subdomain/i.test(subItem.title));
+const spawned = await req('POST', `/api/items/${subItem.id}/spawn-target`, { token: workerToken, device: dev1, body: { label: 'api.acme.test' } });
+check('a worker can spawn a sub-target (executing the checklist, not gated on edit)', spawned.status === 201 && spawned.json?.type === 'web' && spawned.json?.label === 'api.acme.test');
+check('the spawned sub-target inherits the parent target’s assignee', spawned.json?.assignee === 'ana');
+check('the spawned sub-target is linked back to the item that made it', spawned.json?.metadata?.spawned_from_item === subItem.uid);
+const subFull = await req('GET', `/api/targets/${spawned.json.id}`, { token: adminTok });
+check('the spawned sub-target gets the full web checklist', subFull.json?.items?.length > 20);
+const spawnBad = await req('POST', `/api/items/${webItems[0].id}/spawn-target`, { token: adminTok, body: { label: 'x' } });
+check('an item without spawn_type refuses to spawn a target', spawnBad.status === 400);
+
 // ---- report ----
 let bad = 0;
 for (const [name, ok] of checks) { console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${name}`); if (!ok) bad++; }

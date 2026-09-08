@@ -318,7 +318,7 @@ const web = {
         { kind: 'check', title: 'Different content by User-Agent', detail: 'Mobile sites and crawler-facing versions are often older, less hardened and separately routed.', payloads: ['curl -A "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)" {url}', 'curl -A "Googlebot/2.1 (+http://www.google.com/bot.html)" {url}', 'diff the two responses'] },
         { kind: 'input', title: 'Which channels exist for the same application?', detail: 'Web, mobile web, mobile app, desktop client, partner API — each is its own attack surface over the same data.', payloads: [] },
         { kind: 'check', title: 'Co-hosted and related applications', detail: 'Anything sharing the host or origin inherits your foothold; a weak neighbour is a way in.', payloads: ['reverse IP lookup', 'other vhosts on the same certificate SANs'] },
-        { kind: 'check', title: 'Subdomain enumeration', detail: 'Every live subdomain is more attack surface for this engagement — resolve and probe them, then test the interesting ones as their own targets.', payloads: ['subfinder -d {domain} -all | anew', 'amass enum -passive -d {domain}', 'curl -s "https://crt.sh/?q=%25.{domain}&output=json" | jq -r .[].name_value | sort -u', 'httpx -l subs.txt -sc -title -tech-detect'] },
+        { kind: 'check', title: 'Subdomain enumeration', spawn_type: 'web', detail: 'Every live subdomain is more attack surface — resolve and probe them, then add each interesting one below to spin up its own full web target (it inherits this target’s assignee) and check it end to end.', payloads: ['subfinder -d {domain} -all | anew', 'amass enum -passive -d {domain}', 'curl -s "https://crt.sh/?q=%25.{domain}&output=json" | jq -r .[].name_value | sort -u', 'httpx -l subs.txt -sc -title -tech-detect'] },
         { kind: 'check', title: 'Subdomain takeover', detail: 'Dangling CNAMEs pointing at unclaimed cloud services.', payloads: ['nuclei -l subs.txt -t http/takeovers/', 'subjack -w subs.txt'] },
         { kind: 'check', title: 'DNS records & zone transfer', detail: 'A/AAAA/MX/TXT/NS/CNAME; try a zone transfer on every nameserver.', payloads: ['dig ANY {domain} +noall +answer', 'for ns in $(dig +short NS {domain}); do dig axfr @$ns {domain}; done'] },
         { kind: 'check', title: 'Find the origin IP behind the CDN/WAF', detail: 'Historical DNS, cert SANs, non-proxied subdomains — then hit origin directly with the Host header to skip the WAF.', payloads: ['crt.sh / securitytrails historical A records', 'curl -H "Host: {domain}" https://<ORIGIN_IP>/ -k'] },
@@ -1403,6 +1403,7 @@ export function instantiateItems(assetType) {
         spawns: it.spawns || null,
         catalog: it.catalog || null,
         options: JSON.stringify(it.options || []),
+        spawn_type: it.spawn_type || null,
         sort: sort++,
       });
     }

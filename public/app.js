@@ -398,7 +398,7 @@ async function route() {
     if (h === '/editor') return renderEditor();
     const gm = h.match(/^\/group\/(\d+)/); if (gm) return renderGroup(gm[1]);
     const em = h.match(/^\/editor\/([a-z0-9_]+)/); if (em) return renderEditor(em[1]);
-    const fm = h.match(/^\/findings\/(\d+)\/(vuln|note|credential|all)/); if (fm) return renderProjectFindings(fm[1], fm[2]);
+    const fm = h.match(/^\/findings\/(\d+)/); if (fm) return renderProjectFindings(fm[1]);
     const [, kind, id] = h.match(/^\/(project|asset|target)\/(\d+)/) || [];
     if (kind === 'project') return renderProject(id);
     if (kind === 'asset') return renderAssetFolder(id);
@@ -737,20 +737,16 @@ async function renderProject(id) {
   const total = allTargets.reduce((a, x) => a + x.total, 0);
   const handled = allTargets.reduce((a, x) => a + x.handled, 0);
   const flags = allTargets.reduce((a, x) => a + x.flags, 0);
-  // Kind counts for the tiles: vulnerabilities (excluding info), notes, credentials — each links to
-  // the project-wide findings list. Pulled from the findings list so notes/creds are counted too.
-  const pf = await api('/projects/' + id + '/findings').catch(() => []);
-  const nVuln = pf.filter(f => f.kind === 'vuln' && f.severity !== 'info').length;
-  const nNote = pf.filter(f => f.kind === 'note').length;
-  const nCred = pf.filter(f => f.kind === 'credential').length;
+  // findings = every vulnerability (the server's per-target count is already kind='vuln' only, and
+  // includes info-severity and not-yet-graded ones). Notes/credentials are not counted here — they
+  // live in the findings page's Notes/Creds tabs. No extra request: the counts are already on `p`.
+  const findings = allTargets.reduce((a, x) => a + (x.findings || 0), 0);
 
   const stat = (label, value, cls) => el('div', { className: 'stat' },
     el('div', { className: 'kicker' }, label), el('div', { className: 'stat-value ' + (cls || '') }, value));
-  const statLink = (label, value, cls, kind) => {
-    const s = el('button', { className: 'stat stat-link', onclick: () => location.hash = `/findings/${id}/${kind}` },
+  const statLink = (label, value, cls) =>
+    el('button', { className: 'stat stat-link', onclick: () => location.hash = `/findings/${id}` },
       el('div', { className: 'kicker' }, label), el('div', { className: 'stat-value ' + (cls || '') }, String(value)));
-    return s;
-  };
 
   const targetRow = (a, depth = 0, kids = 0) => {
     const t = TYPES.find(x => x.type === a.type) || {};
@@ -821,9 +817,7 @@ async function renderProject(id) {
     p.client || p.scope ? el('div', { className: 'lede' }, [p.client, p.scope].filter(Boolean).join(' · ')) : null,
     el('div', { className: 'stats' },
       stat('Coverage', pct(handled, total) + '%', 'gold'),
-      statLink('Vulnerabilities', nVuln, 'red', 'vuln'),
-      statLink('Notes', nNote, '', 'note'),
-      statLink('Credentials', nCred, '', 'credential'),
+      statLink('Findings', findings, 'red'),
       stat('Revisit', String(flags), 'purple'),
       stat('Targets', String(allTargets.length))),
     el('div', { className: 'srule' },
@@ -832,32 +826,53 @@ async function renderProject(id) {
     body));
 }
 
-// Project-wide findings list, reached from an engagement's stat tiles. One kind (vuln/note/
-// credential) or all, sorted by severity (vulns) then newest. Each card links to its target.
-async function renderProjectFindings(projectId, kind) {
+// Every finding across the engagement — the whole team's evidence log for the project, the same
+// controls as a target's evidence dock (kind tabs, search, sort), defaulting to Vulnerabilities.
+// Each card shows its target and links to it.
+let PFV = { kind: 'vuln', q: '', sort: 'sev' };
+async function renderProjectFindings(projectId) {
   const p = await api('/projects/' + projectId);
-  let items = await api('/projects/' + projectId + '/findings').catch(() => []);
-  if (kind !== 'all') items = items.filter(f => f.kind === kind);
-  items.sort((a, b) => (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9) || (a.created_at < b.created_at ? 1 : -1));
-  const titleMap = { vuln: 'Vulnerabilities', note: 'Notes', credential: 'Credentials', all: 'Findings' };
-  setRail(railForProject(p, null));
+  const all = await api('/projects/' + projectId + '/findings').catch(() => []);
+  setRail(null);
   setCrumbs([{ label: 'engagements', go: () => location.hash = '' },
     { label: p.name, go: () => location.hash = `/project/${projectId}` },
-    { label: titleMap[kind] || 'Findings' }]);
+    { label: 'Findings' }]);
   topActions();
+
   const list = el('div', { className: 'pf-list' });
-  if (!items.length) list.append(el('div', { className: 'empty', style: 'border:0;margin-top:20px' }, `No ${(titleMap[kind] || 'findings').toLowerCase()} recorded.`));
-  for (const f of items) {
-    list.append(el('div', { className: 'pf-item' },
+  const repaint = () => {
+    [...tabs.children].forEach(b => b.classList.toggle('on', b.dataset.k === PFV.kind));
+    let out = PFV.kind === 'all' ? all.slice() : all.filter(f => f.kind === PFV.kind);
+    const q = PFV.q.trim().toLowerCase();
+    if (q) out = out.filter(f => (f.title || '').toLowerCase().includes(q) || (f.body || '').toLowerCase().includes(q) || (f.target || '').toLowerCase().includes(q));
+    if (PFV.sort === 'sev') out.sort((a, b) => (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9) || (a.created_at < b.created_at ? 1 : -1));
+    else if (PFV.sort === 'title') out.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+    else out.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+    list.replaceChildren();
+    if (!out.length) { list.append(el('div', { className: 'empty', style: 'border:0;margin-top:16px' }, 'Nothing here yet.')); return; }
+    for (const f of out) list.append(el('div', { className: 'pf-item' },
       el('button', { className: 'pf-target', title: 'Open ' + f.target, onclick: () => location.hash = `/target/${f.target_id}` },
         codeBadge(f.target_type), el('span', { className: 'pf-tname' }, f.target)),
-      findingCard(f, f.target_id)));
+      findingCard(f, f.target_id, () => renderProjectFindings(projectId))));
+  };
+  const count = (k) => all.filter(f => f.kind === k).length;
+  const tabs = el('div', { className: 'evtabs' });
+  for (const [k, l] of [['vuln', `Vulns ${count('vuln')}`], ['note', `Notes ${count('note')}`], ['credential', `Creds ${count('credential')}`], ['all', `All ${all.length}`]]) {
+    const b = el('button', { className: 'evtab', onclick: () => { PFV.kind = k; repaint(); } }, l);
+    b.dataset.k = k; tabs.append(b);
   }
+  const search = el('input', { className: 'evsearch', type: 'search', placeholder: 'Search findings…', value: PFV.q });
+  search.oninput = () => { PFV.q = search.value; repaint(); };
+  const sortSel = customSelect({ className: 'evsort', value: PFV.sort, options: [
+    { value: 'sev', label: 'Severity' }, { value: 'new', label: 'Newest' }, { value: 'title', label: 'Title' }] });
+  sortSel.addEventListener('change', () => { PFV.sort = sortSel.value; repaint(); });
+
   $('#view').replaceChildren(el('div', { className: 'page narrow' },
     el('div', { className: 'kicker' }, 'Engagement · ' + p.name),
-    el('h1', {}, `${titleMap[kind] || 'Findings'} · ${items.length}`),
-    kind === 'vuln' ? el('div', { className: 'lede' }, 'Sorted by severity. Info-only findings are shown last and are not counted on the engagement tile.') : null,
+    el('h1', {}, 'Findings'),
+    el('div', { className: 'evfilter pf-filter' }, tabs, el('div', { className: 'evrow' }, search, sortSel)),
     list));
+  repaint();
 }
 
 // The asset-folder layer is now implicit — any /asset link jumps straight to its engagement.
@@ -1567,18 +1582,21 @@ function reportTick(f, afterToggle) {
 
 // One finding, as shown in the evidence log and the retest view (severity, kind or fix-status,
 // screenshots, and any attack-chain links to other findings).
-function findingCard(f, id) {
+// `after` re-renders the surrounding view after a change (defaults to the target page; the
+// project-wide findings list passes its own re-render so it stays put instead of jumping to a target).
+function findingCard(f, id, after) {
+  after = after || (() => renderTarget(id));
   const stop = (e) => e.stopPropagation(); // interactive bits shouldn't open the detail popup
   const tools = el('div', { className: 'f-tools', onclick: stop },
-    el('button', { className: 'ibtn', title: 'Add image', onclick: () => uploadToFinding(f.id, id) }, icon('image', 11)),
+    el('button', { className: 'ibtn', title: 'Add image', onclick: () => uploadToFinding(f.id, id, after) }, icon('image', 11)),
     el('button', { className: 'ibtn', title: 'Edit', onclick: () => editFinding(f, id) }, icon('edit', 11)),
-    el('button', { className: 'ibtn del', title: 'Delete', onclick: async () => { if (confirm('Delete this finding and its images?')) { await api('/findings/' + f.id, { method: 'DELETE' }); renderTarget(id); } } }, icon('x', 11)));
+    el('button', { className: 'ibtn del', title: 'Delete', onclick: async () => { if (confirm('Delete this finding and its images?')) { await api('/findings/' + f.id, { method: 'DELETE' }); after(); } } }, icon('x', 11)));
   const shots = el('div', { className: 'f-shots', onclick: stop });
   for (const im of (f.attachments || [])) {
     const thumb = attachmentImg(im.id, { title: im.filename, loading: 'lazy' });
     thumb.onclick = (e) => { e.stopPropagation(); openLightbox(im); };
     const dl = el('button', { className: 'shotdl', title: 'Download image', onclick: (e) => { e.stopPropagation(); downloadAttachment(im); } }, icon('down', 10));
-    const x = el('button', { className: 'shotx', title: 'Remove image', onclick: async (e) => { e.stopPropagation(); await api('/attachments/' + im.id, { method: 'DELETE' }); renderTarget(id); } }, '✕');
+    const x = el('button', { className: 'shotx', title: 'Remove image', onclick: async (e) => { e.stopPropagation(); await api('/attachments/' + im.id, { method: 'DELETE' }); after(); } }, '✕');
     shots.append(el('span', { className: 'f-shot' }, thumb, dl, x));
   }
   const links = (f.links || []).length ? el('div', { className: 'f-links' }, el('span', { className: 'muted' }, 'chains → '),
@@ -1587,10 +1605,10 @@ function findingCard(f, id) {
     el('div', { className: 'f-top' },
       f.severity ? el('span', { className: 'f-sev' }, f.severity) : null,
       f.fix_status ? el('span', { className: 'f-fix ' + f.fix_status }, fixLabel(f.fix_status)) : el('span', { className: 'f-kind' }, f.kind),
-      f.author ? el('span', { className: 'f-by', title: 'Recorded by ' + f.author }, avatarSm(f.author), f.author) : null,
-      reportTick(f, () => renderTarget(id)),
+      reportTick(f, after),
       tools),
     el('div', { className: 'f-title' }, f.title),
+    f.author ? el('div', { className: 'f-by', title: 'Recorded by ' + f.author }, avatarSm(f.author), 'recorded by ' + f.author) : null,
     f.body ? el('pre', {}, f.body) : null,
     links,
     (f.attachments || []).length ? shots : null);
@@ -1797,7 +1815,7 @@ const addFinding = (assetId, isRetest = false) => findingModal(assetId, null, is
 const editFinding = (finding, assetId) => findingModal(assetId, finding, finding?.fix_status != null || finding?.kind === 'retest');
 
 // Upload one or more images to a finding via the raw endpoint (no base64 bloat).
-function uploadToFinding(findingId, assetId) {
+function uploadToFinding(findingId, assetId, after) {
   const picker = el('input', { type: 'file', accept: 'image/*', multiple: true, style: 'display:none' });
   picker.onchange = async () => {
     const files = [...picker.files]; picker.remove();
@@ -1814,7 +1832,7 @@ function uploadToFinding(findingId, assetId) {
       }
       toast(files.length > 1 ? `Added ${files.length} images` : 'Image added');
     } catch (e) { alert('Upload failed: ' + e.message); }
-    renderTarget(assetId);
+    (after || (() => renderTarget(assetId)))();
   };
   document.body.append(picker); picker.click();
 }
@@ -2806,7 +2824,11 @@ function gradeDialog(f, onDone) {
     kicker: 'Grade', title: f.title, cta: 'Set severity',
     note: `${f.project} · ${f.target}` + (f.author ? ` · recorded by ${f.author}` : ''),
     build: (b) => {
-      if (f.body) b.append(el('pre', { className: 'fd-body' }, stripLocationPrefix(f.body)));
+      const locs = parseLocations(f.body);
+      if (locs.length) { b.append(el('label', {}, locs.length > 1 ? 'Locations' : 'Location')); b.append(el('div', { className: 'fd-locs' }, ...locs.map(l => el('code', {}, l)))); }
+      const detail = stripLocationPrefix(f.body || '').trim();
+      if (detail) { b.append(el('label', {}, 'Details')); b.append(el('pre', { className: 'fd-body' }, detail)); }
+      else b.append(el('p', { className: 'muted small', style: 'margin:2px 0 8px' }, 'No description recorded — open the finding for full context.'));
       const sevSel = field(b, 'Severity', 'severity', { value: 'medium', options: SEVERITIES.filter(s => s.value) });
       b.append(cvssSection(sevSel, null));
     },

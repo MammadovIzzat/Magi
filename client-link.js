@@ -284,6 +284,7 @@ export async function pollApproval() {
   if (link.stash_id === undefined) {
     try { link.stash_id = stashLocalProjects() ?? null; } catch (e) { return { pending: true, error: `could not set local data aside: ${e.message}` }; }
     sync.setWatermarks(db, { pull: '', push: '' });
+    sync.setPullWatermarks(db, {});
   }
   link.device_token = r.json.token || link.device_token;   // the device credential, delivered once
   link.pending = false; link.needs_login = true; saveLink(link);
@@ -366,23 +367,30 @@ export async function syncOnce() {
       }
       if (pm && pm > wm.push) sync.setWatermarks(db, { push: pm });
     }
-    // pull everything newer than our pull watermark, merge locally. We tell the server our node id
-    // so it omits our own writes from the response (see /api/sync/pull).
+    // Pull everything newer than our PER-NODE watermarks, merge locally. We send the whole map plus
+    // our own node id (the server omits our writes — echoing them back is waste and used to poison
+    // the watermark). A per-node map means one fast-clocked peer can't hide the server's (or a slow
+    // peer's) later changes: each source node advances independently.
     const nd = sync.node(db);
-    const pr = await remoteFetch('/api/sync/pull?since=' + encodeURIComponent(wm.pull) + '&node=' + encodeURIComponent(nd), { link });
+    const wmMap = sync.pullWatermarks(db);
+    const pr = await remoteFetch('/api/sync/pull', { method: 'POST', link, body: { wm: wmMap, node: nd } });
     if (stale()) return { ok: false, error: 'link changed' };
     if (pr.status === 401) { markNeedsReauth(); return { ok: false, needs_reauth: true }; }
     if (pr.status !== 200) return { ok: false, error: pr.json?.error || `pull failed (${pr.status})` };
     const merged = sync.applyChanges(db, pr.json);
-    // Advance the pull watermark using only rows we did NOT author. An older server may still echo
-    // our own rows back; those carry our clock and must never move the cursor, or a server row with
-    // a lower (correct-time) hlc would be starved forever. We still APPLY everything above — only the
-    // watermark math skips our echoes.
-    const own = '-' + nd;
-    const foreign = { rows: (pr.json?.rows || []).filter(r => !String(r.hlc).endsWith(own)),
-                      tombstones: (pr.json?.tombstones || []).filter(t => !String(t.hlc).endsWith(own)) };
-    const pm = payloadMax(foreign);
-    if (pm && pm > wm.pull) sync.setWatermarks(db, { pull: pm });
+    // Advance each source node's watermark to the highest hlc we received from it — but never to or
+    // past a row we had to defer (parent not here yet), or that row would never be re-sent. Skip our
+    // own echoes entirely (an older server may still send them; they must not move any cursor).
+    const minDefByNode = {};
+    for (const d of (merged.deferred || [])) { const n = sync.hlcNode(d.hlc); if (!minDefByNode[n] || d.hlc < minDefByNode[n]) minDefByNode[n] = d.hlc; }
+    for (const x of [...(pr.json?.rows || []), ...(pr.json?.tombstones || [])]) {
+      const n = sync.hlcNode(x.hlc);
+      if (n === nd) continue;                                   // our own echo
+      const cap = minDefByNode[n];
+      if (cap && !(x.hlc < cap)) continue;                      // stop just below the earliest deferred
+      if (x.hlc > (wmMap[n] || '')) wmMap[n] = x.hlc;
+    }
+    sync.setPullWatermarks(db, wmMap);
     const now = new Date().toISOString();
     link.last_sync = now; link.last_ok = now; saveLink(link);
     return { ok: true, pushed: local.rows.length + local.tombstones.length, applied: merged.applied, deleted: merged.deleted, deferred: (merged.deferred || []).length };
@@ -505,7 +513,7 @@ export function disconnect() {
   if (link && !link.pending) { // only a fully-linked client cleared a mirror and holds a stash
     try { clearMirror(); } catch {}                 // drop our cached copy of the server's data
     try { restoreStash(link.stash_id); } catch {} // bring personal engagements back
-    try { sync.setWatermarks(db, { pull: '', push: '' }); } catch {}
+    try { sync.setWatermarks(db, { pull: '', push: '' }); sync.setPullWatermarks(db, {}); } catch {}
   }
   deleteLink();
   // Drop every session: the link (server) identity no longer applies, and the next login goes back

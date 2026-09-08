@@ -5,7 +5,7 @@
 //
 //   node scripts/sync-skew-smoke.mjs
 import { DatabaseSync } from 'node:sqlite';
-import { collectChanges, applyChanges, setupSchema, watermarks, setWatermarks, node } from '../sync.js';
+import { collectChanges, applyChanges, setupSchema, watermarks, setWatermarks, node, pullWatermarks, setPullWatermarks, hlcNode } from '../sync.js';
 
 const checks = [];
 const check = (name, ok) => { checks.push([name, !!ok]); if (!ok) console.error('   ^ FAILED: ' + name); return !!ok; };
@@ -56,8 +56,35 @@ clientCycle();
 check('client receives the later server project', !!C.prepare(`SELECT 1 FROM projects WHERE name='Server Update'`).get());
 check('client receives the server finding', !!C.prepare(`SELECT 1 FROM findings WHERE title='IDOR'`).get());
 
+// 4) MULTI-NODE skew: a fast-clocked peer B must not hide the server's later change from client A.
+// This is what a single scalar watermark got wrong (B's high hlc jumped A's cursor past the server);
+// per-node watermarks track each source independently.
+const A = mkdb(), B = mkdb();
+const aNode = node(A), bNode = node(B);
+B.prepare(`UPDATE _sync_meta SET last_ms = (CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)) + ?`).run(24 * 60 * 60 * 1000); // B is a day ahead
+// One per-node client cycle (mirrors client-link.syncOnce's per-node pull).
+function perNodeCycle(client) {
+  const cn = node(client);
+  const map = pullWatermarks(client);
+  const pr = collectChanges(S, '', { exceptNode: cn, sinceMap: map });
+  applyChanges(client, pr);
+  for (const x of [...(pr.rows || []), ...(pr.tombstones || [])]) { const n = hlcNode(x.hlc); if (n === cn) continue; if (x.hlc > (map[n] || '')) map[n] = x.hlc; }
+  setPullWatermarks(client, map);
+  return pr;
+}
+B.prepare(`INSERT INTO projects (name) VALUES ('From Fast Peer')`).run();
+applyChanges(S, collectChanges(B, '', { onlyLocal: true }));   // B pushes its future-dated row to the server
+perNodeCycle(A);
+check('A receives the fast peer’s row', !!A.prepare(`SELECT 1 FROM projects WHERE name='From Fast Peer'`).get());
+check("A's watermark for the fast peer is set high, the server's stays low",
+  (() => { const m = pullWatermarks(A); return hlcNode(m[bNode] || '') === '' ? false : (m[bNode] || '') > (m[node(S)] || ''); })());
+S.prepare(`INSERT INTO projects (name) VALUES ('Later Server Change')`).run(); // server's normal (lower) clock
+perNodeCycle(A);
+check('A still gets the server’s later change despite the fast peer (per-node watermark)',
+  !!A.prepare(`SELECT 1 FROM projects WHERE name='Later Server Change'`).get());
+
 let bad = 0;
 for (const [name, ok] of checks) { console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${name}`); if (!ok) bad++; }
-S.close(); C.close();
+S.close(); C.close(); A.close(); B.close();
 if (bad) { console.error(`\n  SYNC SKEW SMOKE FAILED — ${bad} check(s)\n`); process.exit(1); }
 console.log('\n  sync skew smoke ok\n');

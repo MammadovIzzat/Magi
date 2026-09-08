@@ -75,8 +75,14 @@ export function setupSchema(db) {
   // would silently freeze all change capture forever, so clear any leftover on every boot.
   db.exec(`DELETE FROM _sync_mute`);
   // _sync_meta gained last_ms after the first release (the hybrid clock).
-  if (!new Set(db.prepare(`PRAGMA table_info(_sync_meta)`).all().map(r => r.name)).has('last_ms'))
+  const metaCols = new Set(db.prepare(`PRAGMA table_info(_sync_meta)`).all().map(r => r.name));
+  if (!metaCols.has('last_ms'))
     db.exec(`ALTER TABLE _sync_meta ADD COLUMN last_ms INTEGER NOT NULL DEFAULT 0`);
+  // Per-source-node pull watermarks (JSON {node: hlc}). The single scalar pull_wm could be pushed
+  // ahead by one fast-clocked peer, hiding a slower peer's (or the server's) later changes forever —
+  // "up to date" but nothing arrives. Tracking a watermark per source node removes that coupling.
+  if (!metaCols.has('pull_map'))
+    db.exec(`ALTER TABLE _sync_meta ADD COLUMN pull_map TEXT NOT NULL DEFAULT '{}'`);
   if (!db.prepare(`SELECT 1 FROM _sync_meta WHERE k='main'`).get()) {
     db.prepare(`INSERT INTO _sync_meta (k, node, seq) VALUES ('main', lower(hex(randomblob(8))), 0)`).run();
   }
@@ -146,6 +152,16 @@ export function setWatermarks(db, { pull, push }) {
   if (pull !== undefined) db.prepare(`UPDATE _sync_meta SET pull_wm=? WHERE k='main'`).run(pull);
   if (push !== undefined) db.prepare(`UPDATE _sync_meta SET push_wm=? WHERE k='main'`).run(push);
 }
+// The node that authored an hlc ("<ms>-<seq>-<node>" -> "<node>").
+export const hlcNode = (hlc) => String(hlc || '').split('-').pop();
+// Per-source-node pull watermarks: the highest hlc this db has pulled from each other node.
+export function pullWatermarks(db) {
+  const m = db.prepare(`SELECT pull_map FROM _sync_meta WHERE k='main'`).get();
+  try { const o = JSON.parse(m?.pull_map || '{}'); return (o && typeof o === 'object') ? o : {}; } catch { return {}; }
+}
+export function setPullWatermarks(db, map) {
+  db.prepare(`UPDATE _sync_meta SET pull_map=? WHERE k='main'`).run(JSON.stringify(map || {}));
+}
 
 const uidOf = (db, table, id) => (id == null ? null : db.prepare(`SELECT uid FROM ${table} WHERE id=?`).get(id)?.uid || null);
 const idOf = (db, table, uid) => (uid == null ? null : db.prepare(`SELECT id FROM ${table} WHERE uid=?`).get(uid)?.id ?? null);
@@ -158,17 +174,24 @@ const idOf = (db, table, uid) => (uid == null ? null : db.prepare(`SELECT id FRO
  *   watermark: an echoed own row carries the client's clock, and if that runs ahead of the
  *   server every later server row sorts BELOW the advanced watermark and is never sent again).
  */
-export function collectChanges(db, since = '', { onlyLocal = false, exceptNode = null } = {}) {
+export function collectChanges(db, since = '', { onlyLocal = false, exceptNode = null, sinceMap = null } = {}) {
   const rows = [];
   const nd = node(db);
+  // With a per-node watermark map, a row/tombstone passes only if it is newer than THIS db's
+  // watermark for the node that authored it. `floor` (the smallest watermark, or '') is a cheap
+  // SQL pre-filter; the exact per-node test happens in JS. Without a map we keep the old scalar.
+  const vals = sinceMap ? Object.values(sinceMap) : null;
+  const floor = sinceMap ? (vals.length ? vals.reduce((m, x) => (x < m ? x : m)) : '') : since;
+  const pass = (hlc) => !sinceMap || hlc > (sinceMap[hlcNode(hlc)] || '');
   for (const t of TABLES) {
     const spec = SPEC[t];
     const sel = ['id', 'uid', 'hlc', ...spec.cols, ...(spec.blobs || []), ...Object.keys(spec.parents)];
     let sql = `SELECT ${sel.join(',')} FROM ${t} WHERE hlc > ? AND uid IS NOT NULL`;
-    const args = [since];
+    const args = [floor];
     if (onlyLocal) { sql += ` AND hlc LIKE ?`; args.push('%-' + nd); }
     else if (exceptNode) { sql += ` AND hlc NOT LIKE ?`; args.push('%-' + exceptNode); }
     for (const r of db.prepare(sql).all(...args)) {
+      if (!pass(r.hlc)) continue;
       const fields = {};
       for (const c of spec.cols) fields[c] = r[c];
       for (const b of (spec.blobs || [])) fields[b] = r[b] == null ? null : Buffer.from(r[b]).toString('base64');
@@ -178,10 +201,10 @@ export function collectChanges(db, since = '', { onlyLocal = false, exceptNode =
     }
   }
   let ts = `SELECT tbl, uid, hlc FROM tombstones WHERE hlc > ?`;
-  const targs = [since];
+  const targs = [floor];
   if (onlyLocal) { ts += ` AND hlc LIKE ?`; targs.push('%-' + nd); }
   else if (exceptNode) { ts += ` AND hlc NOT LIKE ?`; targs.push('%-' + exceptNode); }
-  const tombstones = db.prepare(ts).all(...targs);
+  const tombstones = db.prepare(ts).all(...targs).filter(t => pass(t.hlc));
   return { rows, tombstones };
 }
 

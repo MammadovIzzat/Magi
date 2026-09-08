@@ -744,12 +744,20 @@ if (SERVER_MODE) {
   // A server does not itself link to another server. Answer the SPA's link probe cleanly so
   // the web UI doesn't log a 404 and doesn't offer client-only "connect" controls.
   app.get('/api/link', (req, res) => res.json({ linked: false, server: true, unavailable: true }));
+  const validNode = (n) => (/^[0-9a-f]{8,32}$/i.test(String(n || '')) ? String(n) : null);
   app.get('/api/sync/pull', (req, res) => {
-    // Don't send a client back its own writes: it already has them, and echoing them lets its
-    // (possibly clock-skewed) hlc poison its pull watermark. `node` is the client's node id — a
-    // 16-hex string; anything else is ignored (a bound LIKE param, so no injection either way).
-    const exceptNode = /^[0-9a-f]{8,32}$/i.test(String(req.query.node || '')) ? String(req.query.node) : null;
-    res.json(collectChanges(db, String(req.query.since || ''), { exceptNode }));
+    // Legacy scalar-watermark pull (a single `since`). Kept for older clients. Don't send a client
+    // back its own writes: it already has them, and echoing them poisons its (possibly clock-skewed)
+    // watermark. `node` is the client's node id — a 16-hex string; anything else is ignored.
+    res.json(collectChanges(db, String(req.query.since || ''), { exceptNode: validNode(req.query.node) }));
+  });
+  app.post('/api/sync/pull', (req, res) => {
+    // Per-node-watermark pull: the client sends {wm:{node:hlc}, node}. A row is returned only if it
+    // is newer than the client's watermark for the node that authored it — so one fast-clocked peer
+    // can never hide another peer's (or the server's) later changes.
+    const b = req.body || {};
+    const wm = (b.wm && typeof b.wm === 'object' && !Array.isArray(b.wm)) ? b.wm : {};
+    res.json(collectChanges(db, '', { exceptNode: validNode(b.node), sinceMap: wm }));
   });
   app.post('/api/sync/push', (req, res) => {
     let { rows, tombstones } = req.body || {};

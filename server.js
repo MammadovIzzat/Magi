@@ -731,8 +731,9 @@ app.get('/api/admin/ranking', requireAdmin, (req, res) => {
     return { author: e.author, role: e.role, findings: e.findings, poc: e.poc, score: e.score,
       projects: e.projects.size, types: Object.fromEntries(types), topType: types[0]?.[0] || null, sev: e.sev };
   }).sort((a, b) => b.score - a.score || b.findings - a.findings || b.projects - a.projects);
-  // Live findings that still have no author (recorded before attribution) — a soft "not counted" note.
-  const unattributed = q(`SELECT COUNT(*) c FROM findings WHERE author IS NULL OR author=''`).get().c;
+  // Live vulns that still have no author (recorded before attribution) — a soft "not counted" note.
+  // Notes/credentials never count, so they're excluded here too.
+  const unattributed = q(`SELECT COUNT(*) c FROM findings WHERE kind='vuln' AND (author IS NULL OR author='')`).get().c;
   res.json({ ranking, totals: { operators: ranking.length, findings: rows.length, unattributed } });
 });
 
@@ -1402,9 +1403,15 @@ function gradeFields(body, mayGrade, cur = {}) {
 // credit. Attribution is the recorder (author), even when an editor set the severity.
 function creditFinding(uid) {
   if (!SERVER_MODE || !uid) return;
-  const f = q(`SELECT f.uid, f.author, f.severity, a.type AS asset_type, a.project_id
+  const f = q(`SELECT f.uid, f.author, f.kind, f.severity, a.type AS asset_type, a.project_id
     FROM findings f JOIN assets a ON a.id = f.asset_id WHERE f.uid=?`).get(uid);
-  if (!f || !f.author) return; // not present yet (deferred) or unattributed → nothing to credit
+  if (!f) return; // not present yet (deferred) → leave any durable credit intact
+  // Only vulnerabilities count toward the ranking — notes, credentials and raw requests are
+  // evidence, not findings. If an entry is (or was re-classified) not a vuln, it earns no credit;
+  // drop any stale one. This runs only on create/grade/sync, never on delete, so a deleted
+  // project's credits stay durable (deletion paths don't call this).
+  if (f.kind !== 'vuln') { q(`DELETE FROM finding_credits WHERE uid=?`).run(uid); return; }
+  if (!f.author) return; // a vuln with no recorder yet → nothing to credit
   q(`INSERT INTO finding_credits (uid, author, project_id, asset_type, severity, updated_at)
      VALUES (?,?,?,?,?, datetime('now'))
      ON CONFLICT(uid) DO UPDATE SET author=excluded.author, severity=excluded.severity, updated_at=excluded.updated_at`)

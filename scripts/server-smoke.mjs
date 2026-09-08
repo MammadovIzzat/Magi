@@ -232,6 +232,12 @@ check('ranking credits the finder (worker) with the graded severities', !!anaRan
 check('ranking is severity-weighted (high 6 + critical 10)', !!anaRank && anaRank.score >= 16);
 check('ranking still reports role, projects, PoC and focus', anaRank.role === 'worker' && anaRank.projects >= 1 && anaRank.poc >= 1 && !!anaRank.topType);
 check('ranking totals count operators', rank.json?.totals?.operators >= 2);
+// Only vulnerabilities count — notes and credentials are evidence, not findings. ana recorded a
+// note ('Worker note') plus two vulns (IDOR PoC, SQLi); admin recorded a credential ('Creds') plus
+// two vulns (RCE, Chained RCE). The board must count the vulns only.
+check('a worker note is NOT counted in the ranking (only the two vulns are)', anaRank.findings === 2);
+const adminRank0 = (rank.json?.ranking || []).find(r => r.author === 'admin');
+check('an admin credential is NOT counted in the ranking (only the two vulns are)', !!adminRank0 && adminRank0.findings === 2);
 
 // ---- durability: deleting an old engagement must NOT reduce the ranking ----
 const anaBefore = anaRank.findings;
@@ -247,6 +253,24 @@ const anaAfter = (await req('GET', '/api/admin/ranking', { token: adminTok })).j
 check('deleting the old project does NOT reduce the ranking', anaAfter === anaMid);
 const rf = await req('POST', `/api/targets/${rT.json.id}/findings`, { token: adminTok, body: { title: 'ACME-1', kind: 'vuln', fix_status: 'half_fixed' } });
 check('a retest finding stores its fix status', rf.status === 201 && rf.json?.fix_status === 'half_fixed');
+
+// ---- re-classifying an entry flips its ranking credit both ways ----
+const anaRankNow = () => req('GET', '/api/admin/ranking', { token: adminTok }).then(r => (r.json?.ranking || []).find(x => x.author === 'ana')?.findings || 0);
+const reBase = await anaRankNow();
+const reF = await req('POST', `/api/targets/${webT.id}/findings`, { token: workerToken, device: dev1, body: { title: 'reclass', kind: 'vuln' } });
+check('a new vuln lifts the finder’s count', (await anaRankNow()) === reBase + 1);
+await req('PATCH', `/api/findings/${reF.json.id}`, { token: adminTok, body: { kind: 'note' } });
+check('re-classifying a vuln to a note drops its credit', (await anaRankNow()) === reBase);
+await req('PATCH', `/api/findings/${reF.json.id}`, { token: adminTok, body: { kind: 'vuln' } });
+check('re-classifying it back to a vuln restores the credit', (await anaRankNow()) === reBase + 1);
+// but deleting the whole project must still NOT reduce the count (durable ledger)
+const durProj = (await req('POST', '/api/projects', { token: adminTok, body: { name: 'Dur' } })).json;
+const durAsset = (await req('POST', `/api/projects/${durProj.id}/assets`, { token: adminTok, body: { grp: 'external', label: 'D' } })).json;
+const durT = (await req('POST', `/api/assets/${durAsset.id}/targets`, { token: adminTok, body: { type: 'web', label: 'https://d.test' } })).json;
+await req('POST', `/api/targets/${durT.id}/findings`, { token: workerToken, device: dev1, body: { title: 'keep', kind: 'vuln' } });
+const durMid = await anaRankNow();
+await req('DELETE', `/api/projects/${durProj.id}`, { token: adminTok });
+check('deleting a project never drops a vuln credit (durable)', (await anaRankNow()) === durMid);
 const badFix = await req('POST', `/api/targets/${rT.json.id}/findings`, { token: adminTok, body: { title: 'x', fix_status: 'nonsense' } });
 check('an invalid fix status is rejected (stored null)', badFix.json?.fix_status === null);
 

@@ -676,10 +676,17 @@ setupSync(db);
 // deletion (they're gone from `findings`) and only adds current findings not yet credited. Server
 // only — the ledger is read solely by the admin ranking, which lives on the server.
 if (env('SERVER') === '1') {
+  // Only vulnerabilities count — notes, credentials and raw requests are evidence, not findings.
   db.exec(`INSERT OR IGNORE INTO finding_credits (uid, author, project_id, asset_type, severity, updated_at)
     SELECT f.uid, f.author, a.project_id, a.type, f.severity, datetime('now')
     FROM findings f JOIN assets a ON a.id = f.asset_id
-    WHERE f.uid IS NOT NULL AND f.author IS NOT NULL AND f.author <> ''`);
+    WHERE f.uid IS NOT NULL AND f.author IS NOT NULL AND f.author <> '' AND f.kind = 'vuln'`);
+  // One-time correction for boards built before the vuln-only rule: drop credits for entries that
+  // still exist and are NOT vulns (notes/creds that were over-counted). Credits for findings that
+  // no longer exist (their project was deleted) are left intact — the ledger stays durable, and we
+  // can't reclassify what's gone.
+  db.exec(`DELETE FROM finding_credits WHERE uid IN
+    (SELECT uid FROM findings WHERE uid IS NOT NULL AND kind IS NOT NULL AND kind <> 'vuln')`);
 }
 
 export default db;

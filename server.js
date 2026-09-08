@@ -1541,6 +1541,26 @@ app.get('/api/targets/:id/finding-candidates', (req, res) => {
     WHERE fo.project_id=? AND f.uid IS NOT NULL ORDER BY f.created_at DESC`).all(folder?.project_id ?? -1));
 });
 
+// Every finding in a project (all kinds), with its target — powers the per-project findings list
+// reached from the engagement stat tiles (vulns / notes / creds).
+app.get('/api/projects/:id/findings', (req, res) => {
+  if (!q(`SELECT 1 FROM projects WHERE id=?`).get(req.params.id)) return res.status(404).json({ error: 'not found' });
+  res.json(q(`SELECT f.id, f.uid, f.title, f.kind, f.severity, f.cvss, f.author, f.body, f.in_report, f.created_at,
+      a.id AS target_id, a.label AS target, a.type AS target_type
+    FROM findings f JOIN assets a ON a.id=f.asset_id
+    WHERE a.project_id=? ORDER BY f.created_at DESC`).all(req.params.id));
+});
+// Ungraded vulnerabilities across every engagement (no severity and no CVSS yet) — the admin/editor
+// grading queue. Notes and credentials are never findings, so they never appear here.
+app.get('/api/ungraded', async (req, res) => {
+  if (!(await canEdit(req))) return res.status(403).json({ error: 'graders only' });
+  res.json(q(`SELECT f.id, f.uid, f.title, f.kind, f.author, f.body, f.created_at,
+      a.id AS target_id, a.label AS target, a.type AS target_type, p.id AS project_id, p.name AS project
+    FROM findings f JOIN assets a ON a.id=f.asset_id JOIN projects p ON p.id=a.project_id
+    WHERE f.kind='vuln' AND (f.severity IS NULL OR f.severity='') AND (f.cvss IS NULL OR f.cvss='')
+    ORDER BY f.created_at`).all());
+});
+
 app.patch('/api/findings/:id', async (req, res) => {
   const cur = q(`SELECT * FROM findings WHERE id=?`).get(req.params.id);
   if (!cur) return res.status(404).json({ error: 'not found' });

@@ -511,6 +511,22 @@ check('the spawned sub-target gets the full web checklist', subFull.json?.items?
 const spawnBad = await req('POST', `/api/items/${webItems[0].id}/spawn-target`, { token: adminTok, body: { label: 'x' } });
 check('an item without spawn_type refuses to spawn a target', spawnBad.status === 400);
 
+// ---- project findings list + admin grading queue ----
+const pfAll = await req('GET', `/api/projects/${projId}/findings`, { token: adminTok });
+check('project findings list returns every kind with its target + author', pfAll.status === 200
+  && pfAll.json.some(f => f.kind === 'note') && pfAll.json.some(f => f.kind === 'credential') && pfAll.json.some(f => f.kind === 'vuln')
+  && pfAll.json.every(f => 'target' in f && 'author' in f));
+// a fresh, ungraded worker vuln shows up in the grading queue; grading it removes it
+const ung = await req('POST', `/api/targets/${webT.id}/findings`, { token: workerToken, device: dev1, body: { title: 'Ungraded SSRF', kind: 'vuln' } });
+const queue1 = await req('GET', '/api/ungraded', { token: adminTok });
+check('the grading queue lists an ungraded vulnerability', queue1.status === 200 && queue1.json.some(f => f.id === ung.json.id && f.author === 'ana' && !!f.project));
+check('notes/creds never appear in the grading queue', !queue1.json.some(f => f.kind && f.kind !== 'vuln'));
+await req('PATCH', `/api/findings/${ung.json.id}`, { token: adminTok, body: { severity: 'high' } });
+const queue2 = await req('GET', '/api/ungraded', { token: adminTok });
+check('grading removes it from the queue', !queue2.json.some(f => f.id === ung.json.id));
+const ungWorker = await req('GET', '/api/ungraded', { token: workerToken, device: dev1 });
+check('a worker cannot read the grading queue', ungWorker.status === 403);
+
 // ---- report ----
 let bad = 0;
 for (const [name, ok] of checks) { console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${name}`); if (!ok) bad++; }

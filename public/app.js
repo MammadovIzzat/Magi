@@ -163,6 +163,7 @@ let CURRENT_USER = null;
 let ME = null;                // { username, role, display_name } from /api/me
 let LINK = { linked: false }; // team-server link status, refreshed from /api/link
 let ADMIN_PENDING = 0;        // number of pending join requests (for the Admin badge)
+let ADMIN_UNGRADED = 0;       // vulnerabilities awaiting a severity (Grading tab badge)
 let BACKUP_DUE = false;       // a scheduled backup is due — also lights the Admin badge
 let HOME_TAB = 'active';      // engagements home: 'active' | 'finished' tab
 let EVID = { kind: 'all', q: '', sort: 'new' }; // evidence-log filter/sort (kind, search, order)
@@ -361,6 +362,7 @@ async function refreshLink() {
   const ctx = adminCtx();
   if (ctx) {
     try { ADMIN_PENDING = (await api(ctx.base + '/requests')).length; } catch { ADMIN_PENDING = 0; }
+    try { ADMIN_UNGRADED = (await api('/ungraded')).length; } catch { ADMIN_UNGRADED = 0; }
     // Scheduled-backup reminder: a backup is never taken unattended (we don't store the
     // password), so when one comes due we light the Admin badge and toast admins once.
     try {
@@ -396,6 +398,7 @@ async function route() {
     if (h === '/editor') return renderEditor();
     const gm = h.match(/^\/group\/(\d+)/); if (gm) return renderGroup(gm[1]);
     const em = h.match(/^\/editor\/([a-z0-9_]+)/); if (em) return renderEditor(em[1]);
+    const fm = h.match(/^\/findings\/(\d+)\/(vuln|note|credential|all)/); if (fm) return renderProjectFindings(fm[1], fm[2]);
     const [, kind, id] = h.match(/^\/(project|asset|target)\/(\d+)/) || [];
     if (kind === 'project') return renderProject(id);
     if (kind === 'asset') return renderAssetFolder(id);
@@ -733,11 +736,21 @@ async function renderProject(id) {
 
   const total = allTargets.reduce((a, x) => a + x.total, 0);
   const handled = allTargets.reduce((a, x) => a + x.handled, 0);
-  const findings = allTargets.reduce((a, x) => a + (x.findings || 0), 0);
   const flags = allTargets.reduce((a, x) => a + x.flags, 0);
+  // Kind counts for the tiles: vulnerabilities (excluding info), notes, credentials — each links to
+  // the project-wide findings list. Pulled from the findings list so notes/creds are counted too.
+  const pf = await api('/projects/' + id + '/findings').catch(() => []);
+  const nVuln = pf.filter(f => f.kind === 'vuln' && f.severity !== 'info').length;
+  const nNote = pf.filter(f => f.kind === 'note').length;
+  const nCred = pf.filter(f => f.kind === 'credential').length;
 
   const stat = (label, value, cls) => el('div', { className: 'stat' },
     el('div', { className: 'kicker' }, label), el('div', { className: 'stat-value ' + (cls || '') }, value));
+  const statLink = (label, value, cls, kind) => {
+    const s = el('button', { className: 'stat stat-link', onclick: () => location.hash = `/findings/${id}/${kind}` },
+      el('div', { className: 'kicker' }, label), el('div', { className: 'stat-value ' + (cls || '') }, String(value)));
+    return s;
+  };
 
   const targetRow = (a, depth = 0, kids = 0) => {
     const t = TYPES.find(x => x.type === a.type) || {};
@@ -763,11 +776,10 @@ async function renderProject(id) {
       // the columns aligned whether or not a target is assigned.
       (() => {
         const asg = assigneeList(a.assignee);
-        return el('span', { className: 'tassign' + (asg.length ? ' on' : ''), title: asg.length ? 'Assigned to ' + asg.join(', ') : 'Unassigned' },
+        const mine = CURRENT_USER && asg.includes(CURRENT_USER);
+        return el('span', { className: 'tassign' + (asg.length ? ' on' : '') + (mine ? ' mine' : ''), title: asg.length ? 'Assigned to ' + asg.join(', ') : 'Unassigned' },
           ...(asg.length
-            ? asg.slice(0, 3).map(avatarSm).concat(
-                asg.length === 1 ? [el('span', { className: 'tassign-name' }, asg[0])] : [],
-                asg.length > 3 ? [el('span', { className: 'tassign-more' }, '+' + (asg.length - 3))] : [])
+            ? asg.slice(0, 4).map(avatarSm).concat(asg.length > 4 ? [el('span', { className: 'tassign-more' }, '+' + (asg.length - 4))] : [])
             : [el('span', { className: 'tassign-none' }, '—')]));
       })(),
       el('span', { className: 'tprog' },
@@ -809,13 +821,43 @@ async function renderProject(id) {
     p.client || p.scope ? el('div', { className: 'lede' }, [p.client, p.scope].filter(Boolean).join(' · ')) : null,
     el('div', { className: 'stats' },
       stat('Coverage', pct(handled, total) + '%', 'gold'),
-      stat('Findings', String(findings), 'red'),
+      statLink('Vulnerabilities', nVuln, 'red', 'vuln'),
+      statLink('Notes', nNote, '', 'note'),
+      statLink('Credentials', nCred, '', 'credential'),
       stat('Revisit', String(flags), 'purple'),
       stat('Targets', String(allTargets.length))),
     el('div', { className: 'srule' },
       el('span', { className: 'kicker' }, 'Targets'), el('span', { className: 'rule' }),
       isEditor() ? el('button', { className: 'btn line sm', onclick: () => addTargetToProject(id) }, '+ Add target') : null),
     body));
+}
+
+// Project-wide findings list, reached from an engagement's stat tiles. One kind (vuln/note/
+// credential) or all, sorted by severity (vulns) then newest. Each card links to its target.
+async function renderProjectFindings(projectId, kind) {
+  const p = await api('/projects/' + projectId);
+  let items = await api('/projects/' + projectId + '/findings').catch(() => []);
+  if (kind !== 'all') items = items.filter(f => f.kind === kind);
+  items.sort((a, b) => (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9) || (a.created_at < b.created_at ? 1 : -1));
+  const titleMap = { vuln: 'Vulnerabilities', note: 'Notes', credential: 'Credentials', all: 'Findings' };
+  setRail(railForProject(p, null));
+  setCrumbs([{ label: 'engagements', go: () => location.hash = '' },
+    { label: p.name, go: () => location.hash = `/project/${projectId}` },
+    { label: titleMap[kind] || 'Findings' }]);
+  topActions();
+  const list = el('div', { className: 'pf-list' });
+  if (!items.length) list.append(el('div', { className: 'empty', style: 'border:0;margin-top:20px' }, `No ${(titleMap[kind] || 'findings').toLowerCase()} recorded.`));
+  for (const f of items) {
+    list.append(el('div', { className: 'pf-item' },
+      el('button', { className: 'pf-target', title: 'Open ' + f.target, onclick: () => location.hash = `/target/${f.target_id}` },
+        codeBadge(f.target_type), el('span', { className: 'pf-tname' }, f.target)),
+      findingCard(f, f.target_id)));
+  }
+  $('#view').replaceChildren(el('div', { className: 'page narrow' },
+    el('div', { className: 'kicker' }, 'Engagement · ' + p.name),
+    el('h1', {}, `${titleMap[kind] || 'Findings'} · ${items.length}`),
+    kind === 'vuln' ? el('div', { className: 'lede' }, 'Sorted by severity. Info-only findings are shown last and are not counted on the engagement tile.') : null,
+    list));
 }
 
 // The asset-folder layer is now implicit — any /asset link jumps straight to its engagement.
@@ -997,6 +1039,7 @@ function multiAssign({ people, selected, onChange }) {
   let menu = null, repaintMenu = () => {};
   const paintTrigger = () => {
     const arr = [...chosen];
+    root.classList.toggle('mine', !!(CURRENT_USER && chosen.has(CURRENT_USER)));
     trigger.replaceChildren(...(arr.length
       ? arr.slice(0, 4).map(avatarSm).concat(arr.length > 4 ? [el('span', { className: 'assign-more' }, '+' + (arr.length - 4))] : [])
       : [el('span', { className: 'assign-none' }, 'Unassigned')]));
@@ -1544,6 +1587,7 @@ function findingCard(f, id) {
     el('div', { className: 'f-top' },
       f.severity ? el('span', { className: 'f-sev' }, f.severity) : null,
       f.fix_status ? el('span', { className: 'f-fix ' + f.fix_status }, fixLabel(f.fix_status)) : el('span', { className: 'f-kind' }, f.kind),
+      f.author ? el('span', { className: 'f-by', title: 'Recorded by ' + f.author }, avatarSm(f.author), f.author) : null,
       reportTick(f, () => renderTarget(id)),
       tools),
     el('div', { className: 'f-title' }, f.title),
@@ -1563,6 +1607,7 @@ function findingDetail(f, id) {
       b.append(el('div', { className: 'fd-badges' },
         f.severity ? el('span', { className: 'fd-sev sev-' + f.severity }, f.severity.toUpperCase()) : null,
         f.cvss ? el('span', { className: 'fd-cvss', title: f.cvss }, 'CVSS ' + (MagiCVSS.score(f.cvss)?.toFixed(1) ?? '—')) : null,
+        f.author ? el('span', { className: 'fd-by' }, avatarSm(f.author), 'by ' + f.author) : null,
         reportTick(f, () => renderTarget(id))));
       if (f.cvss) { b.append(el('label', {}, 'CVSS vector')); b.append(el('code', { className: 'fd-vector' }, f.cvss)); }
       if (locs.length) { b.append(el('label', {}, locs.length > 1 ? 'Locations' : 'Location')); b.append(el('div', { className: 'fd-locs' }, ...locs.map(l => el('code', {}, l)))); }
@@ -2498,6 +2543,7 @@ let LAST_CODE = null; // a just-minted code to show once at the top of the panel
 const ADMIN_TAB_LIST = [
   { key: 'users', label: 'Users' },
   { key: 'devices', label: 'Devices' },
+  { key: 'grading', label: 'Grading' },
   { key: 'ranking', label: 'Ranking' },
   { key: 'logs', label: 'Logs' },
   { key: 'backup', label: 'Backup' },
@@ -2527,7 +2573,9 @@ async function renderAdmin(section) {
     page.append(el('div', { className: 'page-head' }, el('div', {}, el('div', { className: 'kicker' }, 'Team server'), el('h1', {}, 'Admin'))));
     page.append(el('nav', { className: 'admtabs' }, ...ADMIN_TAB_LIST.map(t =>
       el('a', { className: 'admtab' + (t.key === section ? ' on' : ''), href: '#/admin/' + t.key },
-        t.label, (t.key === 'devices' && ADMIN_PENDING) ? el('span', { className: 'tabcount' }, String(ADMIN_PENDING)) : null))));
+        t.label,
+        (t.key === 'devices' && ADMIN_PENDING) ? el('span', { className: 'tabcount' }, String(ADMIN_PENDING)) : null,
+        (t.key === 'grading' && ADMIN_UNGRADED) ? el('span', { className: 'tabcount' }, String(ADMIN_UNGRADED)) : null))));
     page.append(el('div', { className: 'admbody' }, ...(Array.isArray(content) ? content : [content])));
     return page;
   };
@@ -2736,7 +2784,42 @@ async function adminRanking(ctx, A) {
   return out;
 }
 
-const ADMIN_SECTIONS = { users: adminUsers, devices: adminDevices, ranking: adminRanking, logs: adminLogs, backup: adminBackup };
+// Grading queue: vulnerabilities recorded without a severity yet. Served locally (from the synced
+// mirror on a client, or the server's own DB), NOT via the /admin proxy — so it lists across the
+// whole team's synced data. Grading PATCHes the finding, which syncs like any edit; credit stays
+// with the recorder.
+async function adminGrading(ctx, A) {
+  const rows = await api('/ungraded');
+  ADMIN_UNGRADED = rows.length;
+  const card = admCard('Ungraded vulnerabilities', rows.length ? `${rows.length} awaiting a severity` : 'all graded');
+  if (!rows.length) { card.append(el('p', { className: 'muted' }, 'Every vulnerability has a severity. Nothing to grade.')); return [card]; }
+  card.append(el('p', { className: 'muted small' }, 'A worker records the finding; you set its severity. The finder keeps the credit.'));
+  for (const f of rows) card.append(admRow(
+    [el('div', { className: 'reqname' }, f.title),
+     el('div', { className: 'reqmeta muted small' }, `${f.project} · ${f.target}${f.author ? ' · by ' + f.author : ''}`)],
+    el('button', { className: 'btn', onclick: () => location.hash = `/target/${f.target_id}` }, 'Open'),
+    el('button', { className: 'btn gold', onclick: () => gradeDialog(f, () => renderAdmin('grading')) }, 'Grade')));
+  return [card];
+}
+function gradeDialog(f, onDone) {
+  modal({
+    kicker: 'Grade', title: f.title, cta: 'Set severity',
+    note: `${f.project} · ${f.target}` + (f.author ? ` · recorded by ${f.author}` : ''),
+    build: (b) => {
+      if (f.body) b.append(el('pre', { className: 'fd-body' }, stripLocationPrefix(f.body)));
+      const sevSel = field(b, 'Severity', 'severity', { value: 'medium', options: SEVERITIES.filter(s => s.value) });
+      b.append(cvssSection(sevSel, null));
+    },
+    onSubmit: async (fd) => {
+      const raw = Object.fromEntries(fd);
+      const payload = { severity: raw.severity || null };
+      if (raw.cvss) payload.cvss = raw.cvss; // a CVSS vector, if set, derives the severity server-side
+      await api('/findings/' + f.id, { method: 'PATCH', body: payload });
+      toast('Severity set'); onDone && onDone();
+    },
+  });
+}
+const ADMIN_SECTIONS = { users: adminUsers, devices: adminDevices, grading: adminGrading, ranking: adminRanking, logs: adminLogs, backup: adminBackup };
 async function decide(ctx, id, action, name) {
   try {
     await api(`${ctx.base}/requests/${id}/${action}`, { method: 'POST' });

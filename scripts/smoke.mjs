@@ -183,7 +183,7 @@ checks.push(['admin tabs + ranking page paint', await ev(`
   const devicesText = document.querySelector(".admbody")?.textContent || "";
   const devicesHasCodesAndRequests = /connection requests/i.test(devicesText) && /one-time codes/i.test(devicesText);
   window.fetch = real;
-  return rankRows === 2 && tabs === 5 && activeIsRanking && usersActive && hasSev && hasScore && usersHasCreate && devicesHasCodesAndRequests`)]);
+  return rankRows === 2 && tabs === 6 && activeIsRanking && usersActive && hasSev && hasScore && usersHasCreate && devicesHasCodesAndRequests`)]);
 // Regression: an MFA-enabled account returns 401 {mfa:'required'} on password-only login. The
 // login flow must READ that challenge and show the code screen — not treat the 401 as a hard error.
 // (This standalone server never enforces MFA, so stub fetch to return the challenge just for the login.)

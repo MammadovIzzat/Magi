@@ -324,6 +324,16 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 }
 .stat-value.gold { color: var(--gold); }
 .stat-value.purple { color: var(--purple); }
+.stat-link { border: 0; text-align: left; cursor: pointer; font: inherit; }
+.stat-link:hover { background: var(--row-hover); }
+.stat-link:hover .kicker { color: var(--gold); }
+/* project-wide findings list */
+.pf-list { display: flex; flex-direction: column; gap: 14px; margin-top: 18px; }
+.pf-item { display: flex; flex-direction: column; gap: 5px; }
+.pf-target { align-self: flex-start; display: inline-flex; align-items: center; gap: 8px; background: none; border: 0;
+  cursor: pointer; padding: 0; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.pf-target:hover { color: var(--gold); }
+.pf-tname { overflow-wrap: anywhere; }
 .stat-value.red { color: var(--red); }
 
 /* ── target list (project page) ────────────────────────── */
@@ -355,6 +365,8 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .tassign-none { color: var(--dim); }
 .tassign-more { color: var(--muted); flex: none; }
 .tassign .avatar.sm { color: var(--gold); flex: none; }
+/* a target assigned to the current operator glows a little */
+.tassign.mine .avatar.sm { border-color: var(--gold); box-shadow: 0 0 6px -1px var(--gold); }
 
 /* ── target checklist (the core screen) ────────────────── */
 .target { display: flex; height: 100%; min-height: 0; overflow-x: auto; }
@@ -371,9 +383,11 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .assign { display: flex; align-items: center; gap: 8px; margin-right: 4px; }
 .assign-lbl { display: flex; align-items: center; gap: 4px; font-family: var(--mono);
   font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--label); }
-.assign-sel { min-width: 130px; }
-.assign-sel .sel-trigger { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; color: var(--gold); }
+/* The assign trigger hugs its avatars (no full-width stretch, no big empty gap) with room for the caret. */
+.assign-sel { width: auto; min-width: 0; }
+.assign-sel .sel-trigger { width: auto; display: flex; align-items: center; justify-content: flex-start; gap: 5px; flex-wrap: nowrap; padding: 7px 28px 7px 9px; color: var(--gold); }
 .assign-sel .sel-trigger .avatar.sm { color: var(--gold); flex: none; }
+.assign-sel.mine .sel-trigger { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold-wash), 0 0 8px -2px var(--gold); }
 .assign-none { color: var(--muted); font-family: var(--mono); font-size: 12px; }
 .assign-more { color: var(--muted); font-family: var(--mono); font-size: 10.5px; }
 /* checkbox menu (reuses .sel-menu / .sel-opt) */
@@ -559,6 +573,11 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .finding.sev-high .f-sev, .finding.sev-critical .f-sev { color: var(--red); }
 .finding.sev-medium .f-sev { color: var(--gold); }
 .f-kind { color: var(--muted); }
+.f-by { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; margin-right: 4px;
+  font-family: var(--mono); font-size: 10px; color: var(--muted); }
+.f-by .avatar.sm { color: var(--gold); flex: none; }
+.fd-by { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+.fd-by .avatar.sm { color: var(--gold); flex: none; }
 /* retest remediation status */
 .f-fix { font-family: var(--mono); font-size: 9px; letter-spacing: .12em; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; border: 1px solid; }
 .f-fix.fixed { color: var(--jade); border-color: #46B87A55; background: #46B87A14; }

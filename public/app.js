@@ -389,21 +389,23 @@ async function route() {
   if (!CURRENT_USER) return;
   try {
     // Settings holds the account (username / passphrase) in every mode, plus linking on clients.
-    if (h === '/settings') return renderSettings();
-    if (h === '/admin' || h.startsWith('/admin/')) return renderAdmin(h.slice('/admin'.length).replace(/^\//, '') || 'users');
+    // `await` each render so a thrown/rejected render surfaces in the catch below (an error page)
+    // instead of silently leaving the previous view up with a half-updated rail/breadcrumb.
+    if (h === '/settings') return await renderSettings();
+    if (h === '/admin' || h.startsWith('/admin/')) return await renderAdmin(h.slice('/admin'.length).replace(/^\//, '') || 'users');
     // Template editing is admin-only; workers are bounced back to their engagements.
     if (h === '/editor' || h.startsWith('/editor/') || h.startsWith('/group/')) {
       if (!isAdmin()) { location.hash = ''; return; }
     }
-    if (h === '/editor') return renderEditor();
-    const gm = h.match(/^\/group\/(\d+)/); if (gm) return renderGroup(gm[1]);
-    const em = h.match(/^\/editor\/([a-z0-9_]+)/); if (em) return renderEditor(em[1]);
-    const fm = h.match(/^\/findings\/(\d+)/); if (fm) return renderProjectFindings(fm[1]);
+    if (h === '/editor') return await renderEditor();
+    const gm = h.match(/^\/group\/(\d+)/); if (gm) return await renderGroup(gm[1]);
+    const em = h.match(/^\/editor\/([a-z0-9_]+)/); if (em) return await renderEditor(em[1]);
+    const fm = h.match(/^\/findings\/(\d+)/); if (fm) return await renderProjectFindings(fm[1]);
     const [, kind, id] = h.match(/^\/(project|asset|target)\/(\d+)/) || [];
-    if (kind === 'project') return renderProject(id);
-    if (kind === 'asset') return renderAssetFolder(id);
-    if (kind === 'target') return renderTarget(id);
-    return renderHome();
+    if (kind === 'project') return await renderProject(id);
+    if (kind === 'asset') return await renderAssetFolder(id);
+    if (kind === 'target') return await renderTarget(id);
+    return await renderHome();
   } catch (e) {
     setRail(null);
     $('#view').replaceChildren(el('div', { className: 'page' }, el('div', { className: 'empty' }, 'Error: ' + e.message)));
@@ -1045,10 +1047,12 @@ const assigneeList = (v) => String(v || '').split(',').map(s => s.trim()).filter
 const avatarSm = (u) => el('span', { className: 'avatar sm', title: u }, (u[0] || '?').toUpperCase());
 
 // A themed multi-select for "who's on this target" — a trigger showing the chosen avatars, and a
-// portalled checkbox menu. Toggling calls onChange with the full username list (the caller PATCHes);
-// it does NOT re-render, so you can pick several in a row. Menu closes on outside click.
-function multiAssign({ people, selected, onChange }) {
+// portalled checkbox menu. The roster is fetched LAZILY when the menu first opens (via loadPeople),
+// so building this control never blocks the page render. Toggling calls onChange with the full
+// username list (the caller PATCHes); it does NOT re-render, so you can pick several in a row.
+function multiAssign({ selected, loadPeople, onChange }) {
   const chosen = new Set(selected);
+  let people = null;
   const trigger = el('button', { type: 'button', className: 'sel-trigger' });
   const root = el('div', { className: 'sel assign-sel' }, trigger);
   let menu = null, repaintMenu = () => {};
@@ -1064,19 +1068,27 @@ function multiAssign({ people, selected, onChange }) {
   const reposition = () => { if (menu) position(); };
   const close = () => { if (!menu) return; menu.remove(); menu = null; root.classList.remove('open'); document.removeEventListener('mousedown', onDown, true); window.removeEventListener('resize', close); window.removeEventListener('scroll', reposition, true); };
   const toggle = (u) => { chosen.has(u) ? chosen.delete(u) : chosen.add(u); paintTrigger(); repaintMenu(); onChange([...chosen]); };
-  const open = () => {
+  const roster = () => {
+    // keep any already-assigned but unknown/removed operator selectable
+    const list = (people || []).slice();
+    for (const u of chosen) if (!list.some(p => p.username === u)) list.push({ username: u });
+    return list;
+  };
+  const open = async () => {
     if (menu) return close();
     menu = el('div', { className: 'sel-menu assign-menu' });
-    repaintMenu = () => menu.replaceChildren(
-      ...people.map(p => {
+    repaintMenu = () => { if (!menu) return; menu.replaceChildren(
+      ...roster().map(p => {
         const on = chosen.has(p.username);
         return el('div', { className: 'sel-opt' + (on ? ' on' : ''), onmousedown: (e) => { e.preventDefault(); toggle(p.username); } },
           el('span', { className: 'chk' }, on ? '✓' : ''), avatarSm(p.username), el('span', { className: 'opt-name' }, p.username));
       }),
-      chosen.size ? el('div', { className: 'sel-opt clear', onmousedown: (e) => { e.preventDefault(); chosen.clear(); paintTrigger(); repaintMenu(); onChange([]); } }, 'Clear all') : null);
-    repaintMenu();
+      chosen.size ? el('div', { className: 'sel-opt clear', onmousedown: (e) => { e.preventDefault(); chosen.clear(); paintTrigger(); repaintMenu(); onChange([]); } }, 'Clear all') : null); };
+    if (people == null) menu.append(el('div', { className: 'sel-opt', style: 'color:var(--muted)' }, 'Loading…'));
+    else repaintMenu();
     document.body.append(menu); root.classList.add('open'); position();
     document.addEventListener('mousedown', onDown, true); window.addEventListener('resize', close); window.addEventListener('scroll', reposition, true);
+    if (people == null) { try { people = await loadPeople(); } catch { people = []; } if (menu) { repaintMenu(); position(); } }
   };
   trigger.onclick = (e) => { e.preventDefault(); open(); };
   paintTrigger();
@@ -1211,12 +1223,11 @@ async function renderTarget(id) {
   }
 
   // "Who's on this target" — a display-only assignment (any number of operators) anyone can set;
-  // it doesn't gate editing. Toggling PATCHes but does not re-render, so several can be picked at once.
-  const people = await loadAssignees();
-  const menuPeople = people.slice();
-  for (const u of assigneeList(a.assignee)) if (!menuPeople.some(p => p.username === u)) menuPeople.push({ username: u }); // keep a removed/unknown operator selectable
+  // it doesn't gate editing. The roster loads lazily when the menu opens, so it never blocks the
+  // checklist from rendering. Toggling PATCHes but does not re-render, so several can be picked at once.
   const assignCtl = multiAssign({
-    people: menuPeople, selected: assigneeList(a.assignee),
+    selected: assigneeList(a.assignee),
+    loadPeople: () => loadAssignees(),
     onChange: async (list) => {
       try { const r = await api('/targets/' + id + '/assignee', { method: 'PATCH', body: { assignee: list } }); a.assignee = r?.assignee || null; }
       catch (e) { toast(e.message); }

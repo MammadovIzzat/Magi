@@ -968,10 +968,13 @@ function delTarget(a, after) {
 
 // The roster a target can be assigned to. Cached for the session (it rarely changes and a checklist
 // re-renders on every tick), refreshed after an assignment or on demand.
-let ASSIGNEES = null;
+let ASSIGNEES = null, ASSIGNEES_AT = 0;
+// Cached briefly so a checklist re-render (every tick) doesn't refetch, but short enough that an
+// operator created on any device shows up in the picker within a few seconds. `force` (used when the
+// user just created an operator, or opens a fresh target) refetches immediately.
 async function loadAssignees(force) {
-  if (ASSIGNEES && !force) return ASSIGNEES;
-  try { ASSIGNEES = await api('/assignees'); } catch { ASSIGNEES = ASSIGNEES || []; }
+  if (!force && ASSIGNEES && Date.now() - ASSIGNEES_AT < 15000) return ASSIGNEES;
+  try { ASSIGNEES = await api('/assignees'); ASSIGNEES_AT = Date.now(); } catch { ASSIGNEES = ASSIGNEES || []; }
   return ASSIGNEES;
 }
 
@@ -993,7 +996,7 @@ async function renderTarget(id) {
   const a = await api('/targets/' + id);
   SUBST_MAP = substMap(a);
   const t = TYPES.find(x => x.type === a.type) || {};
-  if (curAssetId !== id) { curAssetId = id; openGroups.clear(); openPayloads.clear(); FILTER = 'all'; }
+  if (curAssetId !== id) { curAssetId = id; openGroups.clear(); openPayloads.clear(); FILTER = 'all'; ASSIGNEES_AT = 0; } // fresh target → refetch the assignee roster
 
   const pid = a.project?.id ?? a.folder?.project_id;
   const project = pid ? await api('/projects/' + pid) : null;   // engagement → all targets for the rail
@@ -2530,6 +2533,7 @@ function createUserDialog(ctx) {
       if ((o.password || '').length < 8) throw new Error('password must be at least 8 characters');
       if (o.password !== o.confirm) throw new Error('the two passwords do not match');
       await api(`${ctx.base}/users`, { method: 'POST', body: { username: o.username, password: o.password, role: o.role } });
+      ASSIGNEES_AT = 0; // new operator → the assignee picker must refetch
       toast(`Operator ${o.username} created`); renderAdmin('users');
     },
   });

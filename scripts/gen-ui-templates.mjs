@@ -94,25 +94,38 @@ const SEED_ENGAGEMENT = `
   const checks = wd.items.filter(i => i.kind==='check').slice(0,7);
   const st = ['done','done','todo','na','done','todo','done'];
   for (let i=0;i<checks.length;i++) await __PATCH('/api/items/'+checks[i].id, { status: st[i] });
+  // who's on this target (multi-assign), an ungraded vuln (grading queue), and a spawned subdomain
+  await __PATCH('/api/targets/'+web.id+'/assignee', { assignee:['operator'] });
+  await __P('/api/targets/'+web.id+'/findings', { title:'Missing security headers (CSP, HSTS)', kind:'vuln' });
+  const subItem = wd.items.find(i => i.spawn_type==='web');
+  if (subItem) await __P('/api/items/'+subItem.id+'/spawn-target', { label:'https://staging.acme.example' });
   window.__ids = { pid:p.id, webId:web.id, pocId:poc.id, rttId:rtt.id, assetId:ext.id };
   return window.__ids;
 `;
 
 const SEED_ADMIN = `
-  const uuid = () => '00000000-0000-4000-8000-'+String(Math.abs(Date.now()%1e12)).padStart(12,'0');
-  // a pending join request (left un-approved so it shows in the panel)
+  // v0.9.0 model: the admin creates operator accounts directly; devices connect separately.
+  await __P('/api/admin/users', { username:'ana', password:'ana-secret-8', role:'editor' });
+  await __P('/api/admin/users', { username:'ben', password:'ben-secret-8', role:'worker' });
+  await __P('/api/admin/users', { username:'cara', password:'cara-secret-8', role:'worker' });
+  // one accepted device, one pending connection request, one spare code
   const c1 = (await __P('/api/admin/enroll-codes', { note:'Ana laptop' })).code;
-  await __P('/api/enroll', { code:c1, username:'ana', display_name:'Ana Rivera', device_id:'11111111-1111-4111-8111-111111111111', password:'ana-secret-8' });
-  // an approved editor + worker (become members + devices)
+  const r1 = await __P('/api/enroll', { code:c1, device_id:'11111111-1111-4111-8111-111111111111', device_name:'ana-laptop' });
+  await __P('/api/admin/requests/'+r1.request_id+'/approve', {});
   const c2 = (await __P('/api/admin/enroll-codes', { note:'Ben desktop' })).code;
-  const r2 = await __P('/api/enroll', { code:c2, username:'ben', display_name:'Ben Carter', device_id:'22222222-2222-4222-8222-222222222222', password:'ben-secret-8' });
-  await __P('/api/admin/requests/'+r2.request_id+'/approve', { role:'editor' });
-  const c3 = (await __P('/api/admin/enroll-codes', { note:'Cara phone' })).code;
-  const r3 = await __P('/api/enroll', { code:c3, username:'cara', display_name:'Cara Singh', device_id:'33333333-3333-4333-8333-333333333333', password:'cara-secret-8' });
-  await __P('/api/admin/requests/'+r3.request_id+'/approve', { role:'worker' });
-  // a spare active code
+  await __P('/api/enroll', { code:c2, device_id:'22222222-2222-4222-8222-222222222222', device_name:'ben-desktop' });
   await __P('/api/admin/enroll-codes', { note:'Spare' });
-  return true;
+  // a small engagement with findings so Ranking, Grading and the findings page have content
+  const sp = await __P('/api/projects', { name:'Acme Corp — External Assessment', client:'Acme Corporation', scope:'*.acme.example' });
+  const sf = await __P('/api/projects/'+sp.id+'/assets', { grp:'external', label:'Perimeter' });
+  const sw = await __P('/api/assets/'+sf.id+'/targets', { type:'web', label:'https://app.acme.example' });
+  await __P('/api/targets/'+sw.id+'/findings', { title:'Reflected XSS in /search', kind:'vuln', severity:'high' });
+  await __P('/api/targets/'+sw.id+'/findings', { title:'IDOR on /invoices', kind:'vuln', severity:'medium' });
+  await __P('/api/targets/'+sw.id+'/findings', { title:'Missing rate limit on login', kind:'vuln' });       // ungraded -> Grading queue
+  await __P('/api/targets/'+sw.id+'/findings', { title:'Weak admin credentials', kind:'credential', body:'admin : Password1!' });
+  await __P('/api/targets/'+sw.id+'/findings', { title:'Verbose 500 stack trace', kind:'note', body:'Leaks framework version and paths.' });
+  window.__sid = { pid: sp.id };
+  return window.__sid;
 `;
 
 const captured = {};
@@ -135,6 +148,10 @@ await ev(`location.hash='#/asset/${ids.assetId}'; await route();`); await sleep(
 await ev(`location.hash='#/target/${ids.webId}'; await route();`); await sleep(1100);
 await ev(`document.querySelectorAll('.ghdr')[0]?.click(); document.querySelectorAll('.ghdr')[1]?.click();`); await sleep(500);
 await capture('target-checklist');
+// the assign dropdown open (roster loads lazily; give it a moment)
+await ev(`document.querySelector('.assign-sel .sel-trigger')?.click();`); await sleep(900); await capture('target-assign');
+await ev(`document.querySelector('.assign-sel.open .sel-trigger')?.click();`); await sleep(200); // close it
+await ev(`location.hash='#/findings/${ids.pid}'; await route();`); await sleep(1000); await capture('findings-page');
 await ev(`location.hash='#/target/${ids.pocId}'; await route();`); await sleep(900); await capture('target-poc');
 await ev(`location.hash='#/target/${ids.rttId}'; await route();`); await sleep(900); await capture('target-retest');
 await ev(`location.hash='#/editor'; await route();`); await sleep(1000); await capture('templates-editor');
@@ -149,8 +166,14 @@ await ev(`location.hash='#/settings'; await route(); await new Promise(r=>setTim
 await goto(`https://127.0.0.1:${TLS_PORT}/`);
 await ev(SEED_JS);
 await ev(`await __login('lead','demo-pass-123'); await afterAuth();`); await sleep(600);
-await ev(SEED_ADMIN); await sleep(400);
-await ev(`location.hash='#/admin'; await route();`); await sleep(1200); await capture('admin-panel');
+const sid = await ev(SEED_ADMIN); await sleep(400);
+await ev(`location.hash='#/admin/users'; await route();`); await sleep(1000); await capture('admin-users');
+await ev(`location.hash='#/admin/devices'; await route();`); await sleep(1000); await capture('admin-devices');
+await ev(`location.hash='#/admin/grading'; await route();`); await sleep(1000); await capture('admin-grading');
+await ev(`location.hash='#/admin/ranking'; await route();`); await sleep(1000); await capture('admin-ranking');
+// grade dialog, and the CVSS editor opened from it
+await ev(`location.hash='#/admin/grading'; await route(); await new Promise(r=>setTimeout(r,700)); [...document.querySelectorAll('.admbody button')].find(b=>/^grade$/i.test(b.textContent.trim()))?.click();`); await sleep(600); await capture('modal-grade');
+await ev(`[...document.querySelectorAll('.modal button')].find(b=>/cvss calculator/i.test(b.textContent))?.click();`); await sleep(600); await capture('modal-cvss');
 
 ws.close();
 
@@ -173,18 +196,25 @@ function processHtml(html, title) {
 const META = {
   'login': 'Sign-in (lock screen)',
   'engagements': 'Engagements — the home list',
-  'engagement': 'One engagement — stats + its targets',
+  'engagement': 'One engagement — stats + its target tree',
   'asset-folder': 'Asset folder — targets in one engagement type',
-  'target-checklist': 'Target — attack checklist + evidence log',
+  'target-checklist': 'Target — attack checklist + evidence log + assignees',
+  'target-assign': 'Target — the assignee multi-select open',
+  'findings-page': 'Engagement findings — vulns / notes / creds tabs, search + sort',
   'target-poc': 'PoC target — checklist-free findings',
   'target-retest': 'Retest target — remediation items',
   'templates-editor': 'Template library / editor',
   'settings-local': 'Settings — local workspace + encryption',
-  'admin-panel': 'Admin panel — team server management',
+  'admin-users': 'Admin — operator accounts',
+  'admin-devices': 'Admin — device connections + one-time codes',
+  'admin-grading': 'Admin — grading queue (ungraded vulnerabilities)',
+  'admin-ranking': 'Admin — worker ranking / leaderboard',
   'modal-new-engagement': 'Dialog — new engagement',
   'modal-add-target': 'Dialog — add a target',
   'modal-finding': 'Dialog — record a finding',
-  'modal-connect-server': 'Dialog — connect to a team server',
+  'modal-grade': 'Dialog — grade a finding',
+  'modal-cvss': 'Dialog — CVSS 3.1 calculator',
+  'modal-connect-server': 'Dialog — connect a device to a team server',
 };
 const order = Object.keys(META).filter(k => captured[k]);
 for (const name of order) writeFileSync(join(OUT, name + '.html'), processHtml(captured[name], META[name]));

@@ -238,6 +238,14 @@ check('ranking totals count operators', rank.json?.totals?.operators >= 2);
 check('a worker note is NOT counted in the ranking (only the two vulns are)', anaRank.findings === 2);
 const adminRank0 = (rank.json?.ranking || []).find(r => r.author === 'admin');
 check('an admin credential is NOT counted in the ranking (only the two vulns are)', !!adminRank0 && adminRank0.findings === 2);
+// The engagement page's findings count is vuln-only too: webT holds a note + a credential + two
+// vulns (RCE, SQLi), so its per-target count must read 2, not 4.
+const projId = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.folder.project_id;
+const projJson = (await req('GET', `/api/projects/${projId}`, { token: adminTok })).json;
+const webRow = (projJson.assets || []).flatMap(f => f.items || []).find(x => x.id === webT.id);
+check('the project page counts only vulns as findings (notes & creds excluded)', !!webRow && webRow.findings === 2);
+const folderRow = (projJson.assets || []).find(f => (f.items || []).some(x => x.id === webT.id));
+check('the engagement folder roll-up counts only vulns', !!folderRow && folderRow.findings >= 2 && folderRow.findings === (folderRow.items || []).reduce((n, x) => n + x.findings, 0));
 
 // ---- durability: deleting an old engagement must NOT reduce the ranking ----
 const anaBefore = anaRank.findings;

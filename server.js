@@ -1084,7 +1084,7 @@ app.delete('/api/tpl-items/:id', requireManage, (req, res) => {
 app.get('/api/projects', (req, res) => {
   res.json(q(`SELECT p.*,
       (SELECT COUNT(*) FROM assets a WHERE a.project_id=p.id) AS asset_count,
-      (SELECT COUNT(*) FROM findings f JOIN assets a ON a.id=f.asset_id WHERE a.project_id=p.id) AS finding_count,
+      (SELECT COUNT(*) FROM findings f JOIN assets a ON a.id=f.asset_id WHERE a.project_id=p.id AND f.kind='vuln') AS finding_count,
       (SELECT COUNT(*) FROM items i JOIN assets a ON a.id=i.asset_id
          WHERE a.project_id=p.id AND i.kind NOT IN ('select','group')) AS total,
       (SELECT COUNT(*) FROM items i JOIN assets a ON a.id=i.asset_id
@@ -1164,14 +1164,14 @@ app.get('/api/projects/:id', (req, res) => {
       (SELECT COUNT(*) FROM items i JOIN assets a ON a.id=i.asset_id WHERE a.folder_id=f.id AND i.kind NOT IN ('select','group')
          AND i.status IN ('done','na','yes','no')) AS handled,
       (SELECT COUNT(*) FROM items i JOIN assets a ON a.id=i.asset_id WHERE a.folder_id=f.id AND i.status='flag') AS flags,
-      (SELECT COUNT(*) FROM findings fi JOIN assets a ON a.id=fi.asset_id WHERE a.folder_id=f.id) AS findings
+      (SELECT COUNT(*) FROM findings fi JOIN assets a ON a.id=fi.asset_id WHERE a.folder_id=f.id AND fi.kind='vuln') AS findings
       FROM folders f WHERE f.project_id=? ORDER BY f.created_at, f.id`).all(req.params.id);
   for (const f of assets) {
     f.items = q(`SELECT a.id, a.uid, a.type, a.label, a.assignee, a.metadata,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group')) AS total,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group') AND i.status IN ('done','na','yes','no')) AS handled,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.status='flag') AS flags,
-      (SELECT COUNT(*) FROM findings fi WHERE fi.asset_id=a.id) AS findings
+      (SELECT COUNT(*) FROM findings fi WHERE fi.asset_id=a.id AND fi.kind='vuln') AS findings
       FROM assets a WHERE a.folder_id=? ORDER BY a.created_at, a.id`).all(f.id).map(assetSummary);
   }
   res.json({ ...p, assets });
@@ -1239,7 +1239,7 @@ app.get('/api/assets/:id', (req, res) => {
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group')
          AND i.status IN ('done','na','yes','no')) AS handled,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.status='flag') AS flags,
-      (SELECT COUNT(*) FROM findings fi WHERE fi.asset_id=a.id) AS findings
+      (SELECT COUNT(*) FROM findings fi WHERE fi.asset_id=a.id AND fi.kind='vuln') AS findings
       FROM assets a WHERE a.folder_id=? ORDER BY a.created_at, a.id`).all(f.id);
   const project = q(`SELECT id, name FROM projects WHERE id=?`).get(f.project_id);
   res.json({ ...f, project, targets: targets.map(assetSummary) });

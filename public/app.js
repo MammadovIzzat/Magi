@@ -37,6 +37,7 @@ const ICON = {
   image: ['M2.5 3.5h11v9h-11zM2.5 10l3-3 3 3M9 8.5l2-2 2.5 2.5', 1.3],
   key: ['M10.5 2.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7zM8 8l-5.5 5.5V15h2l4-4', 1.3],
   server: ['M2.5 4h11v3.4h-11zM2.5 8.6h11V12h-11zM4.6 5.7h.01M4.6 10.3h.01', 1.3],
+  user: ['M8 8.2a2.4 2.4 0 100-4.8 2.4 2.4 0 000 4.8zM3.5 13.3c0-2.4 2-3.9 4.5-3.9s4.5 1.5 4.5 3.9', 1.3],
 };
 function icon(name, size = 13) {
   const [d, w] = ICON[name];
@@ -660,7 +661,9 @@ async function renderProject(id) {
       codeBadge(a.type),
       el('span', { className: 'tgrow' },
         el('span', { className: 'tname' }, a.label),
-        el('span', { className: 'tmeta' }, `${(t.label || a.type).toUpperCase()} · ${a.handled}/${a.total} handled${a.findings ? ' · ' + a.findings + ' finding' + (a.findings === 1 ? '' : 's') : ''}`)),
+        el('span', { className: 'tmeta' }, `${(t.label || a.type).toUpperCase()} · ${a.handled}/${a.total} handled${a.findings ? ' · ' + a.findings + ' finding' + (a.findings === 1 ? '' : 's') : ''}`),
+        a.assignee ? el('span', { className: 'tassign', title: 'Assigned to ' + a.assignee },
+          el('span', { className: 'avatar sm' }, a.assignee[0].toUpperCase()), a.assignee) : null),
       el('span', { className: 'tprog' },
         el('span', { className: 'bar' + (cov > 70 ? ' good' : !cov ? ' idle' : '') }, el('span', { style: `width:${cov}%` })),
         el('span', { className: 'pct' + (cov > 70 ? ' good' : cov ? ' some' : '') }, cov + '%')),
@@ -858,6 +861,15 @@ function delTarget(a, after) {
   });
 }
 
+// The roster a target can be assigned to. Cached for the session (it rarely changes and a checklist
+// re-renders on every tick), refreshed after an assignment or on demand.
+let ASSIGNEES = null;
+async function loadAssignees(force) {
+  if (ASSIGNEES && !force) return ASSIGNEES;
+  try { ASSIGNEES = await api('/assignees'); } catch { ASSIGNEES = ASSIGNEES || []; }
+  return ASSIGNEES;
+}
+
 // ---------- target checklist ----------
 let curAssetId = null;
 const openGroups = new Set();
@@ -978,6 +990,21 @@ async function renderTarget(id) {
     }, f.l, el('span', {}, String(f.n))));
   }
 
+  // "Who's on this target" — a display-only assignment anyone can set (it doesn't gate editing).
+  const people = await loadAssignees();
+  const assignOpts = [{ value: '', label: 'Unassigned' }, ...people.map(p => ({ value: p.username, label: p.username }))];
+  if (a.assignee && !people.some(p => p.username === a.assignee)) assignOpts.splice(1, 0, { value: a.assignee, label: a.assignee });
+  const assignSel = customSelect({ name: 'assignee', value: a.assignee || '', options: assignOpts, className: 'assign-sel' });
+  assignSel.addEventListener('change', async () => {
+    const who = assignSel.value || null;
+    try {
+      await api('/targets/' + id + '/assignee', { method: 'PATCH', body: { assignee: who } });
+      a.assignee = who; toast(who ? `Assigned to ${who}` : 'Unassigned'); renderTarget(id);
+    } catch (e) { toast(e.message); }
+  });
+  const assignEl = el('div', { className: 'assign' },
+    el('span', { className: 'assign-lbl' }, icon('user', 12), 'Assignee'), assignSel);
+
   const head = el('div', { className: 'target-head' },
     el('div', { style: 'display:flex;align-items:flex-start;gap:16px' },
       el('div', { style: 'min-width:0;flex:1' },
@@ -985,6 +1012,7 @@ async function renderTarget(id) {
           codeBadge(a.type), el('span', { className: 'kicker' }, t.label || a.type)),
         el('h1', {}, a.label)),
       el('div', { className: 'target-actions' },
+        assignEl,
         el('button', { className: 'btn', onclick: () => { groups.forEach(g => openGroups.add(g.key)); renderTarget(id); } }, 'Expand all'),
         el('button', { className: 'btn', onclick: () => { openGroups.clear(); renderTarget(id); } }, 'Collapse'),
         isEditor() ? el('button', { className: 'btn line', onclick: () => itemModal(id) }, '+ Item') : null)),

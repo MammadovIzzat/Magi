@@ -131,6 +131,15 @@ check('client received the server-made project', !!localServerProj);
 const localTargetItems = localServerProj ? db.prepare(`SELECT COUNT(*) c FROM items i JOIN assets a ON a.id=i.asset_id JOIN folders f ON f.id=a.folder_id WHERE f.project_id=?`).get(localServerProj.id).c : 0;
 check('client received the server target’s full checklist', localTargetItems > 20);
 
+// ---- 2c) a target assignment ("who's on this") replicates both ways ----
+await req('PATCH', `/api/targets/${sTarget.json.id}/assignee`, { token: adminTok, body: { assignee: 'admin' } });
+await syncNow();
+check('assignment replicates server->client', db.prepare(`SELECT assignee FROM assets WHERE label='https://srv.test'`).get()?.assignee === 'admin');
+db.prepare(`UPDATE assets SET assignee='ana' WHERE label='https://app.acme.test'`).run();
+await syncNow();
+const acmeUid = db.prepare(`SELECT uid FROM assets WHERE label='https://app.acme.test'`).get().uid;
+check('assignment replicates client->server', serverDb.prepare('SELECT assignee FROM assets WHERE uid=?').get(acmeUid)?.assignee === 'ana');
+
 // ---- 2b) security: a crafted tombstone with an injected table name must be rejected ----
 const projBefore = serverDb.prepare('SELECT COUNT(*) c FROM projects').get().c;
 const evil = await link.remoteFetch('/api/sync/push', { method: 'POST', body: {

@@ -20,7 +20,7 @@
 export const SPEC = {
   projects: { parents: {}, cols: ['name', 'client', 'scope', 'notes', 'status', 'start_date', 'end_date', 'created_at'] },
   folders: { parents: { project_id: 'projects' }, cols: ['grp', 'label', 'created_at'] },
-  assets: { parents: { project_id: 'projects', folder_id: 'folders' }, cols: ['type', 'label', 'metadata', 'created_at'] },
+  assets: { parents: { project_id: 'projects', folder_id: 'folders' }, cols: ['type', 'label', 'metadata', 'assignee', 'created_at'] },
   items: {
     parents: { asset_id: 'assets', parent_id: 'items' },
     cols: ['group_key', 'group_title', 'title', 'detail', 'payloads', 'kind', 'spawns', 'catalog', 'options', 'opt_key', 'status', 'answer', 'sort', 'is_custom', 'created_at'],

@@ -340,6 +340,9 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .tprog { display: flex; align-items: center; gap: 10px; }
 .tflag { font-family: var(--mono); font-size: 10.5px; text-align: right; color: var(--dim); }
 .tflag.on { color: var(--purple); }
+.tassign { display: flex; align-items: center; gap: 6px; margin-top: 2px;
+  font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+.tassign .avatar.sm { color: var(--gold); }
 
 /* ── target checklist (the core screen) ────────────────── */
 .target { display: flex; height: 100%; min-height: 0; overflow-x: auto; }
@@ -352,7 +355,12 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
   font-family: var(--mono); font-weight: 500; font-size: 19px; margin: 6px 0 0;
   color: var(--fg); overflow-wrap: anywhere; line-height: 1.35;
 }
-.target-actions { display: flex; gap: 7px; flex: none; }
+.target-actions { display: flex; align-items: center; gap: 7px; flex: none; }
+.assign { display: flex; align-items: center; gap: 8px; margin-right: 4px; }
+.assign-lbl { display: flex; align-items: center; gap: 4px; font-family: var(--mono);
+  font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--label); }
+.assign-sel { min-width: 130px; }
+.assign-sel .sel-trigger { color: var(--gold); }
 .seg { display: flex; align-items: center; gap: 14px; margin-top: 16px; }
 .segbar { flex: 1; display: flex; gap: 2px; height: 6px; }
 .segbar > span { background: var(--line); display: block; position: relative; overflow: hidden; }

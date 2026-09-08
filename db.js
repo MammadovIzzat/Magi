@@ -177,6 +177,7 @@ CREATE TABLE IF NOT EXISTS assets (
   type        TEXT NOT NULL,              -- web | ip | subnet | domain | ad | api | mobile | container
   label       TEXT NOT NULL,             -- e.g. https://app.example.com or 10.0.0.5
   metadata    TEXT NOT NULL DEFAULT '{}',-- JSON: freeform per-type fields
+  assignee    TEXT,                      -- username shown as "who's on this target"; display only, no access control
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_assets_project ON assets(project_id);
@@ -410,6 +411,7 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_items_parent ON items(parent_id);`);
 // assets (Targets) gained a parent folder (engagement Asset) with the three-level model.
 const assetCols = new Set(db.prepare(`PRAGMA table_info(assets)`).all().map(r => r.name));
 if (!assetCols.has('folder_id')) db.exec(`ALTER TABLE assets ADD COLUMN folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE`);
+if (!assetCols.has('assignee')) db.exec(`ALTER TABLE assets ADD COLUMN assignee TEXT`); // who's on this target (display only); synced
 db.exec(`CREATE INDEX IF NOT EXISTS idx_assets_folder ON assets(folder_id)`);
 
 // tpl_types gained engagement-group columns after the first releases.

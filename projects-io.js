@@ -25,7 +25,7 @@ function serializeTarget(a) {
   const rows = db.prepare(`SELECT * FROM items WHERE asset_id=? ORDER BY id`).all(a.id);
   const idx = new Map(rows.map((r, i) => [r.id, i]));
   return {
-    type: a.type, label: a.label, metadata: JSON.parse(a.metadata || '{}'), created_at: a.created_at,
+    type: a.type, label: a.label, metadata: JSON.parse(a.metadata || '{}'), assignee: a.assignee || null, created_at: a.created_at,
     items: rows.map((r, i) => ({
       i, parent: r.parent_id == null ? null : (idx.has(r.parent_id) ? idx.get(r.parent_id) : null),
       group_key: r.group_key, group_title: r.group_title, title: r.title, detail: r.detail,
@@ -93,7 +93,7 @@ export function importProject(bundle, nameOverride) {
         P.created_at || new Date().toISOString()).lastInsertRowid;
 
     const insFolder = db.prepare(`INSERT INTO folders (project_id,grp,label,created_at) VALUES (?,?,?,?)`);
-    const insTarget = db.prepare(`INSERT INTO assets (project_id,folder_id,type,label,metadata,created_at) VALUES (?,?,?,?,?,?)`);
+    const insTarget = db.prepare(`INSERT INTO assets (project_id,folder_id,type,label,metadata,assignee,created_at) VALUES (?,?,?,?,?,?,?)`);
     const insItem = db.prepare(`INSERT INTO items
       (asset_id,parent_id,group_key,group_title,title,detail,payloads,kind,spawns,catalog,options,opt_key,status,answer,sort,is_custom,created_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
@@ -113,7 +113,7 @@ export function importProject(bundle, nameOverride) {
       for (const tgt of (folder.targets || [])) {
         if (!tgt.type || !tgt.label) continue;
         const aid = insTarget.run(pid, fid, tgt.type, tgt.label, JSON.stringify(tgt.metadata || {}),
-          tgt.created_at || new Date().toISOString()).lastInsertRowid;
+          tgt.assignee || null, tgt.created_at || new Date().toISOString()).lastInsertRowid;
         nTargets++;
 
         const map = new Map();

@@ -1277,6 +1277,44 @@ app.get('/api/targets/:id', (req, res) => {
   res.json({ ...assetSummary(a), items, findings, folder, project });
 });
 
+// Assign a target to an operator. This is a "who's on this" label only — it does NOT gate who can
+// edit the target (the user asked for visibility, not access control), so ANY authenticated user
+// may (re)assign, letting the team pick up and hand off work freely. Empty/null clears it. The
+// UPDATE trips the sync trigger, so the assignment replicates like any other change.
+app.patch('/api/targets/:id/assignee', (req, res) => {
+  const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
+  if (!a) return res.status(404).json({ error: 'not found' });
+  const raw = req.body?.assignee;
+  const assignee = raw == null || raw === '' ? null : String(raw).slice(0, 40);
+  q(`UPDATE assets SET assignee=? WHERE id=?`).run(assignee, a.id);
+  res.json(assetSummary(q(`SELECT * FROM assets WHERE id=?`).get(a.id)));
+});
+
+// The roster a target can be assigned to. On a server that's the accounts table; a linked client
+// asks the server (operators live there, not in the local mirror), and if the server is unreachable
+// falls back to the teammates already visible in the synced data. Any authenticated user may read it.
+app.get('/api/assignees', async (req, res) => {
+  if (SERVER_MODE) return res.json(q(`SELECT username, role FROM users ORDER BY username`).all());
+  let linked = false;
+  try {
+    const m = await import('./client-link.js');
+    linked = !!m.status().link?.connected;
+    if (linked) {
+      const r = await m.remoteFetch('/api/assignees');
+      if (r.status === 200 && Array.isArray(r.json)) return res.json(r.json);
+    }
+  } catch { /* fall through to a local roster */ }
+  if (!linked) return res.json(q(`SELECT username, role FROM users ORDER BY username`).all());
+  // linked but offline: names already present in the synced data, plus the current operator
+  const me = currentUser(req)?.username;
+  const rows = q(`SELECT DISTINCT username FROM (
+      SELECT author AS username FROM findings WHERE author IS NOT NULL AND author<>''
+      UNION SELECT assignee FROM assets WHERE assignee IS NOT NULL AND assignee<>''
+    ) ORDER BY username`).all().map(r => ({ username: r.username, role: null }));
+  if (me && !rows.some(r => r.username === me)) rows.unshift({ username: me, role: null });
+  res.json(rows);
+});
+
 app.delete('/api/targets/:id', requireEdit, (req, res) => {
   const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'not found' });

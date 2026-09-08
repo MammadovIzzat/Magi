@@ -465,6 +465,16 @@ const oldName = await req('POST', '/api/auth/login', { body: { username: 'admin'
 const newName = await req('POST', '/api/auth/login', { body: { username: 'memo', password: PASS } });
 check('the new username is now the login name (old one gone)', oldName.status === 401 && newName.status === 200);
 
+// ---- target assignment: a "who's on this" label, set by anyone, not an access gate ----
+const roster = await req('GET', '/api/assignees', { token: adminTok });
+check('the assignee roster lists operator accounts', roster.status === 200 && Array.isArray(roster.json) && roster.json.some(u => u.username === 'ana'));
+const asgW = await req('PATCH', `/api/targets/${webT.id}/assignee`, { token: workerToken, device: dev1, body: { assignee: 'ana' } });
+check('a worker can assign a target (assignment is not gated on edit rights)', asgW.status === 200 && asgW.json?.assignee === 'ana');
+const asgSeen = await req('GET', `/api/targets/${webT.id}`, { token: adminTok });
+check('the assignee is returned with the target', asgSeen.json?.assignee === 'ana');
+const asgClear = await req('PATCH', `/api/targets/${webT.id}/assignee`, { token: adminTok, body: { assignee: '' } });
+check('assigning empty clears the assignee', asgClear.status === 200 && asgClear.json?.assignee == null);
+
 // ---- report ----
 let bad = 0;
 for (const [name, ok] of checks) { console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${name}`); if (!ok) bad++; }

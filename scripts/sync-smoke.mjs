@@ -133,6 +133,22 @@ check('client received the server target’s full checklist', localTargetItems >
 check('spawn_type replicates to the client (the subdomain item spawns web targets)',
   db.prepare(`SELECT 1 FROM items WHERE spawn_type='web' AND asset_id IN (SELECT id FROM assets WHERE label='https://srv.test')`).get() != null);
 
+// ---- universal templates: the client mirrors the server's (admin's) templates ----
+// The login already mirrored once; the client's template tables should match the server's.
+const srvTypes = serverDb.prepare(`SELECT COUNT(*) c FROM tpl_types`).get().c;
+check('client mirrored the server template set on login', db.prepare(`SELECT COUNT(*) c FROM tpl_types`).get().c === srvTypes && srvTypes > 0);
+check('the subdomain spawn_type survives the mirror (export/import carries it)',
+  !!db.prepare(`SELECT 1 FROM tpl_items WHERE type='web' AND spawn_type='web'`).get());
+// Admin edits a template on the server; the client picks it up on the next mirror refresh.
+const addTpl = await req('POST', '/api/templates/web/items', { token: adminTok, body: { title: 'ZZ Universal Check', group_title: 'Recon' } });
+check('admin can add a template item on the server', addTpl.status === 201);
+await link.mirrorTemplates();
+check('the admin’s template edit reaches the client', !!db.prepare(`SELECT 1 FROM tpl_items WHERE type='web' AND title='ZZ Universal Check'`).get());
+// The client instantiates new targets from its (mirrored) local templates, so the admin's new item
+// is now part of every fresh web target on this device too.
+check('a fresh web target on the client would include the admin’s item',
+  db.prepare(`SELECT COUNT(*) c FROM tpl_items WHERE type='web' AND title='ZZ Universal Check'`).get().c === 1);
+
 // ---- 2c) a target assignment ("who's on this") replicates both ways ----
 await req('PATCH', `/api/targets/${sTarget.json.id}/assignee`, { token: adminTok, body: { assignee: 'admin' } });
 await syncNow();

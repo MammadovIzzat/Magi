@@ -808,6 +808,26 @@ if (SERVER_MODE) {
 // so a linked config can only be changed from the app, and only while signed in.
 if (!SERVER_MODE) {
   const linkMod = () => import('./client-link.js');
+  // Templates are the SERVER's (admin's). On a signed-in linked client, forward every template
+  // read/edit to the server so the editor works on the canonical copy and edits reach everyone; a
+  // successful edit refreshes the local mirror at once (new targets instantiate from it). Standalone
+  // installs (no link) edit their own local templates as before. Offline: reads fall back to the
+  // local mirror; edits are refused (they belong on the server). The bundle-download stays local.
+  app.use(['/api/templates', '/api/tpl-groups'], async (req, res, next) => {
+    let m; try { m = await linkMod(); } catch { return next(); }
+    let st; try { st = m.status(); } catch { return next(); }
+    if (!st.linked) return next();                       // not a signed-in linked client → local
+    if (req.path.endsWith('/export')) return next();     // keep the download a local (mirrored) response
+    const mutating = req.method !== 'GET' && req.method !== 'HEAD';
+    try {
+      const r = await m.remoteFetch(req.originalUrl, { method: req.method, body: mutating ? req.body : undefined });
+      if (mutating && r.status && r.status < 300) m.mirrorTemplates().catch(() => {});
+      return res.status(r.status || 502).json(r.json ?? {});
+    } catch (e) {
+      if (mutating) return res.status(503).json({ error: `the server is unreachable — templates are managed there (${e.message})` });
+      return next();                                     // offline read → serve the local mirror
+    }
+  });
   app.get('/api/link', async (req, res) => { const m = await linkMod(); res.json(m.status()); });
   app.get('/api/link/ping', async (req, res) => { const m = await linkMod(); res.json(await m.heartbeat()); });
   app.post('/api/link/connect', async (req, res) => {
@@ -912,7 +932,10 @@ app.get('/api/asset-types', (req, res) => {
 
 // ---- template editor (default checklists + asset types) ----
 // ---- share templates (portable import/export, no engagement data) ----
-// Registered before /api/templates/:type so "export" is not read as a type name.
+// Registered before /api/templates/:type so "export"/"bundle" are not read as type names.
+// The full template bundle as plain JSON — a linked client pulls this to mirror the server's
+// (admin's) canonical templates, so the whole team instantiates from the same checklists.
+app.get('/api/templates/bundle', (req, res) => res.json(exportBundle(null, new Date().toISOString())));
 app.get('/api/templates/export', (req, res) => {
   const types = req.query.types ? String(req.query.types).split(',').filter(Boolean) : null;
   const bundle = exportBundle(types, new Date().toISOString());

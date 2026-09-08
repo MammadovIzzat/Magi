@@ -210,6 +210,7 @@ function storeUserToken(username, password, loginJson) {
   saveLink(link);
   // Kill any leftover LOCAL-account sessions (e.g. admin/admin) so only the server operator opens this.
   try { db.prepare(`DELETE FROM sessions WHERE user_id IS NOT NULL`).run(); } catch { /* best effort */ }
+  mirrorTemplates().catch(() => {}); // adopt the server's (admin's) templates right away
   startSyncLoop();
   return { ok: true, link: publicLink(loadLink()), recovery_codes: loginJson.recovery_codes };
 }
@@ -418,12 +419,36 @@ export function healPullWatermarkOnce() {
   } catch { /* best effort — a failed heal just means the next launch tries again */ }
 }
 
-let loopTimer = null;
+// Adopt the server's canonical templates: pull the whole bundle and make the local template tables
+// match it exactly. Called on login, periodically while linked, and right after a linked admin edits
+// a template (so a new target instantiates from the update immediately). Templates only — engagements
+// are never touched. Best-effort: offline just keeps the last mirror.
+export async function mirrorTemplates() {
+  const link = loadLink();
+  if (!link?.token) return { ok: false, error: 'not signed in' };
+  let r;
+  try { r = await remoteFetch('/api/templates/bundle', { link }); }
+  catch (e) { return { ok: false, error: e.message }; }
+  if (r.status !== 200 || !Array.isArray(r.json?.types)) return { ok: false, status: r.status };
+  try {
+    const { replaceAllTemplates } = await import('./templates-io.js');
+    const n = replaceAllTemplates(r.json);
+    return { ok: true, types: n };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+
+let loopTimer = null, tmplTick = 0;
 export function startSyncLoop(intervalMs = 5000) {
   stopSyncLoop();
   const link = loadLink();
   if (!link?.token || link.needs_reauth) return; // no token, or waiting for the user to re-authenticate
-  const tick = () => { syncOnce().catch(() => {}); };
+  tmplTick = 1; // login already mirrored; let the loop's first tick skip it
+  const tick = () => {
+    syncOnce().catch(() => {});
+    // Refresh the template mirror roughly every ~60s (every 12th 5s tick), so an admin's template
+    // edits reach every connected device without a reconnect. Cheap and idempotent.
+    if (tmplTick++ % 12 === 0) mirrorTemplates().catch(() => {});
+  };
   tick();
   loopTimer = setInterval(tick, intervalMs);
   if (loopTimer.unref) loopTimer.unref(); // never keep the process alive just to sync

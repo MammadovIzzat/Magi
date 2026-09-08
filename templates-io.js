@@ -20,7 +20,7 @@ const str = (v) => (v == null ? null : String(v));
 export function exportType(type) {
   const t = db.prepare(`SELECT type,label,icon,hint,grp FROM tpl_types WHERE type=?`).get(type);
   if (!t) return null;
-  const items = db.prepare(`SELECT group_key,group_title,title,detail,payloads,kind,spawns,catalog,options,sort
+  const items = db.prepare(`SELECT group_key,group_title,title,detail,payloads,kind,spawns,catalog,options,spawn_type,sort
                             FROM tpl_items WHERE type=? ORDER BY sort,id`).all(type)
     .map(i => ({ ...i, payloads: parseArr(i.payloads), options: parseArr(i.options) }));
   const groups = db.prepare(`SELECT id,kind,catalog,gkey,title,sort FROM tpl_groups WHERE type=? ORDER BY kind,catalog,sort,id`).all(type)
@@ -59,8 +59,8 @@ export function validateBundle(b) {
 
 const insType = () => db.prepare(`INSERT INTO tpl_types (type,label,icon,hint,grp,sort) VALUES (?,?,?,?,?,?)`);
 const insItem = () => db.prepare(`INSERT INTO tpl_items
-  (type,group_key,group_title,title,detail,payloads,kind,spawns,catalog,options,sort)
-  VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+  (type,group_key,group_title,title,detail,payloads,kind,spawns,catalog,options,spawn_type,sort)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
 const insGroup = () => db.prepare(`INSERT INTO tpl_groups (type,kind,catalog,gkey,title,sort) VALUES (?,?,?,?,?,?)`);
 const insGroupItem = () => db.prepare(`INSERT INTO tpl_group_items (group_id,title,detail,payloads,kind,spawns,sort) VALUES (?,?,?,?,?,?,?)`);
 
@@ -71,7 +71,7 @@ function writeType(t, targetKey) {
   const ii = insItem();
   (t.items || []).forEach((r, i) => ii.run(type, r.group_key || 'custom', r.group_title || 'Custom',
     r.title || '(untitled)', r.detail || '', JSON.stringify(r.payloads || []), r.kind || 'check',
-    str(r.spawns), str(r.catalog), JSON.stringify(r.options || []), r.sort ?? i));
+    str(r.spawns), str(r.catalog), JSON.stringify(r.options || []), str(r.spawn_type), r.sort ?? i));
   const ig = insGroup(); const igi = insGroupItem();
   (t.groups || []).forEach((g, gi) => {
     const gid = ig.run(type, g.kind === 'catalog' ? 'catalog' : 'spawn', g.catalog || '',
@@ -94,6 +94,24 @@ function deleteType(type) {
  * exists: 'skip' (default, safe), 'replace' (overwrite it), or 'rename' (import under
  * a fresh key so both survive). Returns a per-type summary.
  */
+/**
+ * Mirror a server's templates onto this (client) install: make the local template tables match the
+ * bundle EXACTLY — replace the types it carries, and drop any local type it does not. Templates only
+ * (tpl_*); engagements/findings are untouched. Atomic. Used by a linked client so everyone works from
+ * the admin's canonical templates. Returns the number of types now installed.
+ */
+export function replaceAllTemplates(bundle) {
+  validateBundle(bundle);
+  const keep = new Set(bundle.types.map(t => t.type));
+  db.prepare('BEGIN').run();
+  try {
+    for (const r of db.prepare(`SELECT type FROM tpl_types`).all()) if (!keep.has(r.type)) deleteType(r.type);
+    for (const t of bundle.types) { deleteType(t.type); writeType(t); }
+    db.prepare('COMMIT').run();
+  } catch (e) { db.prepare('ROLLBACK').run(); throw e; }
+  return bundle.types.length;
+}
+
 export function importBundle(bundle, onConflict = 'skip') {
   validateBundle(bundle);
   const results = [];

@@ -329,7 +329,7 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 /* ── target list (project page) ────────────────────────── */
 .tlist { border-top: 1px solid var(--line); }
 .trow {
-  width: 100%; display: grid; grid-template-columns: 44px 1fr 150px 56px 24px; gap: 14px;
+  width: 100%; display: grid; grid-template-columns: 44px 1fr auto 150px 56px 24px; gap: 14px;
   align-items: center; text-align: left;
   background: var(--row); border: 0; border-bottom: 1px solid var(--line); padding: 13px 12px;
 }
@@ -340,9 +340,11 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .tprog { display: flex; align-items: center; gap: 10px; }
 .tflag { font-family: var(--mono); font-size: 10.5px; text-align: right; color: var(--dim); }
 .tflag.on { color: var(--purple); }
-.tassign { display: flex; align-items: center; gap: 6px; margin-top: 2px;
-  font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
-.tassign .avatar.sm { color: var(--gold); }
+.tassign { display: flex; align-items: center; gap: 6px; justify-self: end;
+  font-family: var(--mono); font-size: 10.5px; color: var(--muted); max-width: 140px; }
+.tassign-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tassign-none { color: var(--dim); }
+.tassign .avatar.sm { color: var(--gold); flex: none; }
 
 /* ── target checklist (the core screen) ────────────────── */
 .target { display: flex; height: 100%; min-height: 0; overflow-x: auto; }

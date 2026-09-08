@@ -661,9 +661,12 @@ async function renderProject(id) {
       codeBadge(a.type),
       el('span', { className: 'tgrow' },
         el('span', { className: 'tname' }, a.label),
-        el('span', { className: 'tmeta' }, `${(t.label || a.type).toUpperCase()} · ${a.handled}/${a.total} handled${a.findings ? ' · ' + a.findings + ' finding' + (a.findings === 1 ? '' : 's') : ''}`),
-        a.assignee ? el('span', { className: 'tassign', title: 'Assigned to ' + a.assignee },
-          el('span', { className: 'avatar sm' }, a.assignee[0].toUpperCase()), a.assignee) : null),
+        el('span', { className: 'tmeta' }, `${(t.label || a.type).toUpperCase()} · ${a.handled}/${a.total} handled${a.findings ? ' · ' + a.findings + ' finding' + (a.findings === 1 ? '' : 's') : ''}`)),
+      // own grid cell so it sits inline (not on a new line under the name); always present to keep
+      // the columns aligned whether or not a target is assigned.
+      el('span', { className: 'tassign' + (a.assignee ? ' on' : ''), title: a.assignee ? 'Assigned to ' + a.assignee : 'Unassigned' },
+        a.assignee ? el('span', { className: 'avatar sm' }, a.assignee[0].toUpperCase()) : null,
+        a.assignee ? el('span', { className: 'tassign-name' }, a.assignee) : el('span', { className: 'tassign-none' }, '—')),
       el('span', { className: 'tprog' },
         el('span', { className: 'bar' + (cov > 70 ? ' good' : !cov ? ' idle' : '') }, el('span', { style: `width:${cov}%` })),
         el('span', { className: 'pct' + (cov > 70 ? ' good' : cov ? ' some' : '') }, cov + '%')),

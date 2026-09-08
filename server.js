@@ -1319,8 +1319,12 @@ app.get('/api/targets/:id', (req, res) => {
 app.patch('/api/targets/:id/assignee', (req, res) => {
   const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'not found' });
+  // One or many operators. Accept an array or a comma-separated string; store as a normalised
+  // comma-joined list (trimmed, de-duped, capped) in the single synced `assignee` column.
   const raw = req.body?.assignee;
-  const assignee = raw == null || raw === '' ? null : String(raw).slice(0, 40);
+  const parts = Array.isArray(raw) ? raw : (raw == null || raw === '' ? [] : String(raw).split(','));
+  const list = [...new Set(parts.map(s => String(s).trim().slice(0, 40)).filter(Boolean))].slice(0, 30);
+  const assignee = list.length ? list.join(',') : null;
   q(`UPDATE assets SET assignee=? WHERE id=?`).run(assignee, a.id);
   res.json(assetSummary(q(`SELECT * FROM assets WHERE id=?`).get(a.id)));
 });

@@ -493,6 +493,9 @@ const asgSeen = await req('GET', `/api/targets/${webT.id}`, { token: adminTok })
 check('the assignee is returned with the target', asgSeen.json?.assignee === 'ana');
 const asgClear = await req('PATCH', `/api/targets/${webT.id}/assignee`, { token: adminTok, body: { assignee: '' } });
 check('assigning empty clears the assignee', asgClear.status === 200 && asgClear.json?.assignee == null);
+// multi-assign: an array of operators is stored as a normalised, de-duped comma list
+const asgMulti = await req('PATCH', `/api/targets/${webT.id}/assignee`, { token: adminTok, body: { assignee: ['ana', 'admin', 'ana', ' '] } });
+check('a target can be assigned to several operators (de-duped)', asgMulti.status === 200 && asgMulti.json?.assignee === 'ana,admin');
 
 // ---- spawn a full sub-target (a web target per subdomain), inheriting the assignee ----
 await req('PATCH', `/api/targets/${webT.id}/assignee`, { token: adminTok, body: { assignee: 'ana' } });

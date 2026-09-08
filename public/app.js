@@ -761,9 +761,15 @@ async function renderProject(id) {
         el('span', { className: 'tmeta' }, `${(t.label || a.type).toUpperCase()} · ${a.handled}/${a.total} handled${a.findings ? ' · ' + a.findings + ' finding' + (a.findings === 1 ? '' : 's') : ''}`)),
       // own grid cell so it sits inline (not on a new line under the name); always present to keep
       // the columns aligned whether or not a target is assigned.
-      el('span', { className: 'tassign' + (a.assignee ? ' on' : ''), title: a.assignee ? 'Assigned to ' + a.assignee : 'Unassigned' },
-        a.assignee ? el('span', { className: 'avatar sm' }, a.assignee[0].toUpperCase()) : null,
-        a.assignee ? el('span', { className: 'tassign-name' }, a.assignee) : el('span', { className: 'tassign-none' }, '—')),
+      (() => {
+        const asg = assigneeList(a.assignee);
+        return el('span', { className: 'tassign' + (asg.length ? ' on' : ''), title: asg.length ? 'Assigned to ' + asg.join(', ') : 'Unassigned' },
+          ...(asg.length
+            ? asg.slice(0, 3).map(avatarSm).concat(
+                asg.length === 1 ? [el('span', { className: 'tassign-name' }, asg[0])] : [],
+                asg.length > 3 ? [el('span', { className: 'tassign-more' }, '+' + (asg.length - 3))] : [])
+            : [el('span', { className: 'tassign-none' }, '—')]));
+      })(),
       el('span', { className: 'tprog' },
         el('span', { className: 'bar' + (cov > 70 ? ' good' : !cov ? ' idle' : '') }, el('span', { style: `width:${cov}%` })),
         el('span', { className: 'pct' + (cov > 70 ? ' good' : cov ? ' some' : '') }, cov + '%')),
@@ -977,6 +983,47 @@ async function loadAssignees(force) {
   try { ASSIGNEES = await api('/assignees'); ASSIGNEES_AT = Date.now(); } catch { ASSIGNEES = ASSIGNEES || []; }
   return ASSIGNEES;
 }
+// A target's assignees are stored as one comma-separated string; this is the array view.
+const assigneeList = (v) => String(v || '').split(',').map(s => s.trim()).filter(Boolean);
+const avatarSm = (u) => el('span', { className: 'avatar sm', title: u }, (u[0] || '?').toUpperCase());
+
+// A themed multi-select for "who's on this target" — a trigger showing the chosen avatars, and a
+// portalled checkbox menu. Toggling calls onChange with the full username list (the caller PATCHes);
+// it does NOT re-render, so you can pick several in a row. Menu closes on outside click.
+function multiAssign({ people, selected, onChange }) {
+  const chosen = new Set(selected);
+  const trigger = el('button', { type: 'button', className: 'sel-trigger' });
+  const root = el('div', { className: 'sel assign-sel' }, trigger);
+  let menu = null, repaintMenu = () => {};
+  const paintTrigger = () => {
+    const arr = [...chosen];
+    trigger.replaceChildren(...(arr.length
+      ? arr.slice(0, 4).map(avatarSm).concat(arr.length > 4 ? [el('span', { className: 'assign-more' }, '+' + (arr.length - 4))] : [])
+      : [el('span', { className: 'assign-none' }, 'Unassigned')]));
+  };
+  const position = () => { const r = trigger.getBoundingClientRect(); menu.style.left = r.left + 'px'; menu.style.minWidth = r.width + 'px'; menu.style.top = (r.bottom + 4) + 'px'; };
+  const onDown = (e) => { if (menu && !menu.contains(e.target) && !trigger.contains(e.target)) close(); };
+  const reposition = () => { if (menu) position(); };
+  const close = () => { if (!menu) return; menu.remove(); menu = null; root.classList.remove('open'); document.removeEventListener('mousedown', onDown, true); window.removeEventListener('resize', close); window.removeEventListener('scroll', reposition, true); };
+  const toggle = (u) => { chosen.has(u) ? chosen.delete(u) : chosen.add(u); paintTrigger(); repaintMenu(); onChange([...chosen]); };
+  const open = () => {
+    if (menu) return close();
+    menu = el('div', { className: 'sel-menu assign-menu' });
+    repaintMenu = () => menu.replaceChildren(
+      ...people.map(p => {
+        const on = chosen.has(p.username);
+        return el('div', { className: 'sel-opt' + (on ? ' on' : ''), onmousedown: (e) => { e.preventDefault(); toggle(p.username); } },
+          el('span', { className: 'chk' }, on ? '✓' : ''), avatarSm(p.username), el('span', { className: 'opt-name' }, p.username));
+      }),
+      chosen.size ? el('div', { className: 'sel-opt clear', onmousedown: (e) => { e.preventDefault(); chosen.clear(); paintTrigger(); repaintMenu(); onChange([]); } }, 'Clear all') : null);
+    repaintMenu();
+    document.body.append(menu); root.classList.add('open'); position();
+    document.addEventListener('mousedown', onDown, true); window.addEventListener('resize', close); window.addEventListener('scroll', reposition, true);
+  };
+  trigger.onclick = (e) => { e.preventDefault(); open(); };
+  paintTrigger();
+  return root;
+}
 
 // ---------- target checklist ----------
 let curAssetId = null;
@@ -1105,20 +1152,20 @@ async function renderTarget(id) {
     }, f.l, el('span', {}, String(f.n))));
   }
 
-  // "Who's on this target" — a display-only assignment anyone can set (it doesn't gate editing).
+  // "Who's on this target" — a display-only assignment (any number of operators) anyone can set;
+  // it doesn't gate editing. Toggling PATCHes but does not re-render, so several can be picked at once.
   const people = await loadAssignees();
-  const assignOpts = [{ value: '', label: 'Unassigned' }, ...people.map(p => ({ value: p.username, label: p.username }))];
-  if (a.assignee && !people.some(p => p.username === a.assignee)) assignOpts.splice(1, 0, { value: a.assignee, label: a.assignee });
-  const assignSel = customSelect({ name: 'assignee', value: a.assignee || '', options: assignOpts, className: 'assign-sel' });
-  assignSel.addEventListener('change', async () => {
-    const who = assignSel.value || null;
-    try {
-      await api('/targets/' + id + '/assignee', { method: 'PATCH', body: { assignee: who } });
-      a.assignee = who; toast(who ? `Assigned to ${who}` : 'Unassigned'); renderTarget(id);
-    } catch (e) { toast(e.message); }
+  const menuPeople = people.slice();
+  for (const u of assigneeList(a.assignee)) if (!menuPeople.some(p => p.username === u)) menuPeople.push({ username: u }); // keep a removed/unknown operator selectable
+  const assignCtl = multiAssign({
+    people: menuPeople, selected: assigneeList(a.assignee),
+    onChange: async (list) => {
+      try { const r = await api('/targets/' + id + '/assignee', { method: 'PATCH', body: { assignee: list } }); a.assignee = r?.assignee || null; }
+      catch (e) { toast(e.message); }
+    },
   });
   const assignEl = el('div', { className: 'assign' },
-    el('span', { className: 'assign-lbl' }, icon('user', 12), 'Assignee'), assignSel);
+    el('span', { className: 'assign-lbl' }, icon('user', 12), 'Assignees'), assignCtl);
 
   const head = el('div', { className: 'target-head' },
     el('div', { style: 'display:flex;align-items:flex-start;gap:16px' },
@@ -1262,11 +1309,11 @@ function renderItem(it, assetId, num, depth, childrenBy = {}, spawnedByItem = {}
       const lst = el('div', { className: 'sub-list' });
       for (const s of subs) {
         const cov = pct(s.handled, s.total);
+        const sAsg = assigneeList(s.assignee);
         lst.append(el('button', { className: 'sub-item', onclick: () => location.hash = `/target/${s.id}` },
           codeBadge(s.type),
           el('span', { className: 'sub-name' }, s.label),
-          s.assignee ? el('span', { className: 'sub-asg', title: 'Assigned to ' + s.assignee },
-            el('span', { className: 'avatar sm' }, s.assignee[0].toUpperCase())) : null,
+          sAsg.length ? el('span', { className: 'sub-asg', title: 'Assigned to ' + sAsg.join(', ') }, ...sAsg.slice(0, 3).map(avatarSm)) : null,
           el('span', { className: 'sub-cov' + (cov >= 100 ? ' done' : '') }, cov + '%')));
       }
       wrap.append(lst);

@@ -349,10 +349,11 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .tprog { display: flex; align-items: center; gap: 10px; }
 .tflag { font-family: var(--mono); font-size: 10.5px; text-align: right; color: var(--dim); }
 .tflag.on { color: var(--purple); }
-.tassign { display: flex; align-items: center; gap: 6px; justify-self: end;
-  font-family: var(--mono); font-size: 10.5px; color: var(--muted); max-width: 140px; }
+.tassign { display: flex; align-items: center; gap: 5px; justify-self: start;
+  font-family: var(--mono); font-size: 10.5px; color: var(--muted); max-width: 150px; overflow: hidden; }
 .tassign-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tassign-none { color: var(--dim); }
+.tassign-more { color: var(--muted); flex: none; }
 .tassign .avatar.sm { color: var(--gold); flex: none; }
 
 /* ── target checklist (the core screen) ────────────────── */
@@ -371,7 +372,16 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .assign-lbl { display: flex; align-items: center; gap: 4px; font-family: var(--mono);
   font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--label); }
 .assign-sel { min-width: 130px; }
-.assign-sel .sel-trigger { color: var(--gold); }
+.assign-sel .sel-trigger { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; color: var(--gold); }
+.assign-sel .sel-trigger .avatar.sm { color: var(--gold); flex: none; }
+.assign-none { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.assign-more { color: var(--muted); font-family: var(--mono); font-size: 10.5px; }
+/* checkbox menu (reuses .sel-menu / .sel-opt) */
+.assign-menu .sel-opt { display: flex; align-items: center; gap: 8px; }
+.assign-menu .chk { width: 12px; flex: none; color: var(--gold); font-size: 11px; }
+.assign-menu .opt-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assign-menu .sel-opt.clear { color: var(--muted); border-top: 1px solid var(--line); justify-content: center; }
+.sub-asg { display: flex; align-items: center; gap: 3px; flex: none; }
 .seg { display: flex; align-items: center; gap: 14px; margin-top: 16px; }
 .segbar { flex: 1; display: flex; gap: 2px; height: 6px; }
 .segbar > span { background: var(--line); display: block; position: relative; overflow: hidden; }

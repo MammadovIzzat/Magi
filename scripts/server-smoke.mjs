@@ -247,6 +247,17 @@ check('the project page counts only vulns as findings (notes & creds excluded)',
 const folderRow = (projJson.assets || []).find(f => (f.items || []).some(x => x.id === webT.id));
 check('the engagement folder roll-up counts only vulns', !!folderRow && folderRow.findings >= 2 && folderRow.findings === (folderRow.items || []).reduce((n, x) => n + x.findings, 0));
 
+// ---- follow-up checklists: a trigger with a spawn group unfolds it as child items ----
+const trig = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.items.find(i => i.kind === 'trigger' && i.spawns);
+check('the web checklist has a trigger with a spawn group', !!trig && !!trig.spawns);
+const spawn1 = await req('POST', `/api/items/${trig.id}/spawn`, { token: adminTok });
+check('add follow-up checklist works (spawns child items)', spawn1.status === 201 && spawn1.json?.added > 0);
+const afterSpawn = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.items;
+check('the follow-up items now hang under the trigger', afterSpawn.some(i => i.parent_id === trig.id));
+// The add-custom-item route uses the same insertItem — it must not 500 either.
+const customItem = await req('POST', `/api/targets/${webT.id}/items`, { token: adminTok, body: { title: 'Custom manual check' } });
+check('adding a custom checklist item works', customItem.status === 201 && !!customItem.json?.id);
+
 // ---- durability: deleting an old engagement must NOT reduce the ranking ----
 const anaBefore = anaRank.findings;
 const tmpProj = (await req('POST', '/api/projects', { token: adminTok, body: { name: 'Old engagement' } })).json;

@@ -874,6 +874,8 @@ if (!SERVER_MODE) {
   import('./client-link.js').then(m => { try { m.reconcileStash(); m.healPullWatermarkOnce(); m.startSyncLoop(); m.startApprovalPoll(); } catch { /* not linked / no creds */ } }).catch(() => {});
 }
 
+// NB: every insertItem.run(...) MUST pass spawn_type (better-sqlite3 throws on a missing named
+// param). addItem defaults it; the two direct callers below pass spawn_type: null explicitly.
 const insertItem = q(`INSERT INTO items
   (asset_id, parent_id, group_key, group_title, title, detail, payloads, kind, spawns, catalog, options, opt_key, spawn_type, sort)
   VALUES (@asset_id,@parent_id,@group_key,@group_title,@title,@detail,@payloads,@kind,@spawns,@catalog,@options,@opt_key,@spawn_type,@sort)`);
@@ -1393,7 +1395,7 @@ app.post('/api/targets/:id/items', requireEdit, (req, res) => {
     asset_id: req.params.id, parent_id: parent ? parent.id : null,
     group_key: parent ? parent.group_key : 'custom', group_title: parent ? parent.group_title : (group_title || 'Custom / Notes'),
     title, detail: detail || '', payloads: JSON.stringify(payloads || []), kind: kind || 'check',
-    spawns: null, catalog: null, options: '[]', opt_key: null, sort: maxSort,
+    spawns: null, catalog: null, options: '[]', opt_key: null, spawn_type: null, sort: maxSort,
   });
   q(`UPDATE items SET is_custom=1 WHERE id=?`).run(info.lastInsertRowid);
   res.status(201).json(q(`SELECT * FROM items WHERE id=?`).get(info.lastInsertRowid));
@@ -1414,7 +1416,7 @@ app.post('/api/items/:id/spawn', (req, res) => {
   const cinfo = insertItem.run({
     asset_id: it.asset_id, parent_id: it.id, group_key: it.group_key, group_title: it.group_title,
     title: sg.title + (n > 1 ? ` #${n}` : ''), detail: '', payloads: '[]', kind: 'group',
-    spawns: null, catalog: null, options: '[]', opt_key: optKey, sort: sort++,
+    spawns: null, catalog: null, options: '[]', opt_key: optKey, spawn_type: null, sort: sort++,
   });
   const containerId = cinfo.lastInsertRowid;
   for (const item of sg.items) addItem(it.asset_id, {

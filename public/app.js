@@ -1684,11 +1684,13 @@ async function findingModal(assetId, finding = null, isRetest = false) {
         if (k === 'note') {
           field(fields, 'Title', 'title', { value: finding?.title || '', ph: 'What you found' });
           field(fields, 'Details', 'body', { value: finding?.body || '', textarea: true, ph: 'notes…' });
+          if (!editing) fileField(fields, 'Images', images);
         } else if (k === 'credential') {
           field(fields, 'Title', 'title', { value: finding?.title || '', ph: 'e.g. admin panel login' });
           field(fields, 'Username', 'cred_user', { ph: 'user' });
           field(fields, 'Password', 'cred_pass', { ph: 'pass' });
           field(fields, 'Server / URL', 'cred_server', { ph: 'https://…  or  host' });
+          if (!editing) fileField(fields, 'Images', images);
         } else {
           field(fields, 'Title', 'title', { value: finding?.title || '', ph: 'e.g. SQL injection in /search' });
           // Severity is a grading decision — only admins/editors set it (optionally via CVSS). A

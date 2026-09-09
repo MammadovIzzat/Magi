@@ -2780,49 +2780,50 @@ function sevChips(sev) {
 // Ranking page: who is producing, attributed by findings.author. Sorted by a severity-weighted
 // score (an admin/editor's grade on a worker's finding lifts that worker), with a PoC-leaders strip.
 // Credits are durable — deleting an old engagement does not lower anyone's numbers.
+let RANK_VIEW = 'findings'; // 'findings' (severity-weighted score) | 'poc' (proof-of-concept leaders)
 async function adminRanking(ctx, A) {
   const { ranking = [], totals = {} } = await A('/ranking');
-  const out = [];
   const head = admCard('Operator ranking',
     `${totals.operators || 0} operator${totals.operators === 1 ? '' : 's'} · ${totals.findings || 0} finding${totals.findings === 1 ? '' : 's'}`);
   head.append(el('p', { className: 'muted small' },
-    'Ranked by a severity-weighted score (critical 10 · high 6 · medium 3 · low 1). A finding is credited to whoever recorded it, even when a lead grades its severity later. Deleting an old engagement never lowers these numbers.'));
+    'A finding is credited to whoever recorded it, even when a lead grades its severity later. Deleting an old engagement never lowers these numbers.'));
   if (totals.unattributed) head.append(el('p', { className: 'muted small' },
     `${totals.unattributed} finding${totals.unattributed === 1 ? '' : 's'} recorded before attribution existed aren’t counted.`));
   if (!ranking.length) { head.append(el('p', { className: 'muted' }, 'No attributed findings yet — as operators record findings, they’ll rank here.')); return [head]; }
-  out.push(head);
 
-  // Leaderboard table.
-  const board = admCard('Leaderboard', 'by severity-weighted score');
+  const poc = RANK_VIEW === 'poc';
+  // Leaderboard panel: a Findings/PoC toggle in the header, rows ranked accordingly.
+  const board = el('div', { className: 'setcard' });
+  board.append(el('div', { className: 'setcard-hd rank-hd' },
+    el('h3', {}, 'Leaderboard'),
+    el('div', { className: 'rank-toggle' },
+      ...[['findings', 'Findings'], ['poc', 'PoC']].map(([v, l]) =>
+        el('button', { className: 'rank-tab' + (RANK_VIEW === v ? ' on' : ''), onclick: () => { RANK_VIEW = v; renderAdmin('ranking'); } }, l))),
+    el('span', { style: 'flex:1' }),
+    el('span', { className: 'muted small' }, poc ? 'proof-of-concept findings proven' : 'score weights severity, not volume')));
+
+  const rows = poc
+    ? ranking.filter(r => r.poc > 0).sort((a, b) => b.poc - a.poc || b.score - a.score)
+    : ranking.slice();
   const table = el('div', { className: 'ranktable' });
-  table.append(el('div', { className: 'rankhead' },
-    el('span', {}, '#'), el('span', {}, 'Operator'), el('span', {}, 'Proj'),
-    el('span', {}, 'Find'), el('span', {}, 'Severity'), el('span', {}, 'PoC'), el('span', {}, 'Score')));
-  ranking.forEach((r, i) => {
+  if (!rows.length) table.append(el('p', { className: 'muted', style: 'padding:8px 2px' }, 'No PoC findings recorded yet.'));
+  rows.forEach((r, i) => {
+    const meta = poc
+      ? el('div', { className: 'rank-meta' }, `${r.poc} PoC finding${r.poc === 1 ? '' : 's'} · ${r.projects} target${r.projects === 1 ? '' : 's'}`)
+      : el('div', { className: 'rank-meta' },
+          el('span', {}, `${r.findings} finding${r.findings === 1 ? '' : 's'} · ${r.projects} target${r.projects === 1 ? '' : 's'}`),
+          sevChips(r.sev));
     table.append(el('div', { className: 'rankrow' + (i === 0 ? ' top' : '') },
       el('span', { className: 'rank-n' }, String(i + 1)),
-      el('span', { className: 'rank-op' }, el('strong', {}, r.author),
-        r.role ? el('span', { className: 'pill' }, r.role) : null,
-        r.topType ? el('span', { className: 'rank-focus' }, codeBadge(r.topType, true)) : null),
-      el('span', { className: 'rank-num' }, String(r.projects)),
-      el('span', { className: 'rank-num' }, String(r.findings)),
-      el('span', {}, sevChips(r.sev)),
-      el('span', { className: 'rank-num' }, r.poc ? el('span', { className: 'pill gold' }, String(r.poc)) : el('span', { className: 'muted' }, '0')),
-      el('span', { className: 'rank-num rank-score' }, String(r.score ?? 0))));
+      el('div', { className: 'rank-main' },
+        el('div', { className: 'rank-op' }, el('strong', {}, r.author),
+          r.role ? el('span', { className: 'pill' }, r.role) : null,
+          r.topType ? el('span', { className: 'rank-focus' }, codeBadge(r.topType, true)) : null),
+        meta),
+      el('span', { className: 'rank-score' }, String(poc ? r.poc : (r.score ?? 0)))));
   });
   board.append(table);
-  out.push(board);
-
-  // PoC tier — who has proven the most exploits.
-  const pocLeaders = ranking.filter(r => r.poc > 0).sort((a, b) => b.poc - a.poc);
-  const pocCard = admCard('PoC leaders', 'proof-of-concept findings');
-  if (!pocLeaders.length) pocCard.append(el('p', { className: 'muted' }, 'No PoC findings recorded yet.'));
-  else pocLeaders.forEach((r, i) => pocCard.append(admRow(
-    [el('span', { className: 'rank-n' }, String(i + 1)), el('strong', { style: 'margin-left:8px' }, r.author),
-      el('span', { className: 'muted small', style: 'margin-left:8px' }, `${r.poc} PoC${r.poc === 1 ? '' : 's'}`)],
-    el('span', { className: 'tcode on' }, 'POC'))));
-  out.push(pocCard);
-  return out;
+  return [head, board];
 }
 
 // Grading queue: vulnerabilities recorded without a severity yet. Served locally (from the synced

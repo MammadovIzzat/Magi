@@ -642,6 +642,16 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .reptick.on { border-color: var(--ok); color: var(--ok); background: transparent; }
 /* a written-up finding is dimmed a touch and gets a green edge, so the log reads at a glance */
 .finding.in-report { border-left-color: var(--ok); }
+/* a finding a reviewer sent back to improve — glows, brighter for its own author */
+.finding.needs-improve { border-left-color: var(--gold); box-shadow: 0 0 0 1px var(--gold-wash); }
+.finding.mine-improve { box-shadow: 0 0 0 1px var(--gold), 0 0 16px -4px var(--gold); animation: improveGlow 2s ease-in-out infinite; }
+@keyframes improveGlow { 0%,100% { box-shadow: 0 0 0 1px var(--gold), 0 0 8px -4px var(--gold); } 50% { box-shadow: 0 0 0 1px var(--gold), 0 0 18px -2px var(--gold); } }
+.f-improve { font-family: var(--mono); font-size: 9px; letter-spacing: .14em; text-transform: uppercase; color: var(--gold-ink); background: var(--gold); padding: 1px 6px; }
+.f-improve-note { display: flex; align-items: flex-start; gap: 6px; margin-top: 6px; padding: 7px 9px;
+  background: var(--gold-wash); border: 1px solid var(--gold); font-size: 12px; color: var(--gold-text); }
+.improve-note { margin: 10px 0; padding: 10px 12px; background: var(--gold-wash); border: 1px solid var(--gold); }
+.improve-note .kicker { color: var(--gold); }
+.improve-note > div { margin-top: 4px; font-size: 13px; color: var(--fg); white-space: pre-wrap; }
 .finding.in-report .f-title { opacity: .72; }
 .fd-badges .reptick { margin-left: 0; }
 .f-title { font-size: 14px; font-weight: 500; color: var(--fg); margin-top: 7px; line-height: 1.45; }

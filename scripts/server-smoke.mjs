@@ -535,7 +535,15 @@ const queue1 = await req('GET', '/api/ungraded', { token: adminTok });
 check('the grading queue lists an ungraded vulnerability', queue1.status === 200 && queue1.json.some(f => f.id === ung.json.id && f.author === 'ana' && !!f.project));
 check('grading rows carry an attachments array (screenshots show in the grade dialog)', Array.isArray(queue1.json.find(f => f.id === ung.json.id)?.attachments));
 check('notes/creds never appear in the grading queue', !queue1.json.some(f => f.kind && f.kind !== 'vuln'));
+// "Needs improvement": a reviewer sends it back to the finder with a note
+const wBack = await req('PATCH', `/api/findings/${ung.json.id}`, { token: workerToken, device: dev1, body: { needs_improvement: 1, review_note: 'sneaky' } });
+check('a worker cannot flag needs-improvement', !wBack.json?.needs_improvement);
+const back = await req('PATCH', `/api/findings/${ung.json.id}`, { token: adminTok, body: { needs_improvement: 1, review_note: 'add the request/response and confirm impact' } });
+check('an editor can send a finding back to improve, with a note', back.json?.needs_improvement === 1 && /confirm impact/.test(back.json?.review_note || ''));
+check('a sent-back vuln is still in the grading queue (not yet graded)', (await req('GET', '/api/ungraded', { token: adminTok })).json.some(f => f.id === ung.json.id && f.needs_improvement === 1));
 await req('PATCH', `/api/findings/${ung.json.id}`, { token: adminTok, body: { severity: 'high' } });
+const gradedTgt = await req('GET', `/api/targets/${webT.id}`, { token: adminTok });
+check('grading it clears needs-improvement', !(gradedTgt.json.findings.find(f => f.id === ung.json.id)?.needs_improvement));
 const queue2 = await req('GET', '/api/ungraded', { token: adminTok });
 check('grading removes it from the queue', !queue2.json.some(f => f.id === ung.json.id));
 const ungWorker = await req('GET', '/api/ungraded', { token: workerToken, device: dev1 });

@@ -1576,7 +1576,7 @@ app.get('/api/targets/:id/finding-candidates', (req, res) => {
 // reached from the engagement stat tiles (vulns / notes / creds).
 app.get('/api/projects/:id/findings', (req, res) => {
   if (!q(`SELECT 1 FROM projects WHERE id=?`).get(req.params.id)) return res.status(404).json({ error: 'not found' });
-  res.json(q(`SELECT f.id, f.uid, f.title, f.kind, f.severity, f.cvss, f.author, f.body, f.in_report, f.created_at,
+  res.json(q(`SELECT f.id, f.uid, f.title, f.kind, f.severity, f.cvss, f.author, f.body, f.in_report, f.needs_improvement, f.review_note, f.created_at,
       a.id AS target_id, a.label AS target, a.type AS target_type
     FROM findings f JOIN assets a ON a.id=f.asset_id
     WHERE a.project_id=? ORDER BY f.created_at DESC`).all(req.params.id));
@@ -1585,7 +1585,7 @@ app.get('/api/projects/:id/findings', (req, res) => {
 // grading queue. Notes and credentials are never findings, so they never appear here.
 app.get('/api/ungraded', async (req, res) => {
   if (!(await canEdit(req))) return res.status(403).json({ error: 'graders only' });
-  const rows = q(`SELECT f.id, f.uid, f.title, f.kind, f.author, f.body, f.created_at,
+  const rows = q(`SELECT f.id, f.uid, f.title, f.kind, f.author, f.body, f.needs_improvement, f.review_note, f.created_at,
       a.id AS target_id, a.label AS target, a.type AS target_type, p.id AS project_id, p.name AS project
     FROM findings f JOIN assets a ON a.id=f.asset_id JOIN projects p ON p.id=a.project_id
     WHERE f.kind='vuln' AND (f.severity IS NULL OR f.severity='') AND (f.cvss IS NULL OR f.cvss='')
@@ -1599,13 +1599,22 @@ app.patch('/api/findings/:id', async (req, res) => {
   if (!cur) return res.status(404).json({ error: 'not found' });
   const b = req.body || {};
   if ('title' in b && !b.title) return res.status(400).json({ error: 'title cannot be empty' });
-  const { severity, cvss: vector } = gradeFields(b, await canEdit(req), cur); // a worker's grade is dropped
-  q(`UPDATE findings SET title=?, kind=?, severity=?, body=?, refs=?, fix_status=?, in_report=?, cvss=? WHERE id=?`).run(
+  const editor = await canEdit(req);
+  const { severity, cvss: vector } = gradeFields(b, editor, cur); // a worker's grade is dropped
+  // "Needs improvement": a reviewer (editor/admin) sends a finding back to its author with a note.
+  // Only an editor can set it; grading it (giving a severity/CVSS) resolves and clears the flag.
+  let ni = cur.needs_improvement, note = cur.review_note;
+  if (editor && 'needs_improvement' in b) {
+    ni = b.needs_improvement ? 1 : 0;
+    note = ni ? (b.review_note ? String(b.review_note).slice(0, 1000) : null) : null;
+  }
+  if (editor && (('severity' in b) || ('cvss' in b)) && (severity || vector)) { ni = 0; note = null; } // graded → resolved
+  q(`UPDATE findings SET title=?, kind=?, severity=?, body=?, refs=?, fix_status=?, in_report=?, cvss=?, needs_improvement=?, review_note=? WHERE id=?`).run(
     b.title ?? cur.title, b.kind ?? cur.kind, severity,
     b.body === undefined ? cur.body : (b.body || null),
     'refs' in b ? cleanRefs(b.refs) : cur.refs,
     'fix_status' in b ? cleanFix(b.fix_status) : cur.fix_status,
-    'in_report' in b ? (b.in_report ? 1 : 0) : cur.in_report, vector, cur.id);
+    'in_report' in b ? (b.in_report ? 1 : 0) : cur.in_report, vector, ni, note, cur.id);
   creditFinding(cur.uid);
   res.json(q(`SELECT * FROM findings WHERE id=?`).get(cur.id));
 });

@@ -1643,14 +1643,18 @@ function findingCard(f, id, after) {
   }
   const links = (f.links || []).length ? el('div', { className: 'f-links' }, el('span', { className: 'muted' }, 'chains → '),
     ...f.links.flatMap((l, i) => [i ? el('span', { className: 'muted' }, ', ') : null, el('span', { className: 'chainlink', title: l.target }, l.title)].filter(Boolean))) : null;
-  const card = el('div', { className: 'finding sev-' + (f.severity || 'info') + (f.in_report ? ' in-report' : ''), title: 'Click to open' },
+  const mineToFix = f.needs_improvement && CURRENT_USER && CURRENT_USER === f.author; // glows for the finder
+  const card = el('div', { className: 'finding sev-' + (f.severity || 'info') + (f.in_report ? ' in-report' : '')
+      + (f.needs_improvement ? ' needs-improve' : '') + (mineToFix ? ' mine-improve' : ''), title: 'Click to open' },
     el('div', { className: 'f-top' },
       f.severity ? el('span', { className: 'f-sev' }, f.severity) : null,
       f.fix_status ? el('span', { className: 'f-fix ' + f.fix_status }, fixLabel(f.fix_status)) : el('span', { className: 'f-kind' }, f.kind),
+      f.needs_improvement ? el('span', { className: 'f-improve' }, 'needs improvement') : null,
       f.kind === 'vuln' ? reportTick(f, after) : null,   // "written into the report" is a vuln thing; notes/creds don't get it
       tools),
     el('div', { className: 'f-title' }, f.title),
     f.author ? el('div', { className: 'f-by', title: 'Recorded by ' + f.author }, avatarSm(f.author), 'recorded by ' + f.author) : null,
+    f.needs_improvement && f.review_note ? el('div', { className: 'f-improve-note' }, icon('edit', 11), f.review_note) : null,
     f.body ? el('pre', {}, f.body) : null,
     links,
     (f.attachments || []).length ? shots : null);
@@ -1669,6 +1673,10 @@ function findingDetail(f, id) {
         f.cvss ? el('span', { className: 'fd-cvss', title: f.cvss }, 'CVSS ' + (MagiCVSS.score(f.cvss)?.toFixed(1) ?? '—')) : null,
         f.author ? el('span', { className: 'fd-by' }, avatarSm(f.author), 'by ' + f.author) : null,
         f.kind === 'vuln' ? reportTick(f, () => renderTarget(id)) : null));
+      if (f.needs_improvement) b.append(el('div', { className: 'improve-note' },
+        el('span', { className: 'kicker' }, 'Needs improvement'),
+        f.review_note ? el('div', {}, f.review_note) : null,
+        el('button', { className: 'btn line sm', style: 'margin-top:8px', onclick: () => editFinding(f, id) }, icon('edit', 12), 'Improve this finding')));
       if (f.cvss) { b.append(el('label', {}, 'CVSS vector')); b.append(el('code', { className: 'fd-vector' }, f.cvss)); }
       if (locs.length) { b.append(el('label', {}, locs.length > 1 ? 'Locations' : 'Location')); b.append(el('div', { className: 'fd-locs' }, ...locs.map(l => el('code', {}, l)))); }
       const bodyText = f.kind === 'vuln' ? stripLocationPrefix(f.body) : f.body;
@@ -2881,8 +2889,21 @@ function gradeDialog(f, onDone) {
         for (const im of f.attachments) { const img = attachmentImg(im.id, { title: im.filename, loading: 'lazy' }); img.onclick = () => openLightbox(im); g.append(img); }
         b.append(g);
       }
+      if (f.needs_improvement && f.review_note) b.append(el('div', { className: 'improve-note' },
+        el('span', { className: 'kicker' }, 'Sent back'), el('div', {}, f.review_note)));
       const sevSel = field(b, 'Severity', 'severity', { value: 'medium', options: SEVERITIES.filter(s => s.value) });
       b.append(cvssSection(sevSel, null));
+      // Instead of grading, a reviewer can send it back to the finder to improve, with a note.
+      b.append(el('div', { className: 'srule', style: 'margin-top:16px' }, el('span', { className: 'kicker' }, 'Or send back'), el('span', { className: 'rule' })));
+      const rnote = field(b, 'What to improve (shown to the finder)', 'review_note', { textarea: true, value: f.review_note || '', ph: 'e.g. add the request/response, confirm impact, attach a screenshot' });
+      const backBtn = el('button', { type: 'button', className: 'btn', onclick: async () => {
+        const note = rnote.value.trim();
+        if (!note) { rnote.focus(); toast('Add a note on what needs improving'); return; }
+        try { await api('/findings/' + f.id, { method: 'PATCH', body: { needs_improvement: 1, review_note: note } });
+          $('#modalRoot').replaceChildren(); toast(`Sent back to ${f.author || 'the finder'} to improve`); onDone && onDone(); }
+        catch (e) { toast(e.message); }
+      } }, icon('edit', 12), 'Needs improvement');
+      b.append(el('div', { style: 'margin-top:8px' }, backBtn));
     },
     onSubmit: async (fd) => {
       const raw = Object.fromEntries(fd);

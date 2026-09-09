@@ -221,6 +221,8 @@ CREATE TABLE IF NOT EXISTS findings (
   in_report   INTEGER NOT NULL DEFAULT 0, -- ticked once written into the report, so it's clear what's done
   author      TEXT,                      -- username of whoever recorded it (for the team ranking); syncs with the row
   cvss        TEXT,                      -- optional CVSS v3.1 base vector; severity is derived from it when set
+  needs_improvement INTEGER NOT NULL DEFAULT 0, -- a reviewer sent it back to its author to improve
+  review_note TEXT,                      -- the reviewer's note on what to improve
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_findings_asset ON findings(asset_id);
@@ -508,6 +510,8 @@ if (!findCols.has('fix_status')) db.exec(`ALTER TABLE findings ADD COLUMN fix_st
 if (!findCols.has('in_report')) db.exec(`ALTER TABLE findings ADD COLUMN in_report INTEGER NOT NULL DEFAULT 0`);
 if (!findCols.has('author')) db.exec(`ALTER TABLE findings ADD COLUMN author TEXT`);
 if (!findCols.has('cvss')) db.exec(`ALTER TABLE findings ADD COLUMN cvss TEXT`);
+if (!findCols.has('needs_improvement')) db.exec(`ALTER TABLE findings ADD COLUMN needs_improvement INTEGER NOT NULL DEFAULT 0`);
+if (!findCols.has('review_note')) db.exec(`ALTER TABLE findings ADD COLUMN review_note TEXT`);
 if (!projCols.has('status')) db.exec(`ALTER TABLE projects ADD COLUMN status TEXT DEFAULT 'active'`);
 if (!projCols.has('start_date')) db.exec(`ALTER TABLE projects ADD COLUMN start_date TEXT`);
 if (!projCols.has('end_date')) db.exec(`ALTER TABLE projects ADD COLUMN end_date TEXT`);

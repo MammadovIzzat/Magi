@@ -11,7 +11,7 @@
 // only a scrypt *verifier* so a typo can be caught before it produces a backup no one can open.
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, chmodSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomBytes, scryptSync, timingSafeEqual, createCipheriv, createDecipheriv } from 'node:crypto';
+import { randomBytes, scryptSync, createCipheriv, createDecipheriv } from 'node:crypto';
 import { DATA_DIR } from './db.js';
 import { collectChanges, applyChanges } from './sync.js';
 
@@ -20,15 +20,12 @@ const CONFIG = join(DATA_DIR, 'backup-config.json');
 const RETAIN = 5; // keep only the newest N backups; older ones are pruned after each run
 const DEFAULTS = { enabled: false, interval_hours: 24, pw_check: null, seq: 0, last_backup_at: null };
 
-// A verifier for the backup password: a scrypt hash with a FIXED salt. It never decrypts
-// anything (each file has its own random salt) — it only lets us tell "same password as before"
-// from "typo", without keeping the password itself.
+// A one-way marker of the most recent backup password: a scrypt hash with a FIXED salt. It never
+// decrypts anything (each file has its own random salt) — it only lets config() report that a
+// password has been used (has_password), without ever keeping the password itself. Not enforced:
+// a new backup may use any password.
 const VERIFY_SALT = Buffer.from('magi-backup-verifier-v1');
 const pwCheck = (password) => scryptSync(String(password), VERIFY_SALT, 16).toString('hex');
-const pwMatches = (password, stored) => {
-  if (!stored) return true; // no verifier yet — first backup sets it
-  try { return timingSafeEqual(Buffer.from(pwCheck(password), 'hex'), Buffer.from(stored, 'hex')); } catch { return false; }
-};
 
 function loadConfig() {
   let c = { ...DEFAULTS };
@@ -101,7 +98,8 @@ function prune() {
 export function runBackup(db, { password } = {}) {
   if (!password) throw new Error('a backup password is required');
   const c = loadConfig();
-  if (!pwMatches(password, c.pw_check)) throw new Error('that password does not match the one your existing backups use');
+  // Each backup is independently encrypted, so a new one may use a fresh password — we no longer
+  // force it to match earlier backups. (Restore skips any file the supplied password can't open.)
   mkdirSync(DIR, { recursive: true });
   const changes = collectChanges(db, ''); // '' = everything: a full, self-contained snapshot
   const payload = { at: new Date().toISOString(), full: true, rows: changes.rows, tombstones: changes.tombstones };
@@ -109,7 +107,7 @@ export function runBackup(db, { password } = {}) {
   const name = `backup-${String(seq).padStart(4, '0')}.magi.enc`;
   writeFileSync(join(DIR, name), JSON.stringify(encrypt(payload, password)));
   try { chmodSync(join(DIR, name), 0o600); } catch {}
-  c.seq = seq; c.last_backup_at = payload.at; if (!c.pw_check) c.pw_check = pwCheck(password);
+  c.seq = seq; c.last_backup_at = payload.at; c.pw_check = pwCheck(password); // remember the latest (for has_password only; not enforced)
   saveConfig(c);
   prune(); // keep only the newest RETAIN
   return { file: name, rows: changes.rows.length, tombstones: changes.tombstones.length, kept: listBackups().length };
@@ -143,9 +141,15 @@ export function restoreAll(db, password) {
   if (!existsSync(DIR)) throw new Error('no backups found');
   const files = readdirSync(DIR).filter(f => f.endsWith('.magi.enc')).sort();
   if (!files.length) throw new Error('no backups found');
-  let applied = 0, deleted = 0;
-  for (const f of files) { const r = applyOne(db, readFileSync(join(DIR, f), 'utf8'), password); applied += r.applied; deleted += r.deleted; }
-  return { files: files.length, applied, deleted };
+  // Backups may now use different passwords. Apply the ones this password opens (oldest-first, so
+  // the newest that opens wins) and skip the rest — each file is a full snapshot.
+  let applied = 0, deleted = 0, used = 0;
+  for (const f of files) {
+    let r; try { r = applyOne(db, readFileSync(join(DIR, f), 'utf8'), password); } catch { continue; }
+    applied += r.applied; deleted += r.deleted; used++;
+  }
+  if (!used) throw new Error('that password did not open any of the stored backups');
+  return { files: used, applied, deleted };
 }
 
 /**

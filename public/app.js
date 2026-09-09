@@ -1628,7 +1628,7 @@ function findingCard(f, id, after) {
     el('div', { className: 'f-top' },
       f.severity ? el('span', { className: 'f-sev' }, f.severity) : null,
       f.fix_status ? el('span', { className: 'f-fix ' + f.fix_status }, fixLabel(f.fix_status)) : el('span', { className: 'f-kind' }, f.kind),
-      reportTick(f, after),
+      f.kind === 'vuln' ? reportTick(f, after) : null,   // "written into the report" is a vuln thing; notes/creds don't get it
       tools),
     el('div', { className: 'f-title' }, f.title),
     f.author ? el('div', { className: 'f-by', title: 'Recorded by ' + f.author }, avatarSm(f.author), 'recorded by ' + f.author) : null,
@@ -1649,7 +1649,7 @@ function findingDetail(f, id) {
         f.severity ? el('span', { className: 'fd-sev sev-' + f.severity }, f.severity.toUpperCase()) : null,
         f.cvss ? el('span', { className: 'fd-cvss', title: f.cvss }, 'CVSS ' + (MagiCVSS.score(f.cvss)?.toFixed(1) ?? '—')) : null,
         f.author ? el('span', { className: 'fd-by' }, avatarSm(f.author), 'by ' + f.author) : null,
-        reportTick(f, () => renderTarget(id))));
+        f.kind === 'vuln' ? reportTick(f, () => renderTarget(id)) : null));
       if (f.cvss) { b.append(el('label', {}, 'CVSS vector')); b.append(el('code', { className: 'fd-vector' }, f.cvss)); }
       if (locs.length) { b.append(el('label', {}, locs.length > 1 ? 'Locations' : 'Location')); b.append(el('div', { className: 'fd-locs' }, ...locs.map(l => el('code', {}, l)))); }
       const bodyText = f.kind === 'vuln' ? stripLocationPrefix(f.body) : f.body;
@@ -2817,8 +2817,7 @@ async function adminRanking(ctx, A) {
       el('span', { className: 'rank-n' }, String(i + 1)),
       el('div', { className: 'rank-main' },
         el('div', { className: 'rank-op' }, el('strong', {}, r.author),
-          r.role ? el('span', { className: 'pill' }, r.role) : null,
-          r.topType ? el('span', { className: 'rank-focus' }, codeBadge(r.topType, true)) : null),
+          r.role ? el('span', { className: 'pill' }, r.role) : null),
         meta),
       el('span', { className: 'rank-score' }, String(poc ? r.poc : (r.score ?? 0)))));
   });
@@ -2955,7 +2954,7 @@ function resetMfaDialog(ctx, m) {
 function backupNow(ctx) {
   modal({
     kicker: 'Backups', title: 'Back up now', cta: 'Back up',
-    note: 'A full, encrypted snapshot. Enter your backup password — it is used to encrypt this file and is never stored. Use the SAME password every time so all your backups open with it.',
+    note: 'A full, encrypted snapshot. Enter a backup password — it encrypts this file and is never stored. Each backup is independent, so you may use a new password; a restore opens whichever backups the password you give it can decrypt.',
     build: (b) => { field(b, 'Backup password', 'password', { type: 'password' }); },
     onSubmit: async (fd) => { const r = await api(`${ctx.base}/backup/now`, { method: 'POST', body: { password: Object.fromEntries(fd).password } }); toast(`Backed up ${r.rows} record(s) · keeping ${r.kept}`); renderAdmin(); },
   });

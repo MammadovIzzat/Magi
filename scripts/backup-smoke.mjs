@@ -59,10 +59,12 @@ const cfg = JSON.parse(readFileSync(join(dir, 'backup-config.json'), 'utf8'));
 check('the backup password is never written to disk', !('password' in cfg) && typeof cfg.pw_check === 'string' && !cfg.pw_check.includes(PW));
 check('config() reports a password is on file without exposing it', backup.config().has_password === true && backup.config().password === undefined);
 
-// --- a DIFFERENT password is rejected (verifier catches drift/typos) ---
-let mismatch = false;
-try { backup.runBackup(db, { password: 'a different password' }); } catch { mismatch = true; }
-check('a backup with a mismatched password is rejected', mismatch);
+// --- a DIFFERENT password is now allowed (each backup is independently encrypted) ---
+let altOk = false;
+try { altOk = backup.runBackup(db, { password: 'a different password' }).rows >= 5; } catch {}
+check('a new backup may use a different password', altOk);
+check('restoreAll skips backups a password cannot open (rejects if none)',
+  (() => { try { backup.restoreAll(db, 'yet another wrong password'); return false; } catch { return true; } })());
 
 // --- backup 2: still a FULL snapshot (not an empty delta) ---
 const b2 = backup.runBackup(db, { password: PW });

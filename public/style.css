@@ -636,9 +636,9 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 }
 .reptick svg { width: 11px; height: 11px; }
 .reptick:hover { border-color: var(--line-4); color: var(--text-2); }
-.reptick.on { border-color: var(--jade); color: var(--jade); background: #46B87A1F; }
+.reptick.on { border-color: var(--ok); color: var(--ok); background: transparent; }
 /* a written-up finding is dimmed a touch and gets a green edge, so the log reads at a glance */
-.finding.in-report { border-left-color: var(--jade); }
+.finding.in-report { border-left-color: var(--ok); }
 .finding.in-report .f-title { opacity: .72; }
 .fd-badges .reptick { margin-left: 0; }
 .f-title { font-size: 14px; font-weight: 500; color: var(--fg); margin-top: 7px; line-height: 1.45; }

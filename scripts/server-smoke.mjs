@@ -258,6 +258,19 @@ check('the follow-up items now hang under the trigger', afterSpawn.some(i => i.p
 const customItem = await req('POST', `/api/targets/${webT.id}/items`, { token: adminTok, body: { title: 'Custom manual check' } });
 check('adding a custom checklist item works', customItem.status === 201 && !!customItem.json?.id);
 
+// ---- bulk "mark done": a whole section, then the whole target ----
+const beforeItems = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.items.filter(i => !['select', 'group'].includes(i.kind));
+const oneGroup = beforeItems.find(i => i.group_key)?.group_key;
+const markSection = await req('POST', `/api/targets/${webT.id}/mark`, { token: workerToken, device: dev1, body: { status: 'done', group_key: oneGroup } });
+check('a worker can mark a whole section done', markSection.status === 200 && markSection.json.changed > 0);
+const afterSection = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.items;
+check('every item in that section is now done', afterSection.filter(i => i.group_key === oneGroup && !['select', 'group'].includes(i.kind)).every(i => i.status === 'done'));
+const markAll = await req('POST', `/api/targets/${webT.id}/mark`, { token: adminTok, body: { status: 'done' } });
+check('marking the whole target done sets every actionable item', markAll.status === 200
+  && (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.items.filter(i => !['select', 'group'].includes(i.kind)).every(i => i.status === 'done'));
+const markBad = await req('POST', `/api/targets/${webT.id}/mark`, { token: adminTok, body: { status: 'bogus' } });
+check('an invalid bulk status is rejected', markBad.status === 400);
+
 // ---- durability: deleting an old engagement must NOT reduce the ranking ----
 const anaBefore = anaRank.findings;
 const tmpProj = (await req('POST', '/api/projects', { token: adminTok, body: { name: 'Old engagement' } })).json;

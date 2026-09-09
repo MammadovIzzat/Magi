@@ -1117,6 +1117,12 @@ const openGroups = new Set();
 const openPayloads = new Set();
 let FILTER = 'all';
 
+// Bulk-set every checklist item's status — a whole section (group_key) or the entire target.
+async function markChecklist(id, status, group_key) {
+  try { await api('/targets/' + id + '/mark', { method: 'POST', body: { status, ...(group_key ? { group_key } : {}) } }); renderTarget(id); }
+  catch (e) { toast(e.message); }
+}
+
 const MATCH = {
   all: () => true,
   open: (i) => i.status === 'todo',
@@ -1262,6 +1268,9 @@ async function renderTarget(id) {
         assignEl,
         el('button', { className: 'btn', onclick: () => { groups.forEach(g => openGroups.add(g.key)); renderTarget(id); } }, 'Expand all'),
         el('button', { className: 'btn', onclick: () => { openGroups.clear(); renderTarget(id); } }, 'Collapse'),
+        handled < actionable.length
+          ? el('button', { className: 'btn', title: 'Mark every checklist item in this target done', onclick: () => { if (confirm('Mark every checklist item in this target as done?')) markChecklist(id, 'done'); } }, icon('check', 12), 'All done')
+          : null,
         isEditor() ? el('button', { className: 'btn line', onclick: () => itemModal(id) }, '+ Item') : null)),
     el('div', { className: 'seg' }, segbar,
       el('span', { className: 'count' }, String(handled), el('b', {}, '/' + actionable.length)),
@@ -1284,6 +1293,11 @@ async function renderTarget(id) {
       el('span', { className: 'gchev' }, '▶'),
       el('span', { className: 'gtitle' }, g.title),
       gf ? el('span', { className: 'gflag' }, '⚑ ' + gf) : null,
+      // mark every item in this section done at once (only shown while something's still open)
+      (all.length && done < all.length)
+        ? (() => { const s = el('span', { className: 'gdone', title: 'Mark this section done', role: 'button' }, icon('check', 12));
+            s.onclick = (e) => { e.stopPropagation(); markChecklist(id, 'done', g.key); }; return s; })()
+        : null,
       el('span', { className: 'gcount' }, String(done), el('b', {}, '/' + all.length)),
       el('span', { className: 'bar' + (pct(done, all.length) > 70 ? ' good' : '') }, el('span', { style: `width:${pct(done, all.length)}%` })));
     hdr.onclick = () => { open ? openGroups.delete(g.key) : openGroups.add(g.key); renderTarget(id); };

@@ -1422,6 +1422,22 @@ app.post('/api/targets/:id/items', requireEdit, (req, res) => {
 
 // Spawn a follow-up checklist under a trigger. Can be added multiple times; each
 // instance is a deletable container ('group') nested under the trigger.
+// Bulk-set the status of a target's checklist items — a whole section (group_key) or the entire
+// target at once, so you don't tick each box. Container rows (select/group) are left alone. Ticking
+// status is worker work (not gated on edit rights), and the row updates sync like any single tick.
+const BULK_STATUS = new Set(['todo', 'done', 'na', 'flag']);
+app.post('/api/targets/:id/mark', (req, res) => {
+  const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
+  if (!a) return res.status(404).json({ error: 'not found' });
+  const status = String(req.body?.status || '');
+  if (!BULK_STATUS.has(status)) return res.status(400).json({ error: 'invalid status' });
+  const gk = req.body?.group_key;
+  const args = [status, a.id];
+  let sql = `UPDATE items SET status=? WHERE asset_id=? AND kind NOT IN ('select','group')`;
+  if (gk != null && gk !== '') { sql += ` AND group_key=?`; args.push(String(gk)); }
+  const changed = q(sql).run(...args).changes;
+  res.json({ ok: true, changed });
+});
 app.post('/api/items/:id/spawn', (req, res) => {
   const it = q(`SELECT * FROM items WHERE id=?`).get(req.params.id);
   if (!it) return res.status(404).json({ error: 'not found' });

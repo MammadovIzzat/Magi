@@ -1207,7 +1207,22 @@ app.get('/api/projects/:id', (req, res) => {
       (SELECT COUNT(*) FROM findings fi WHERE fi.asset_id=a.id AND fi.kind='vuln') AS findings
       FROM assets a WHERE a.folder_id=? ORDER BY a.created_at, a.id`).all(f.id).map(assetSummary);
   }
-  res.json({ ...p, assets });
+  // Engagement-wide finding aggregates for the stat tiles: total vulnerabilities, how many are
+  // written into the report (in_report), the severity mix, and note/credential counts. One query.
+  const fs = q(`SELECT
+      SUM(CASE WHEN kind='vuln' THEN 1 ELSE 0 END) AS vulns,
+      SUM(CASE WHEN kind='vuln' AND in_report=1 THEN 1 ELSE 0 END) AS written,
+      SUM(CASE WHEN kind='vuln' AND severity='critical' THEN 1 ELSE 0 END) AS critical,
+      SUM(CASE WHEN kind='vuln' AND severity='high' THEN 1 ELSE 0 END) AS high,
+      SUM(CASE WHEN kind='vuln' AND severity='medium' THEN 1 ELSE 0 END) AS medium,
+      SUM(CASE WHEN kind='vuln' AND severity='low' THEN 1 ELSE 0 END) AS low,
+      SUM(CASE WHEN kind='vuln' AND (severity='info' OR severity IS NULL OR severity='') THEN 1 ELSE 0 END) AS info,
+      SUM(CASE WHEN kind='note' THEN 1 ELSE 0 END) AS notes,
+      SUM(CASE WHEN kind='credential' THEN 1 ELSE 0 END) AS creds
+    FROM findings f JOIN assets a ON a.id=f.asset_id WHERE a.project_id=?`).get(req.params.id);
+  const findingStats = { vulns: fs.vulns || 0, written: fs.written || 0, notes: fs.notes || 0, creds: fs.creds || 0,
+    bySeverity: { critical: fs.critical || 0, high: fs.high || 0, medium: fs.medium || 0, low: fs.low || 0, info: fs.info || 0 } };
+  res.json({ ...p, assets, findingStats });
 });
 // Add a target straight to an engagement — the type's engagement-group folder is created or
 // reused automatically, so users never deal with the folder layer.

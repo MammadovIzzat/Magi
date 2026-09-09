@@ -738,17 +738,17 @@ async function renderProject(id) {
 
   const total = allTargets.reduce((a, x) => a + x.total, 0);
   const handled = allTargets.reduce((a, x) => a + x.handled, 0);
-  const flags = allTargets.reduce((a, x) => a + x.flags, 0);
-  // findings = every vulnerability (the server's per-target count is already kind='vuln' only, and
-  // includes info-severity and not-yet-graded ones). Notes/credentials are not counted here — they
-  // live in the findings page's Notes/Creds tabs. No extra request: the counts are already on `p`.
-  const findings = allTargets.reduce((a, x) => a + (x.findings || 0), 0);
+  const cov = pct(handled, total);
+  const notStarted = allTargets.filter(x => (x.handled || 0) === 0).length;
+  const fs = p.findingStats || { vulns: 0, written: 0, bySeverity: {} };
+  const writtenPct = fs.vulns ? Math.round(fs.written / fs.vulns * 100) : 0;
+  const sevMix = ['critical', 'high', 'medium', 'low'].map(s => [s, fs.bySeverity?.[s] || 0]).filter(([, n]) => n > 0);
 
-  const stat = (label, value, cls) => el('div', { className: 'stat' },
-    el('div', { className: 'kicker' }, label), el('div', { className: 'stat-value ' + (cls || '') }, value));
-  const statLink = (label, value, cls) =>
-    el('button', { className: 'stat stat-link', onclick: () => location.hash = `/findings/${id}` },
-      el('div', { className: 'kicker' }, label), el('div', { className: 'stat-value ' + (cls || '') }, String(value)));
+  // Four tiles: Coverage · Findings (with severity mix) · Written up (in the report) · Targets.
+  const bar = (v, color) => el('span', { className: 'stat-bar' }, el('span', { style: `width:${v}%` + (color ? `;background:${color}` : '') }));
+  const kick = (l) => el('div', { className: 'kicker' }, l);
+  const bigv = (v, cls) => el('span', { className: 'stat-value ' + (cls || '') }, String(v));
+  const row = (v, sub, cls) => el('div', { className: 'stat-row' }, bigv(v, cls), sub ? el('span', { className: 'stat-sub' }, sub) : null);
 
   const targetRow = (a, depth = 0, kids = 0) => {
     const t = TYPES.find(x => x.type === a.type) || {};
@@ -818,10 +818,15 @@ async function renderProject(id) {
     el('h1', {}, p.name),
     p.client || p.scope ? el('div', { className: 'lede' }, [p.client, p.scope].filter(Boolean).join(' · ')) : null,
     el('div', { className: 'stats' },
-      stat('Coverage', pct(handled, total) + '%', 'gold'),
-      statLink('Findings', findings, 'red'),
-      stat('Revisit', String(flags), 'purple'),
-      stat('Targets', String(allTargets.length))),
+      el('div', { className: 'stat' }, kick('Coverage'), row(cov + '%', `${handled} / ${total}`), bar(cov)),
+      el('button', { className: 'stat stat-link', onclick: () => location.hash = `/findings/${id}` }, kick('Findings'),
+        row(fs.vulns, null, 'red'),
+        sevMix.length
+          ? el('div', { className: 'sevmix' }, ...sevMix.map(([s, n]) => el('span', { className: 'sevmix-chip sev-' + s }, `${n} ${s.slice(0, 4)}`)))
+          : el('div', { className: 'stat-note' }, 'none yet')),
+      el('div', { className: 'stat' }, kick('Written up'), row(fs.written, 'of ' + fs.vulns, 'ok'), bar(writtenPct, 'var(--ok)')),
+      el('div', { className: 'stat' }, kick('Targets'), row(allTargets.length, null),
+        el('div', { className: 'stat-note' }, notStarted ? `${notStarted} not started` : 'all started'))),
     el('div', { className: 'srule' },
       el('span', { className: 'kicker' }, 'Targets'), el('span', { className: 'rule' }),
       isEditor() ? el('button', { className: 'btn line sm', onclick: () => addTargetToProject(id) }, '+ Add target') : null),
@@ -869,9 +874,16 @@ async function renderProjectFindings(projectId) {
     { value: 'sev', label: 'Severity' }, { value: 'new', label: 'Newest' }, { value: 'title', label: 'Title' }] });
   sortSel.addEventListener('change', () => { PFV.sort = sortSel.value; repaint(); });
 
+  const vulns = all.filter(f => f.kind === 'vuln');
+  const written = vulns.filter(f => f.in_report).length;
+  const wpct = vulns.length ? Math.round(written / vulns.length * 100) : 0;
   $('#view').replaceChildren(el('div', { className: 'page narrow' },
     el('div', { className: 'kicker' }, 'Engagement · ' + p.name),
-    el('h1', {}, 'Findings'),
+    el('div', { className: 'pf-head' },
+      el('h1', {}, 'Findings'),
+      vulns.length ? el('div', { className: 'pf-progress' },
+        el('span', {}, `${written} of ${vulns.length} written up`),
+        el('span', { className: 'stat-bar', style: 'width:88px;margin:0' }, el('span', { style: `width:${wpct}%;background:var(--ok)` }))) : null),
     el('div', { className: 'evfilter pf-filter' }, tabs, el('div', { className: 'evrow' }, search, sortSel)),
     list));
   repaint();

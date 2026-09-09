@@ -83,8 +83,32 @@ perNodeCycle(A);
 check('A still gets the server’s later change despite the fast peer (per-node watermark)',
   !!A.prepare(`SELECT 1 FROM projects WHERE name='Later Server Change'`).get());
 
+// 5) FLOOR pre-filter: a fresh server + a client that has ONLY ever seen a future-clocked peer
+// (so its per-node floor is far ahead) must still receive a normal-clocked node's later row. The
+// SQL floor `hlc > min(watermarks)` used to drop it because that node was unknown and its hlc sat
+// below the floor.
+const SV = mkdb(), CL = mkdb(), FAST = mkdb(), SLOW = mkdb();
+const clNode = node(CL);
+FAST.prepare(`UPDATE _sync_meta SET last_ms = (CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)) + ?`).run(48 * 60 * 60 * 1000); // 2 days ahead
+const pnc = (client, server) => {
+  const cn = node(client);
+  const map = pullWatermarks(client);
+  const pr = collectChanges(server, '', { exceptNode: cn, sinceMap: map });
+  applyChanges(client, pr);
+  for (const x of [...(pr.rows || []), ...(pr.tombstones || [])]) { const n = hlcNode(x.hlc); if (n === cn) continue; if (x.hlc > (map[n] || '')) map[n] = x.hlc; }
+  setPullWatermarks(client, map);
+  return pr;
+};
+FAST.prepare(`INSERT INTO projects (name) VALUES ('Fast Only')`).run();
+applyChanges(SV, collectChanges(FAST, '', { onlyLocal: true }));
+pnc(CL, SV); // CL now knows only FAST, with a 2-day-ahead watermark → its floor is 2 days ahead
+SLOW.prepare(`INSERT INTO projects (name) VALUES ('Slow Later')`).run(); // normal clock → hlc far below CL's floor
+applyChanges(SV, collectChanges(SLOW, '', { onlyLocal: true }));
+pnc(CL, SV);
+check('a normal-clocked unknown node’s row is not hidden by a high floor', !!CL.prepare(`SELECT 1 FROM projects WHERE name='Slow Later'`).get());
+
 let bad = 0;
 for (const [name, ok] of checks) { console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${name}`); if (!ok) bad++; }
-S.close(); C.close(); A.close(); B.close();
+S.close(); C.close(); A.close(); B.close(); SV.close(); CL.close(); FAST.close(); SLOW.close();
 if (bad) { console.error(`\n  SYNC SKEW SMOKE FAILED — ${bad} check(s)\n`); process.exit(1); }
 console.log('\n  sync skew smoke ok\n');

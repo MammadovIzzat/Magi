@@ -180,14 +180,23 @@ export function collectChanges(db, since = '', { onlyLocal = false, exceptNode =
   // With a per-node watermark map, a row/tombstone passes only if it is newer than THIS db's
   // watermark for the node that authored it. `floor` (the smallest watermark, or '') is a cheap
   // SQL pre-filter; the exact per-node test happens in JS. Without a map we keep the old scalar.
+  const known = sinceMap ? Object.keys(sinceMap) : [];
   const vals = sinceMap ? Object.values(sinceMap) : null;
   const floor = sinceMap ? (vals.length ? vals.reduce((m, x) => (x < m ? x : m)) : '') : since;
   const pass = (hlc) => !sinceMap || hlc > (sinceMap[hlcNode(hlc)] || '');
+  // Cheap SQL pre-filter. `hlc > floor` (floor = the lowest per-node watermark) would WRONGLY drop a
+  // row authored by a node we have never pulled from (its true watermark is '') when that row's hlc
+  // sits below the floor — e.g. a teammate's edit made while another peer's clock ran the floor up.
+  // So also always admit rows whose authoring node (the last 16 chars of the hlc) is not yet known;
+  // pass() then makes the exact per-node decision. Without a map (legacy scalar pull) this is a no-op.
+  const nodeCol = `substr(hlc, -16)`;
+  const floorCond = known.length ? `(hlc > ? OR ${nodeCol} NOT IN (${known.map(() => '?').join(',')}))` : `hlc > ?`;
+  const floorArgs = known.length ? [floor, ...known] : [floor];
   for (const t of TABLES) {
     const spec = SPEC[t];
     const sel = ['id', 'uid', 'hlc', ...spec.cols, ...(spec.blobs || []), ...Object.keys(spec.parents)];
-    let sql = `SELECT ${sel.join(',')} FROM ${t} WHERE hlc > ? AND uid IS NOT NULL`;
-    const args = [floor];
+    let sql = `SELECT ${sel.join(',')} FROM ${t} WHERE uid IS NOT NULL AND ${floorCond}`;
+    const args = [...floorArgs];
     if (onlyLocal) { sql += ` AND hlc LIKE ?`; args.push('%-' + nd); }
     else if (exceptNode) { sql += ` AND hlc NOT LIKE ?`; args.push('%-' + exceptNode); }
     for (const r of db.prepare(sql).all(...args)) {
@@ -200,8 +209,8 @@ export function collectChanges(db, since = '', { onlyLocal = false, exceptNode =
       rows.push({ table: t, uid: r.uid, hlc: r.hlc, fields, parents });
     }
   }
-  let ts = `SELECT tbl, uid, hlc FROM tombstones WHERE hlc > ?`;
-  const targs = [floor];
+  let ts = `SELECT tbl, uid, hlc FROM tombstones WHERE ${floorCond}`;
+  const targs = [...floorArgs];
   if (onlyLocal) { ts += ` AND hlc LIKE ?`; targs.push('%-' + nd); }
   else if (exceptNode) { ts += ` AND hlc NOT LIKE ?`; targs.push('%-' + exceptNode); }
   const tombstones = db.prepare(ts).all(...targs).filter(t => pass(t.hlc));

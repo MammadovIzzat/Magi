@@ -470,6 +470,9 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
   display: flex; gap: 14px; padding: 15px 14px; margin-bottom: 7px;
   background: var(--row); border: 1px solid var(--line-6);
   border-left: 3px solid var(--line-6); border-radius: 3px;
+  /* Skip painting/laying out off-screen rows — a long checklist scrolls smoothly on a touchpad
+     instead of repainting every item each wheel frame. `auto` remembers the last measured height. */
+  content-visibility: auto; contain-intrinsic-size: auto 66px;
 }
 .item.child { margin-left: 30px; border-left-color: var(--gold); }
 .item.done { background: var(--void); border-left-color: var(--line-hi); }
@@ -598,6 +601,7 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .finding {
   background: var(--panel-hi); border: 1px solid var(--line);
   border-left: 2px solid var(--sev-info); padding: 11px 12px; position: relative;
+  content-visibility: auto; contain-intrinsic-size: auto 96px; /* skip off-screen cards → smoother scroll */
 }
 .finding.sev-high, .finding.sev-critical { border-left-color: var(--red); }
 .finding.sev-medium { border-left-color: var(--gold); }

@@ -46,6 +46,15 @@ check('import keeps the attack-chain link', rce && JSON.parse(rce.refs || '[]').
 check('the chain link is remapped to the imported finding’s new uid', rce && JSON.parse(rce.refs)[0] === newCredsUid);
 check('the old uid did not leak into the import', rce && !JSON.parse(rce.refs).includes(uidA));
 
+// HTML findings report: vulnerabilities only — notes/creds are never listed or counted, and
+// there's no "with images" tile. (pid has: 1 credential + 2 vulns.)
+const { projectReportHTML } = await import('../report-html.js');
+const html = projectReportHTML(pid);
+check('report lists the vulnerabilities', html.includes('RCE') && html.includes('ACME-1'));
+check('report omits notes/credentials', !html.includes('>Creds<') && !/Creds<\/h3>/.test(html));
+check('report counts only vulns as findings', /<div class="n">2<\/div><div class="k">findings<\/div>/.test(html));
+check('report has no "with images" tile', !html.includes('with images'));
+
 const failed = checks.filter(([, ok]) => !ok);
 console.log(`\nio-smoke: ${checks.length - failed.length}/${checks.length} checks passed`);
 if (failed.length) { console.error('FAILED:', failed.map(([n]) => n).join(', ')); process.exit(1); }

@@ -12,12 +12,14 @@ export function projectReportHTML(projectId) {
   if (!p) return null;
   const assets = db.prepare(`SELECT * FROM assets WHERE project_id=? ORDER BY created_at, id`).all(p.id);
 
-  // gather findings with their images, across the whole engagement
+  // Gather VULNERABILITIES only, with their images, across the whole engagement. Notes and
+  // credentials are working evidence — they are never findings, so the report neither lists nor
+  // counts them.
   const blocks = [];
-  let total = 0, withImages = 0;
+  let total = 0;
   const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0, none: 0 };
   for (const a of assets) {
-    const findings = db.prepare(`SELECT * FROM findings WHERE asset_id=? ORDER BY id`).all(a.id)
+    const findings = db.prepare(`SELECT * FROM findings WHERE asset_id=? AND kind='vuln' ORDER BY id`).all(a.id)
       .map(f => ({
         ...f,
         images: db.prepare(`SELECT id, filename, mime, data FROM attachments WHERE finding_id=? ORDER BY id`).all(f.id),
@@ -27,7 +29,6 @@ export function projectReportHTML(projectId) {
     for (const f of findings) {
       total++;
       counts[f.severity && counts[f.severity] !== undefined ? f.severity : 'none']++;
-      if (f.images.length) withImages++;
     }
     blocks.push({ asset: a, findings });
   }
@@ -45,7 +46,6 @@ export function projectReportHTML(projectId) {
     return `<article class="finding sev-${esc(sev || 'none')}">
       <div class="fhead">
         <span class="chip sev">${esc(sev || 'no severity')}</span>
-        <span class="chip kind">${esc(f.kind || 'note')}</span>
         <h3>${esc(f.title)}</h3>
       </div>
       ${f.body ? `<pre>${esc(f.body)}</pre>` : ''}
@@ -104,7 +104,7 @@ export function projectReportHTML(projectId) {
     <h1>${esc(p.name)}</h1>
     <div class="meta">${[p.client && 'Client: ' + esc(p.client), p.scope && 'Scope: ' + esc(p.scope)].filter(Boolean).join(' &nbsp;·&nbsp; ') || '&nbsp;'}</div>
   </header>
-  <div class="tiles"><div class="tile"><div class="n">${total}</div><div class="k">findings</div></div>${sevTiles}<div class="tile"><div class="n">${withImages}</div><div class="k">with images</div></div></div>
+  <div class="tiles"><div class="tile"><div class="n">${total}</div><div class="k">findings</div></div>${sevTiles}</div>
   ${blocks.length ? blocks.map(bl => `
     <h2 class="asset">${esc(bl.asset.type.toUpperCase())} — ${esc(bl.asset.label)}</h2>
     ${bl.findings.map(findingCard).join('')}

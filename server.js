@@ -75,6 +75,18 @@ app.use(express.static(join(__dirname, 'public'), {
 // ---- helpers ----
 const q = (sql) => db.prepare(sql);
 function assetSummary(row) { return { ...row, metadata: JSON.parse(row.metadata || '{}') }; }
+// Attachment metadata for a set of findings in ONE query, grouped by finding_id — avoids the
+// per-finding query (N+1) when listing a target's / a project's / the grading queue's findings.
+function attachmentsFor(findingIds) {
+  const m = new Map();
+  if (!findingIds.length) return m;
+  const ph = findingIds.map(() => '?').join(',');
+  for (const r of q(`SELECT finding_id, id, filename, mime, size FROM attachments WHERE finding_id IN (${ph}) ORDER BY id`).all(...findingIds)) {
+    if (!m.has(r.finding_id)) m.set(r.finding_id, []);
+    m.get(r.finding_id).push({ id: r.id, filename: r.filename, mime: r.mime, size: r.size });
+  }
+  return m;
+}
 // Optional-string field update: absent key keeps the current value, empty string clears it.
 // (`b.x ?? cur.x` alone makes a set value impossible to unset.)
 function blank(next, cur) { return next === undefined ? cur : (next || null); }
@@ -1320,8 +1332,10 @@ app.get('/api/targets/:id', (req, res) => {
   if (!a) return res.status(404).json({ error: 'not found' });
   const items = q(`SELECT * FROM items WHERE asset_id=? ORDER BY sort, id`).all(req.params.id)
     .map(i => ({ ...i, payloads: JSON.parse(i.payloads || '[]'), options: JSON.parse(i.options || '[]') }));
-  const findings = q(`SELECT * FROM findings WHERE asset_id=? ORDER BY created_at DESC`).all(req.params.id)
-    .map(f => ({ ...f, refs: undefined, links: resolveLinks(f.refs), ref_uids: refUids(f.refs), attachments: q(`SELECT id, filename, mime, size FROM attachments WHERE finding_id=? ORDER BY id`).all(f.id) }));
+  const rawFindings = q(`SELECT * FROM findings WHERE asset_id=? ORDER BY created_at DESC`).all(req.params.id);
+  const att = attachmentsFor(rawFindings.map(f => f.id));
+  const findings = rawFindings
+    .map(f => ({ ...f, refs: undefined, links: resolveLinks(f.refs), ref_uids: refUids(f.refs), attachments: att.get(f.id) || [] }));
   const folder = q(`SELECT id, grp, label, project_id FROM folders WHERE id=?`).get(a.folder_id);
   const project = folder ? q(`SELECT id, name FROM projects WHERE id=?`).get(folder.project_id) : null;
   res.json({ ...assetSummary(a), items, findings, folder, project });
@@ -1580,7 +1594,8 @@ app.get('/api/projects/:id/findings', (req, res) => {
       a.id AS target_id, a.label AS target, a.type AS target_type
     FROM findings f JOIN assets a ON a.id=f.asset_id
     WHERE a.project_id=? ORDER BY f.created_at DESC`).all(req.params.id);
-  for (const r of rows) r.attachments = q(`SELECT id, filename, mime, size FROM attachments WHERE finding_id=? ORDER BY id`).all(r.id);
+  const _att = attachmentsFor(rows.map(r => r.id));
+  for (const r of rows) r.attachments = _att.get(r.id) || [];
   res.json(rows);
 });
 // Ungraded vulnerabilities across every engagement (no severity and no CVSS yet) — the admin/editor
@@ -1592,7 +1607,8 @@ app.get('/api/ungraded', async (req, res) => {
     FROM findings f JOIN assets a ON a.id=f.asset_id JOIN projects p ON p.id=a.project_id
     WHERE f.kind='vuln' AND (f.severity IS NULL OR f.severity='') AND (f.cvss IS NULL OR f.cvss='')
     ORDER BY f.created_at`).all();
-  for (const r of rows) r.attachments = q(`SELECT id, filename, mime, size FROM attachments WHERE finding_id=? ORDER BY id`).all(r.id);
+  const _att = attachmentsFor(rows.map(r => r.id));
+  for (const r of rows) r.attachments = _att.get(r.id) || [];
   res.json(rows);
 });
 

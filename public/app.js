@@ -637,8 +637,9 @@ function railForProject(project, activeTargetId) {
       el('button', { className: 'dashbtn', onclick: () => addTargetToProject(project.id) }, icon('plus', 12), 'Add target')) : null];
 }
 
-// Which parent targets are collapsed on the engagement page (hide their sub-targets). Per session.
-const collapsedTargets = new Set();
+// Which parent targets are EXPANDED on the engagement page (show their sub-targets). Default is
+// collapsed for all — you expand a parent with its caret. Per session.
+const expandedTargets = new Set();
 
 // Host portion of a target label ("https://a.b.example.com/x" -> "a.b.example.com").
 function assetHost(label) {
@@ -761,12 +762,14 @@ async function renderProject(id) {
     const cov = pct(a.handled, a.total);
     const del = isEditor() ? el('button', { className: 'ibtn del', title: 'Delete target' }, icon('trash')) : null;
     if (del) del.onclick = (e) => { e.stopPropagation(); delTarget(a, () => renderProject(id)); };
-    const collapsed = collapsedTargets.has(a.id);
-    // A caret to fold/unfold a target's sub-targets; a spacer keeps names aligned when there are none.
+    const expanded = expandedTargets.has(a.id);
+    // A big, easy-to-hit caret to fold/unfold a target's sub-targets (its click never navigates —
+    // it stops propagation). A spacer keeps names aligned when a target has no sub-targets.
     let toggle;
     if (kids) {
-      toggle = el('span', { className: 'tcaret' + (collapsed ? '' : ' open'), title: collapsed ? `Show ${kids} sub-target${kids === 1 ? '' : 's'}` : 'Hide sub-targets' }, '▶');
-      toggle.onclick = (e) => { e.stopPropagation(); collapsed ? collapsedTargets.delete(a.id) : collapsedTargets.add(a.id); renderProject(id); };
+      toggle = el('span', { className: 'tcaret' + (expanded ? ' open' : ''), title: expanded ? 'Hide sub-targets' : `Show ${kids} sub-target${kids === 1 ? '' : 's'}` },
+        el('span', { className: 'tcaret-i' }, '▶'), el('span', { className: 'tcaret-n' }, String(kids)));
+      toggle.onclick = (e) => { e.stopPropagation(); e.preventDefault(); expanded ? expandedTargets.delete(a.id) : expandedTargets.add(a.id); renderProject(id); };
     } else {
       toggle = el('span', { className: 'tcaret none' });
     }
@@ -807,7 +810,7 @@ async function renderProject(id) {
       const list = el('div', { className: 'tlist' });
       const renderNode = (n, depth) => {
         list.append(targetRow(n.item, depth, n.children.length));
-        if (n.children.length && !collapsedTargets.has(n.item.id))
+        if (n.children.length && expandedTargets.has(n.item.id))
           for (const c of n.children) renderNode(c, depth + 1);
       };
       for (const root of buildTargetForest(f.items)) renderNode(root, 0);
@@ -1806,18 +1809,15 @@ async function findingModal(assetId, finding = null, isRetest = false) {
           if (!editing) fileField(fields, 'Images', images);
         } else {
           field(fields, 'Title', 'title', { value: finding?.title || '', ph: 'e.g. SQL injection in /search' });
-          // Severity is a grading decision — only admins/editors set it (optionally via CVSS). A
-          // worker records the finding; a lead grades it afterwards (and gets credited to the finder).
-          if (isEditor()) {
-            const sevSel = field(fields, 'Severity', 'severity', { value: finding?.severity || 'medium', options: SEVERITIES.filter(s => s.value) });
-            fields.append(cvssSection(sevSel, finding?.cvss));
-          } else if (finding?.severity || finding?.cvss) {
-            fields.append(el('label', {}, 'Severity (set by a lead)'),
+          // Severity/CVSS is NOT set here — grading happens only in Admin → Grading. Show the current
+          // grade read-only when it exists, otherwise a note that a lead will grade it.
+          if (finding?.severity || finding?.cvss) {
+            fields.append(el('label', {}, 'Severity (set in grading)'),
               el('div', { className: 'readonly-sev' },
                 finding.severity ? el('span', { className: 'fd-sev sev-' + finding.severity }, finding.severity.toUpperCase()) : null,
                 finding.cvss ? el('span', { className: 'fd-cvss', title: finding.cvss }, 'CVSS ' + (MagiCVSS.score(finding.cvss)?.toFixed(1) ?? '—')) : null));
           } else {
-            fields.append(el('p', { className: 'muted small', style: 'margin:2px 0 8px' }, 'A lead will set the severity.'));
+            fields.append(el('p', { className: 'muted small', style: 'margin:2px 0 8px' }, 'Severity is set by a lead in Admin → Grading.'));
           }
           // one or more affected locations (URLs / domains)
           fields.append(el('label', {}, 'Location(s) — URL / domain'));

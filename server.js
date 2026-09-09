@@ -1576,10 +1576,12 @@ app.get('/api/targets/:id/finding-candidates', (req, res) => {
 // reached from the engagement stat tiles (vulns / notes / creds).
 app.get('/api/projects/:id/findings', (req, res) => {
   if (!q(`SELECT 1 FROM projects WHERE id=?`).get(req.params.id)) return res.status(404).json({ error: 'not found' });
-  res.json(q(`SELECT f.id, f.uid, f.title, f.kind, f.severity, f.cvss, f.author, f.body, f.in_report, f.needs_improvement, f.review_note, f.created_at,
+  const rows = q(`SELECT f.id, f.uid, f.title, f.kind, f.severity, f.cvss, f.author, f.body, f.in_report, f.needs_improvement, f.review_note, f.created_at,
       a.id AS target_id, a.label AS target, a.type AS target_type
     FROM findings f JOIN assets a ON a.id=f.asset_id
-    WHERE a.project_id=? ORDER BY f.created_at DESC`).all(req.params.id));
+    WHERE a.project_id=? ORDER BY f.created_at DESC`).all(req.params.id);
+  for (const r of rows) r.attachments = q(`SELECT id, filename, mime, size FROM attachments WHERE finding_id=? ORDER BY id`).all(r.id);
+  res.json(rows);
 });
 // Ungraded vulnerabilities across every engagement (no severity and no CVSS yet) — the admin/editor
 // grading queue. Notes and credentials are never findings, so they never appear here.

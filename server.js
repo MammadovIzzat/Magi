@@ -1569,11 +1569,13 @@ app.get('/api/projects/:id/findings', (req, res) => {
 // grading queue. Notes and credentials are never findings, so they never appear here.
 app.get('/api/ungraded', async (req, res) => {
   if (!(await canEdit(req))) return res.status(403).json({ error: 'graders only' });
-  res.json(q(`SELECT f.id, f.uid, f.title, f.kind, f.author, f.body, f.created_at,
+  const rows = q(`SELECT f.id, f.uid, f.title, f.kind, f.author, f.body, f.created_at,
       a.id AS target_id, a.label AS target, a.type AS target_type, p.id AS project_id, p.name AS project
     FROM findings f JOIN assets a ON a.id=f.asset_id JOIN projects p ON p.id=a.project_id
     WHERE f.kind='vuln' AND (f.severity IS NULL OR f.severity='') AND (f.cvss IS NULL OR f.cvss='')
-    ORDER BY f.created_at`).all());
+    ORDER BY f.created_at`).all();
+  for (const r of rows) r.attachments = q(`SELECT id, filename, mime, size FROM attachments WHERE finding_id=? ORDER BY id`).all(r.id);
+  res.json(rows);
 });
 
 app.patch('/api/findings/:id', async (req, res) => {

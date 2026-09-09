@@ -520,6 +520,7 @@ check('project findings list returns every kind with its target + author', pfAll
 const ung = await req('POST', `/api/targets/${webT.id}/findings`, { token: workerToken, device: dev1, body: { title: 'Ungraded SSRF', kind: 'vuln' } });
 const queue1 = await req('GET', '/api/ungraded', { token: adminTok });
 check('the grading queue lists an ungraded vulnerability', queue1.status === 200 && queue1.json.some(f => f.id === ung.json.id && f.author === 'ana' && !!f.project));
+check('grading rows carry an attachments array (screenshots show in the grade dialog)', Array.isArray(queue1.json.find(f => f.id === ung.json.id)?.attachments));
 check('notes/creds never appear in the grading queue', !queue1.json.some(f => f.kind && f.kind !== 'vuln'));
 await req('PATCH', `/api/findings/${ung.json.id}`, { token: adminTok, body: { severity: 'high' } });
 const queue2 = await req('GET', '/api/ungraded', { token: adminTok });

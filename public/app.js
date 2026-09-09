@@ -215,7 +215,8 @@ function modal(opts) {
   if (build) build(body);
   const errEl = el('div', { className: 'modal-err' });
   body.append(errEl);
-  const close = () => root.replaceChildren();
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+  const close = () => { document.removeEventListener('keydown', onKey, true); root.replaceChildren(); };
   const x = el('button', { type: 'button', className: 'modal-x', title: 'Close', onclick: close }, icon('x'));
   const submit = el('button', { type: 'submit', className: 'btn ' + (danger ? 'dangerfill' : 'gold') }, cta);
   form.append(
@@ -230,7 +231,10 @@ function modal(opts) {
     catch (err) { errEl.textContent = err.message || String(err); form.querySelector('input:not([type=hidden]),textarea,.sel-trigger')?.focus(); }
     finally { submit.disabled = false; }
   };
-  root.replaceChildren(el('div', { className: 'overlay', onclick: (e) => { if (e.target.classList.contains('overlay')) close(); } }, form));
+  // No backdrop-to-close: a stray click outside must never discard a half-filled dialog. Close via
+  // the ✕, Cancel, or Esc.
+  root.replaceChildren(el('div', { className: 'overlay' }, form));
+  document.addEventListener('keydown', onKey, true);
   form.querySelector('input:not([type=hidden]),textarea,.sel-trigger')?.focus();
 }
 // A fully app-styled dropdown replacing the native <select> — its option popup is OS chrome that
@@ -1573,8 +1577,7 @@ function openCvssEditor(currentVector, onApply) {
         el('button', { type: 'button', className: 'iconbtn', title: 'Apply', onclick: () => { const vec = MagiCVSS.buildVector(m); onApply(vec, MagiCVSS.scoreDetail(vec).severity || 'info'); close(); } }, icon('check', 15)),
         el('button', { type: 'button', className: 'iconbtn', title: 'Cancel', onclick: close }, icon('x', 15)))),
     sections));
-  overlay.onclick = (e) => { if (e.target === overlay) close(); };
-  document.body.append(overlay);
+  document.body.append(overlay); // no backdrop-to-close — dismiss with Apply or Cancel only
   recompute();
 }
 const FIX_STATUS = [{ value: 'not_fixed', label: 'Not fixed' }, { value: 'half_fixed', label: 'Partially fixed' }, { value: 'fixed', label: 'Fixed' }];
@@ -2852,6 +2855,12 @@ function gradeDialog(f, onDone) {
       const detail = stripLocationPrefix(f.body || '').trim();
       if (detail) { b.append(el('label', {}, 'Details')); b.append(el('pre', { className: 'fd-body' }, detail)); }
       else b.append(el('p', { className: 'muted small', style: 'margin:2px 0 8px' }, 'No description recorded — open the finding for full context.'));
+      if ((f.attachments || []).length) {
+        b.append(el('label', {}, `Screenshots (${f.attachments.length})`));
+        const g = el('div', { className: 'fd-shots' });
+        for (const im of f.attachments) { const img = attachmentImg(im.id, { title: im.filename, loading: 'lazy' }); img.onclick = () => openLightbox(im); g.append(img); }
+        b.append(g);
+      }
       const sevSel = field(b, 'Severity', 'severity', { value: 'medium', options: SEVERITIES.filter(s => s.value) });
       b.append(cvssSection(sevSel, null));
     },

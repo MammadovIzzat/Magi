@@ -368,7 +368,7 @@ Uses the system Electron, so the package stays around **750 KB**.
 
 ```bash
 npm run pkg                                   # or: cd packaging && makepkg -f
-sudo pacman -U packaging/magi-0.9.27-1-any.pkg.tar.zst
+sudo pacman -U packaging/magi-0.9.28-1-any.pkg.tar.zst
 ```
 
 ### Debian / Ubuntu
@@ -377,15 +377,15 @@ Debian has no Electron package, so the `.deb` bundles its own copy — **~100 MB
 
 ```bash
 npm run build && npm run pkg:deb
-sudo apt install ./dist/installers/magi_0.9.27_amd64.deb
+sudo apt install ./dist/installers/magi_0.9.28_amd64.deb
 ```
 
 ### Any Linux — portable AppImage
 
 ```bash
 npm run build && npm run pkg:appimage
-chmod +x dist/installers/Magi-0.9.27.AppImage
-./dist/installers/Magi-0.9.27.AppImage
+chmod +x dist/installers/Magi-0.9.28.AppImage
+./dist/installers/Magi-0.9.28.AppImage
 ```
 
 ### macOS
@@ -394,8 +394,8 @@ Cross-built from Linux, both architectures:
 
 ```bash
 npm run build && npm run pkg:mac
-# dist/installers/Magi-0.9.27-mac.zip         Intel
-# dist/installers/Magi-0.9.27-arm64-mac.zip   Apple Silicon
+# dist/installers/Magi-0.9.28-mac.zip         Intel
+# dist/installers/Magi-0.9.28-arm64-mac.zip   Apple Silicon
 ```
 
 These are **unsigned and unnotarised**, and were built on Linux — I have no Mac to

@@ -581,6 +581,13 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .fd-shots img { width: 100%; height: 96px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line-3); cursor: zoom-in; }
 .dock-head { padding: 16px 16px 12px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; }
 .dock-body { flex: 1; overflow-y: auto; padding: 10px 14px 40px; display: flex; flex-direction: column; gap: 10px; }
+/* a finding that belongs to a SUB-target, shown in the parent's evidence log with a link chip */
+.dock-sub { display: flex; flex-direction: column; gap: 4px; }
+.dock-sub-t { align-self: flex-start; display: inline-flex; align-items: center; gap: 7px; background: none;
+  border: 0; padding: 0; cursor: pointer; font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+.dock-sub-t:hover { color: var(--gold); }
+.dock-sub .finding { border-left-style: dashed; }
+.find-list { display: flex; flex-direction: column; gap: 10px; }
 .finding {
   background: var(--panel-hi); border: 1px solid var(--line);
   border-left: 2px solid var(--blue); padding: 11px 12px; position: relative;

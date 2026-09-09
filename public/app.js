@@ -1152,6 +1152,17 @@ async function renderTarget(id) {
     const from = tg.metadata?.spawned_from_item;
     if (from) (spawnedByItem[from] ||= []).push(tg);
   }
+  // Descendant sub-targets of THIS target (built from its folder's target forest), so the evidence
+  // dock can show this task's findings/notes/creds together with all of its subs'.
+  const folderTargets = (project?.assets || []).find(f => String(f.id) === String(a.folder?.id))?.items || [];
+  const descendantIds = (() => {
+    let cur = null;
+    const find = (nodes) => { for (const n of nodes) { if (String(n.item.id) === String(a.id)) { cur = n; return; } find(n.children); if (cur) return; } };
+    find(buildTargetForest(folderTargets));
+    const ids = []; const gather = (ns) => { for (const c of ns) { ids.push(c.item.id); gather(c.children); } };
+    if (cur) gather(cur.children);
+    return ids;
+  })();
   setCrumbs([
     { label: 'engagements', go: () => location.hash = '' },
     { label: a.project?.name || 'engagement', go: () => location.hash = `/project/${pid}` },
@@ -1329,31 +1340,46 @@ async function renderTarget(id) {
       el('span', { className: 'kicker' }, 'Evidence log'),
       el('button', { className: 'btn line sm', style: 'margin-left:auto', onclick: () => addFinding(id) }, '+ Capture')));
   const dbody = el('div', { className: 'dock-body' });
-  if (!a.findings.length) {
-    dbody.append(el('div', { className: 'pmeta', style: 'padding:4px 2px;line-height:1.7' },
-      'Nothing captured yet. Save raw requests, credentials and confirmed vulnerabilities here — the export is built from them.'));
-  } else {
-    // filter (by kind) + search (by name) + sort, repainting only the list so search keeps focus
-    const findList = el('div', { className: 'find-list' });
-    const tabs = el('div', { className: 'evtabs' });
-    const search = el('input', { className: 'evsearch', type: 'search', placeholder: 'Search findings…', value: EVID.q });
-    const sortSel = customSelect({ className: 'evsort', value: EVID.sort,
-      options: [{ value: 'new', label: 'Newest' }, { value: 'sev', label: 'Severity' }, { value: 'title', label: 'Name' }] });
-    const repaint = () => {
-      [...tabs.children].forEach(b => b.classList.toggle('on', b.dataset.k === EVID.kind));
-      const shown = filterSortFindings(a.findings);
-      findList.replaceChildren();
-      if (!shown.length) findList.append(el('div', { className: 'pmeta', style: 'padding:6px 2px' }, 'No findings match.'));
-      else for (const f of shown) findList.append(findingCard(f, id));
-    };
-    for (const [k, l] of [['all', 'All'], ['note', 'Notes'], ['credential', 'Creds'], ['vuln', 'Vulns']]) {
-      const b = el('button', { className: 'evtab', 'data-k': k, onclick: () => { EVID.kind = k; repaint(); } }, l);
-      b.dataset.k = k; tabs.append(b);
-    }
-    search.oninput = () => { EVID.q = search.value; repaint(); };
-    sortSel.onchange = () => { EVID.sort = sortSel.value; repaint(); };
-    dbody.append(el('div', { className: 'evfilter' }, tabs, el('div', { className: 'evrow' }, search, sortSel)), findList);
-    repaint();
+  // This target's own evidence, plus — when it has sub-targets — theirs too, so a task and its subs
+  // are seen together. Sub-target cards carry a chip linking to their target. Descendant evidence is
+  // fetched in the background (one call) so it never blocks the checklist from painting.
+  let dockFindings = a.findings.map(f => ({ ...f }));
+  const findList = el('div', { className: 'find-list' });
+  const tabs = el('div', { className: 'evtabs' });
+  const search = el('input', { className: 'evsearch', type: 'search', placeholder: 'Search findings…', value: EVID.q });
+  const sortSel = customSelect({ className: 'evsort', value: EVID.sort,
+    options: [{ value: 'new', label: 'Newest' }, { value: 'sev', label: 'Severity' }, { value: 'title', label: 'Name' }] });
+  const cardOf = (f) => {
+    if (!f._target) return findingCard(f, id);
+    return el('div', { className: 'dock-sub' },
+      el('button', { className: 'dock-sub-t', title: 'Open ' + f._target.label, onclick: () => location.hash = `/target/${f._target.id}` },
+        codeBadge(f._target.type), el('span', {}, f._target.label)),
+      findingCard(f, f._target.id, () => renderTarget(id)));
+  };
+  const repaint = () => {
+    [...tabs.children].forEach(b => b.classList.toggle('on', b.dataset.k === EVID.kind));
+    const shown = filterSortFindings(dockFindings);
+    findList.replaceChildren();
+    if (!shown.length) findList.append(el('div', { className: 'pmeta', style: 'padding:6px 2px;line-height:1.7' },
+      dockFindings.length ? 'No evidence matches.' : 'Nothing captured yet. Save raw requests, credentials and confirmed vulnerabilities here — the export is built from them.'));
+    else for (const f of shown) findList.append(cardOf(f));
+  };
+  for (const [k, l] of [['all', 'All'], ['note', 'Notes'], ['credential', 'Creds'], ['vuln', 'Vulns']]) {
+    const b = el('button', { className: 'evtab', 'data-k': k, onclick: () => { EVID.kind = k; repaint(); } }, l);
+    b.dataset.k = k; tabs.append(b);
+  }
+  search.oninput = () => { EVID.q = search.value; repaint(); };
+  sortSel.onchange = () => { EVID.sort = sortSel.value; repaint(); };
+  dbody.append(el('div', { className: 'evfilter' }, tabs, el('div', { className: 'evrow' }, search, sortSel)), findList);
+  repaint();
+  if (descendantIds.length && pid) {
+    const gen = curAssetId; // if the user navigates away before this resolves, don't touch the DOM
+    api('/projects/' + pid + '/findings').then(pf => {
+      if (curAssetId !== gen) return;
+      const subs = pf.filter(f => descendantIds.includes(f.target_id))
+        .map(f => ({ ...f, _target: { id: f.target_id, label: f.target, type: f.target_type } }));
+      if (subs.length) { dockFindings = dockFindings.concat(subs); repaint(); }
+    }).catch(() => {});
   }
   dock.append(dbody);
 

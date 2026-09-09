@@ -82,9 +82,21 @@ function attachmentSrc(id) {
     .then(r => r.ok ? r.blob() : Promise.reject(new Error(r.statusText)))
     .then(b => { const u = URL.createObjectURL(b); IMG_CACHE.set(id, u); return u; });
 }
+// Fetch an image's bytes only when it scrolls near the viewport — a screen full of findings no
+// longer fires dozens of downloads on render (a big cause of the UI feeling slow / content popping
+// in). Already-loaded images (cache) show instantly.
+const imgObserver = ('IntersectionObserver' in window) ? new IntersectionObserver((entries, obs) => {
+  for (const e of entries) if (e.isIntersecting) {
+    const img = e.target; obs.unobserve(img);
+    attachmentSrc(img.dataset.attid).then(u => { img.src = u; }).catch(() => {});
+  }
+}, { rootMargin: '300px' }) : null;
 function attachmentImg(id, attrs = {}) {
   const img = el('img', attrs);
-  attachmentSrc(id).then(u => { img.src = u; }).catch(() => { /* leave broken-image; a reload retries */ });
+  img.dataset.attid = id;
+  if (IMG_CACHE.has(id)) img.src = IMG_CACHE.get(id);
+  else if (imgObserver) imgObserver.observe(img);
+  else attachmentSrc(id).then(u => { img.src = u; }).catch(() => {}); // no IO support → eager
   return img;
 }
 function openLightbox(im) {
@@ -3243,6 +3255,7 @@ let LINK_POLL = null, DATA_POLL = null, LAST_REV = null;
 async function pollData() {
   if (!CURRENT_USER) return;
   if ($('#modalRoot').hasChildNodes()) return;                       // a dialog is open
+  if (document.querySelector('.sel-menu, .cvss-overlay, .lightbox')) return; // an open dropdown / editor / image
   const ae = document.activeElement;
   if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && $('#view').contains(ae)) return; // user is typing here
   const h = location.hash.slice(1);

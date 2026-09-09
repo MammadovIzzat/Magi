@@ -215,7 +215,9 @@ function modal(opts) {
   if (build) build(body);
   const errEl = el('div', { className: 'modal-err' });
   body.append(errEl);
-  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+  // Esc closes the dialog — but not while an image lightbox is open on top of it (that Esc closes
+  // the lightbox instead; the modal's own listener fires first, so it must yield here).
+  const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('.lightbox')) { e.preventDefault(); close(); } };
   const close = () => { document.removeEventListener('keydown', onKey, true); root.replaceChildren(); };
   const x = el('button', { type: 'button', className: 'modal-x', title: 'Close', onclick: close }, icon('x'));
   const submit = el('button', { type: 'submit', className: 'btn ' + (danger ? 'dangerfill' : 'gold') }, cta);
@@ -1892,15 +1894,19 @@ async function downloadAttachment(im) {
 
 // Full-size image overlay, with a Download button so a screenshot can be saved locally.
 function lightbox(src, caption, onDownload) {
-  const root = $('#modalRoot');
-  const close = () => root.replaceChildren();
+  // Its OWN element on top of whatever is open (z-index 80 > the modal overlay's 60), NOT the shared
+  // #modalRoot — so viewing an image from inside a dialog, then closing it, leaves the dialog intact.
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); close(); } };
+  const close = () => { wrap.remove(); document.removeEventListener('keydown', onKey, true); };
   const bar = el('div', { className: 'lb-bar', onclick: (e) => e.stopPropagation() },
     onDownload ? el('button', { className: 'btn sm', onclick: onDownload }, icon('down', 12), 'Download') : null,
     el('button', { className: 'btn sm', onclick: close }, 'Close'));
-  root.replaceChildren(el('div', { className: 'lightbox', onclick: close },
+  const wrap = el('div', { className: 'lightbox', onclick: close },
     bar,
     el('img', { src, onclick: (e) => e.stopPropagation() }),
-    caption ? el('div', { className: 'lb-cap' }, caption) : null));
+    caption ? el('div', { className: 'lb-cap' }, caption) : null);
+  document.body.append(wrap);
+  document.addEventListener('keydown', onKey, true);
 }
 
 function download(body, filename, mime) {

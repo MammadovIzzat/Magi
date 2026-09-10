@@ -47,6 +47,7 @@ export function projectReportHTML(projectId) {
       <div class="fhead">
         <span class="chip sev">${esc(sev || 'no severity')}</span>
         <h3>${esc(f.title)}</h3>
+        ${f.author ? `<span class="by">recorded by ${esc(f.author)}</span>` : ''}
       </div>
       ${f.body ? `<pre>${esc(f.body)}</pre>` : ''}
       ${imgs ? `<div class="shots">${imgs}</div>` : ''}
@@ -82,6 +83,7 @@ export function projectReportHTML(projectId) {
   .finding.sev-info,.finding.sev-none{border-left-color:${SEV_COLOR.info}}
   .fhead{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
   .fhead h3{margin:0;font-size:17px;flex-basis:100%;order:3}
+  .by{order:2;margin-left:auto;font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;color:var(--muted);white-space:nowrap}
   .chip{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;padding:2px 8px;border-radius:3px;border:1px solid var(--line);color:var(--muted)}
   .chip.sev{color:#fff}
   .sev-critical .chip.sev{background:${SEV_COLOR.critical}}

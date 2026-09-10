@@ -26,7 +26,7 @@ const fid = rid(db.prepare(`INSERT INTO folders (project_id,grp,label) VALUES (?
 const aid = rid(db.prepare(`INSERT INTO assets (project_id,folder_id,type,label) VALUES (?,?,?,?)`).run(pid, fid, 'web', 'https://x'));
 const fA = rid(db.prepare(`INSERT INTO findings (asset_id,title,kind) VALUES (?,?,?)`).run(aid, 'Creds', 'credential'));
 const uidA = db.prepare(`SELECT uid FROM findings WHERE id=?`).get(fA).uid;
-db.prepare(`INSERT INTO findings (asset_id,title,kind,severity,refs) VALUES (?,?,?,?,?)`).run(aid, 'RCE', 'vuln', 'critical', JSON.stringify([uidA]));
+db.prepare(`INSERT INTO findings (asset_id,title,kind,severity,refs,author) VALUES (?,?,?,?,?,?)`).run(aid, 'RCE', 'vuln', 'critical', JSON.stringify([uidA]), 'mormor');
 // a retest target with a fix status
 const rf = rid(db.prepare(`INSERT INTO folders (project_id,grp,label) VALUES (?,?,?)`).run(pid, 'retest', 'RT'));
 const ra = rid(db.prepare(`INSERT INTO assets (project_id,folder_id,type,label) VALUES (?,?,?,?)`).run(pid, rf, 'retest', 'Remediation'));
@@ -54,6 +54,7 @@ check('report lists the vulnerabilities', html.includes('RCE') && html.includes(
 check('report omits notes/credentials', !html.includes('>Creds<') && !/Creds<\/h3>/.test(html));
 check('report counts only vulns as findings', /<div class="n">2<\/div><div class="k">findings<\/div>/.test(html));
 check('report has no "with images" tile', !html.includes('with images'));
+check('report credits who recorded the finding', html.includes('recorded by mormor'));
 
 const failed = checks.filter(([, ok]) => !ok);
 console.log(`\nio-smoke: ${checks.length - failed.length}/${checks.length} checks passed`);

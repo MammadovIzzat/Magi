@@ -1671,7 +1671,7 @@ function findingCard(f, id, after) {
   const stop = (e) => e.stopPropagation(); // interactive bits shouldn't open the detail popup
   const tools = el('div', { className: 'f-tools', onclick: stop },
     el('button', { className: 'ibtn', title: 'Add image', onclick: () => uploadToFinding(f.id, id, after) }, icon('image', 11)),
-    el('button', { className: 'ibtn', title: 'Edit', onclick: () => editFinding(f, id) }, icon('edit', 11)),
+    el('button', { className: 'ibtn', title: 'Edit', onclick: () => editFinding(f, id, after) }, icon('edit', 11)),
     el('button', { className: 'ibtn del', title: 'Delete', onclick: async () => { if (confirm('Delete this finding and its images?')) { await api('/findings/' + f.id, { method: 'DELETE' }); after(); } } }, icon('x', 11)));
   const shots = el('div', { className: 'f-shots', onclick: stop });
   for (const im of (f.attachments || [])) {
@@ -1698,11 +1698,14 @@ function findingCard(f, id, after) {
     f.body ? el('pre', {}, f.body) : null,
     links,
     (f.attachments || []).length ? shots : null);
-  card.onclick = () => findingDetail(f, id);
+  card.onclick = () => findingDetail(f, id, after);
   return card;
 }
 // Full, readable view of one finding (opened by clicking its card). Read-only, with an Edit CTA.
-function findingDetail(f, id) {
+// `after` re-renders whatever list opened the card (a target's dock or the engagement-wide findings
+// page) so editing/grading/report-ticking a finding never navigates you away from it.
+function findingDetail(f, id, after) {
+  after = after || (() => renderTarget(id));
   const locs = parseLocations(f.body);
   modal({
     kicker: f.fix_status ? 'Retest · ' + fixLabel(f.fix_status) : (f.kind === 'credential' ? 'Credential' : f.kind === 'note' ? 'Note' : 'Vulnerability'),
@@ -1714,12 +1717,12 @@ function findingDetail(f, id) {
         f.author ? el('span', { className: 'fd-by' }, avatarSm(f.author), 'by ' + f.author) : null,
         // An admin can (re)grade a vuln from here — even one already graded, which the grading queue
         // no longer lists. Reuses the grade dialog (severity + CVSS).
-        (isAdmin() && f.kind === 'vuln') ? el('button', { className: 'btn line sm', onclick: () => gradeDialog(f, () => renderTarget(id)) }, icon('edit', 12), (f.severity || f.cvss) ? 'Change severity' : 'Set severity') : null,
-        f.kind === 'vuln' ? el('span', { className: 'fd-report' }, reportTick(f, () => renderTarget(id))) : null));
+        (isAdmin() && f.kind === 'vuln') ? el('button', { className: 'btn line sm', onclick: () => gradeDialog(f, after) }, icon('edit', 12), (f.severity || f.cvss) ? 'Change severity' : 'Set severity') : null,
+        f.kind === 'vuln' ? el('span', { className: 'fd-report' }, reportTick(f, after)) : null));
       if (f.needs_improvement) b.append(el('div', { className: 'improve-note' },
         el('span', { className: 'kicker' }, 'Needs improvement'),
         f.review_note ? el('div', {}, f.review_note) : null,
-        el('button', { className: 'btn line sm', style: 'margin-top:8px', onclick: () => editFinding(f, id) }, icon('edit', 12), 'Improve this finding')));
+        el('button', { className: 'btn line sm', style: 'margin-top:8px', onclick: () => editFinding(f, id, after) }, icon('edit', 12), 'Improve this finding')));
       if (f.cvss) { b.append(el('label', {}, 'CVSS vector')); b.append(el('code', { className: 'fd-vector' }, f.cvss)); }
       if (locs.length) { b.append(el('label', {}, locs.length > 1 ? 'Locations' : 'Location')); b.append(el('div', { className: 'fd-locs' }, ...locs.map(l => el('code', {}, l)))); }
       const bodyText = f.kind === 'vuln' ? stripLocationPrefix(f.body) : f.body;
@@ -1732,7 +1735,7 @@ function findingDetail(f, id) {
         b.append(g);
       }
     },
-    onSubmit: async () => { editFinding(f, id); }, // "Edit" hands off to the editor
+    onSubmit: async () => { editFinding(f, id, after); }, // "Edit" hands off to the editor
   });
 }
 async function saveFinding(editing, finding, assetId, payload, images) {
@@ -1766,8 +1769,9 @@ function fileField(parent, label, bucket) {
 //   note        → title + details (no severity, no images)
 //   credential  → title + username / password / server
 //   vuln        → title + severity + location + explanation + images
-async function findingModal(assetId, finding = null, isRetest = false) {
+async function findingModal(assetId, finding = null, isRetest = false, after) {
   const editing = !!finding;
+  after = after || (() => renderTarget(assetId)); // where to return once saved (target dock or findings page)
   const startKind = finding?.kind === 'request' ? 'note' : (finding?.kind || 'note');
   const images = [];
   const selectedRefs = new Set(finding?.ref_uids || []);
@@ -1820,7 +1824,7 @@ async function findingModal(assetId, finding = null, isRetest = false) {
           title: raw.title || 'Retest item', kind: 'vuln', severity: raw.severity || null,
           body: raw.body || '', fix_status: raw.fix_status || 'not_fixed', refs: [...selectedRefs],
         }, images);
-        renderTarget(assetId);
+        after();
       },
     });
     return;
@@ -1897,12 +1901,12 @@ async function findingModal(assetId, finding = null, isRetest = false) {
       payload.body = body;
       payload.title = raw.title || (kind === 'credential' ? 'Credentials' : kind === 'vuln' ? 'Vulnerability' : 'Note');
       await saveFinding(editing, finding, assetId, payload, images);
-      renderTarget(assetId);
+      after();
     },
   });
 }
-const addFinding = (assetId, isRetest = false) => findingModal(assetId, null, isRetest);
-const editFinding = (finding, assetId) => findingModal(assetId, finding, finding?.fix_status != null || finding?.kind === 'retest');
+const addFinding = (assetId, isRetest = false, after) => findingModal(assetId, null, isRetest, after);
+const editFinding = (finding, assetId, after) => findingModal(assetId, finding, finding?.fix_status != null || finding?.kind === 'retest', after);
 
 // Upload one or more images to a finding via the raw endpoint (no base64 bloat).
 function uploadToFinding(findingId, assetId, after) {

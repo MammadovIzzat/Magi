@@ -1701,7 +1701,10 @@ function findingDetail(f, id) {
         f.severity ? el('span', { className: 'fd-sev sev-' + f.severity }, f.severity.toUpperCase()) : null,
         f.cvss ? el('span', { className: 'fd-cvss', title: f.cvss }, 'CVSS ' + (MagiCVSS.score(f.cvss)?.toFixed(1) ?? '—')) : null,
         f.author ? el('span', { className: 'fd-by' }, avatarSm(f.author), 'by ' + f.author) : null,
-        f.kind === 'vuln' ? reportTick(f, () => renderTarget(id)) : null));
+        // An admin can (re)grade a vuln from here — even one already graded, which the grading queue
+        // no longer lists. Reuses the grade dialog (severity + CVSS).
+        (isAdmin() && f.kind === 'vuln') ? el('button', { className: 'btn line sm', onclick: () => gradeDialog(f, () => renderTarget(id)) }, icon('edit', 12), (f.severity || f.cvss) ? 'Change severity' : 'Set severity') : null,
+        f.kind === 'vuln' ? el('span', { className: 'fd-report' }, reportTick(f, () => renderTarget(id))) : null));
       if (f.needs_improvement) b.append(el('div', { className: 'improve-note' },
         el('span', { className: 'kicker' }, 'Needs improvement'),
         f.review_note ? el('div', {}, f.review_note) : null,
@@ -2902,7 +2905,8 @@ async function adminGrading(ctx, A) {
 function gradeDialog(f, onDone) {
   modal({
     kicker: 'Grade', title: f.title, cta: 'Set severity',
-    note: `${f.project} · ${f.target}` + (f.author ? ` · recorded by ${f.author}` : ''),
+    // f may come from the grading queue (has project/target) or a finding detail (may not).
+    note: [f.project, f.target].filter(Boolean).join(' · ') + (f.author ? (f.project || f.target ? ' · ' : '') + `recorded by ${f.author}` : ''),
     build: (b) => {
       const locs = parseLocations(f.body);
       if (locs.length) { b.append(el('label', {}, locs.length > 1 ? 'Locations' : 'Location')); b.append(el('div', { className: 'fd-locs' }, ...locs.map(l => el('code', {}, l)))); }
@@ -2917,8 +2921,8 @@ function gradeDialog(f, onDone) {
       }
       if (f.needs_improvement && f.review_note) b.append(el('div', { className: 'improve-note' },
         el('span', { className: 'kicker' }, 'Sent back'), el('div', {}, f.review_note)));
-      const sevSel = field(b, 'Severity', 'severity', { value: 'medium', options: SEVERITIES.filter(s => s.value) });
-      b.append(cvssSection(sevSel, null));
+      const sevSel = field(b, 'Severity', 'severity', { value: f.severity || 'medium', options: SEVERITIES.filter(s => s.value) });
+      b.append(cvssSection(sevSel, f.cvss || null));
       // Instead of grading, a reviewer can send it back to the finder to improve, with a note.
       b.append(el('div', { className: 'srule', style: 'margin-top:16px' }, el('span', { className: 'kicker' }, 'Or send back'), el('span', { className: 'rule' })));
       const rnote = field(b, 'What to improve (shown to the finder)', 'review_note', { textarea: true, value: f.review_note || '', ph: 'e.g. add the request/response, confirm impact, attach a screenshot' });

@@ -574,7 +574,8 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .locrow .locinput { flex: 1 1 auto; width: auto; min-width: 0; }
 .locrow .ibtn { flex: none; }
 /* finding detail popup */
-.fd-badges { margin-bottom: 6px; }
+.fd-badges { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.fd-report { margin-left: auto; } /* push "Mark done" to the right, off the title/badges */
 .fd-sev { font-family: var(--mono); font-size: 10px; letter-spacing: .16em; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--sev-info); color: var(--sev-info); }
 .fd-sev.sev-high, .fd-sev.sev-critical { border-color: var(--red); color: var(--red); }
 .fd-sev.sev-medium { border-color: var(--gold); color: var(--gold); }

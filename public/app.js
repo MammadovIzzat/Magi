@@ -1641,6 +1641,9 @@ const fixLabel = (v) => (FIX_STATUS.find(x => x.value === v)?.label || v);
 // A vuln's location(s) are stored as a "Location: a, b, c" first line of the body.
 const parseLocations = (body) => { const m = /^Location:\s*(.+)/.exec(body || ''); return m ? m[1].split(',').map(s => s.trim()).filter(Boolean) : []; };
 const stripLocationPrefix = (body) => (body || '').replace(/^Location:.*\n\n?/, '');
+// Pull one field back out of a credential body ("Username: …\nPassword: …\nServer: …") so editing a
+// credential re-populates its inputs instead of blanking them.
+const credField = (body, key) => { const m = new RegExp('^' + key + ':[ \\t]?(.*)$', 'm').exec(body || ''); return m ? m[1].trim() : ''; };
 
 // A tick that marks whether this finding has been written into the report, so it's obvious at a
 // glance what's already covered and what's left. Toggles in place and refreshes the view.
@@ -1842,17 +1845,17 @@ async function findingModal(assetId, finding = null, isRetest = false, after) {
         fields.replaceChildren();
         const k = kindSel.value;
         if (k === 'note') {
-          field(fields, 'Title', 'title', { value: finding?.title || '', ph: 'What you found' });
-          field(fields, 'Details', 'body', { value: finding?.body || '', textarea: true, ph: 'notes…' });
+          field(fields, 'Title *', 'title', { value: finding?.title || '', ph: 'What you found' });
+          field(fields, 'Details *', 'body', { value: finding?.body || '', textarea: true, ph: 'notes…' });
           if (!editing) fileField(fields, 'Images', images);
         } else if (k === 'credential') {
-          field(fields, 'Title', 'title', { value: finding?.title || '', ph: 'e.g. admin panel login' });
-          field(fields, 'Username', 'cred_user', { ph: 'user' });
-          field(fields, 'Password', 'cred_pass', { ph: 'pass' });
-          field(fields, 'Server / URL', 'cred_server', { ph: 'https://…  or  host' });
+          field(fields, 'Title *', 'title', { value: finding?.title || '', ph: 'e.g. admin panel login' });
+          field(fields, 'Username', 'cred_user', { value: finding ? credField(finding.body, 'Username') : '', ph: 'user' });
+          field(fields, 'Password', 'cred_pass', { value: finding ? credField(finding.body, 'Password') : '', ph: 'pass' });
+          field(fields, 'Server / URL *', 'cred_server', { value: finding ? credField(finding.body, 'Server') : '', ph: 'https://…  or  host' });
           if (!editing) fileField(fields, 'Images', images);
         } else {
-          field(fields, 'Title', 'title', { value: finding?.title || '', ph: 'e.g. SQL injection in /search' });
+          field(fields, 'Title *', 'title', { value: finding?.title || '', ph: 'e.g. SQL injection in /search' });
           // Severity/CVSS is NOT set here — grading happens only in Admin → Grading. Show the current
           // grade read-only when it exists, otherwise a note that a lead will grade it.
           if (finding?.severity || finding?.cvss) {
@@ -1864,7 +1867,7 @@ async function findingModal(assetId, finding = null, isRetest = false, after) {
             fields.append(el('p', { className: 'muted small', style: 'margin:2px 0 8px' }, 'Severity is set by a lead in Admin → Grading.'));
           }
           // one or more affected locations (URLs / domains)
-          fields.append(el('label', {}, 'Location(s) — URL / domain'));
+          fields.append(el('label', {}, 'Location(s) — URL / domain *'));
           const locList = el('div', { className: 'loclist' });
           const addLoc = (val = '') => {
             const inp = el('input', { className: 'locinput', value: val, placeholder: 'https://app/search?q=' });
@@ -1876,7 +1879,7 @@ async function findingModal(assetId, finding = null, isRetest = false, after) {
           (existing.length ? existing : ['']).forEach(v => addLoc(v));
           fields.append(locList,
             el('button', { type: 'button', className: 'btn line sm', style: 'margin:2px 0 6px', onclick: () => addLoc().focus() }, icon('plus', 12), 'Add location'));
-          field(fields, 'Explanation', 'body', { value: editing ? stripLocationPrefix(finding.body) : '', textarea: true, ph: 'how it was found / impact' });
+          field(fields, 'Explanation *', 'body', { value: editing ? stripLocationPrefix(finding.body) : '', textarea: true, ph: 'how it was found / impact' });
           if (!editing) fileField(fields, 'Images (screenshots)', images);
         }
         chainSection(fields);
@@ -1887,19 +1890,30 @@ async function findingModal(assetId, finding = null, isRetest = false, after) {
     onSubmit: async (fd) => {
       const raw = Object.fromEntries(fd);
       const kind = raw.kind;
-      let body = raw.body || '';
-      const payload = { title: '', kind, body, refs: [...selectedRefs] };
+      const title = (raw.title || '').trim();
+      const bodyText = (raw.body || '').trim();
+      const locs = [...document.querySelectorAll('.modal .locinput')].map(i => i.value.trim()).filter(Boolean);
+      const cu = (raw.cred_user || '').trim(), cp = (raw.cred_pass || '').trim(), cs = (raw.cred_server || '').trim();
+      // A finding must carry substance, not just a screenshot — require the essentials per kind so
+      // nobody records a nameless, empty finding by attaching an image and hitting Save.
+      const miss = [];
+      if (!title) miss.push('a title');
+      if (kind === 'note') { if (!bodyText) miss.push('the details'); }
+      else if (kind === 'credential') { if (!cs) miss.push('the server / URL'); if (!cu && !cp) miss.push('a username or password'); }
+      else if (kind === 'vuln') { if (!locs.length) miss.push('at least one location'); if (!bodyText) miss.push('an explanation'); }
+      if (miss.length) throw new Error('Please add ' + miss.join(', ') + '.');
+
+      let body = bodyText;
+      const payload = { title, kind, body, refs: [...selectedRefs] };
       if (kind === 'credential') {
-        body = `Username: ${raw.cred_user || ''}\nPassword: ${raw.cred_pass || ''}\nServer: ${raw.cred_server || ''}`;
+        body = `Username: ${cu}\nPassword: ${cp}\nServer: ${cs}`;
       } else if (kind === 'vuln') {
         // Only present when a grader (admin/editor) filled them; the server ignores them from a worker.
         if ('severity' in raw) payload.severity = raw.severity || null;
         if ('cvss' in raw) payload.cvss = raw.cvss || null;
-        const locs = [...document.querySelectorAll('.modal .locinput')].map(i => i.value.trim()).filter(Boolean);
-        body = (locs.length ? `Location: ${locs.join(', ')}\n\n` : '') + (raw.body || '');
+        body = (locs.length ? `Location: ${locs.join(', ')}\n\n` : '') + bodyText;
       }
       payload.body = body;
-      payload.title = raw.title || (kind === 'credential' ? 'Credentials' : kind === 'vuln' ? 'Vulnerability' : 'Note');
       await saveFinding(editing, finding, assetId, payload, images);
       after();
     },

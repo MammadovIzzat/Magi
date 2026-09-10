@@ -1059,8 +1059,8 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 .sevchips { display: flex; flex-wrap: wrap; gap: 4px; }
 .sevchip { font-family: var(--mono); font-size: 9.5px; padding: 1px 5px; border: 1px solid var(--line-3); color: var(--text); white-space: nowrap; }
 .sevchip.sev-critical { border-color: var(--red); color: var(--red); }
-.sevchip.sev-high { border-color: var(--gold); color: var(--gold); }
-.sevchip.sev-medium { border-color: var(--line-hi); color: var(--text); }
+.sevchip.sev-high { border-color: var(--red); color: var(--red); }
+.sevchip.sev-medium { border-color: var(--gold); color: var(--gold); }
 .sevchip.sev-low { border-color: var(--sev-low); color: var(--sev-low); }
 .sevchip.sev-info { border-color: var(--sev-info); color: var(--sev-info); }
 

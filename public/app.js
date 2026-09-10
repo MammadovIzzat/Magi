@@ -618,10 +618,11 @@ function railForProject(project, activeTargetId) {
   const list = el('div', { className: 'rail-list' });
   for (const f of groups) {
     list.append(el('div', { className: 'rail-label kicker', style: 'margin-top:10px' }, `${groupLabel(f.grp)}`));
-    for (const a of f.items) {
+    for (const { item: a, depth } of flattenTargetForest(f.items)) {
       const p = pct(a.handled, a.total);
       list.append(el('button', {
-        className: 'railtarget' + (String(a.id) === String(activeTargetId) ? ' on' : ''),
+        className: 'railtarget' + (depth ? ' sub' : '') + (String(a.id) === String(activeTargetId) ? ' on' : ''),
+        style: depth ? `padding-left:${10 + depth * 12}px` : '',
         onclick: () => location.hash = `/target/${a.id}`,
       },
         el('span', { className: 'rt-top' }, codeBadge(a.type, String(a.id) === String(activeTargetId)), el('span', { className: 'rt-pct' }, p + '%')),
@@ -723,6 +724,16 @@ function buildTargetForest(items) {
   const sortRec = (list) => { list.sort(byLabel); for (const n of list) sortRec(n.children); };
   sortRec(roots);
   return roots;
+}
+
+// Depth-first flatten of a folder's target forest into the exact order the engagement page lists
+// it — roots sorted by label, each root immediately followed by its own sub-targets. The rail uses
+// this so its target order (subs included) matches the main list. Returns [{ item, depth }].
+function flattenTargetForest(items) {
+  const out = [];
+  const walk = (n, depth) => { out.push({ item: n.item, depth }); for (const c of n.children) walk(c, depth + 1); };
+  for (const root of buildTargetForest(items)) walk(root, 0);
+  return out;
 }
 
 // ---------- engagement (project) — lists Asset folders ----------

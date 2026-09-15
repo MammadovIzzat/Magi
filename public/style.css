@@ -861,9 +861,12 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 
 /* ── modal ─────────────────────────────────────────────── */
 .overlay {
-  position: fixed; inset: 0; background: rgba(4,5,8,.72); backdrop-filter: blur(2px);
+  /* A slightly darker solid scrim instead of backdrop-filter: blur() — a full-screen backdrop blur
+     re-blurs the whole page every frame while the dialog animates/scrolls, which stutters badly
+     behind a big modal (the checklist). The solid scrim gives the same separation, cheaply. */
+  position: fixed; inset: 0; background: rgba(4,5,8,.82);
   display: grid; place-items: center; z-index: 60; padding: 20px;
-  animation: magiFade .15s ease both;
+  animation: magiFade .12s ease both;
 }
 .modal {
   width: min(520px, 94vw); max-height: 86vh; overflow: auto; background: var(--panel);

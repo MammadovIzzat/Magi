@@ -1918,9 +1918,10 @@ async function findingModal(assetId, finding = null, isRetest = false, after, st
   const startKind = startKindOverride || (finding?.kind === 'request' ? 'note' : (finding?.kind || 'note'));
   const images = [];
   const selectedRefs = new Set(finding?.ref_uids || []);
-  // Other findings across the engagement, to link as an attack chain (or a retest reference).
+  // Other VULNERABILITIES across the engagement, to link as an attack chain (or a retest reference).
+  // Notes and credentials are working evidence, never chain links, so they're not offered.
   let candidates = [];
-  try { candidates = (await api(`/targets/${assetId}/finding-candidates`)).filter(c => c.uid && c.uid !== finding?.uid); } catch { }
+  try { candidates = (await api(`/targets/${assetId}/finding-candidates`)).filter(c => c.uid && c.kind === 'vuln' && c.uid !== finding?.uid); } catch { }
 
   // Linking is optional: a collapsed toggle that opens the picker. The list shows ~3 rows and
   // scrolls if there are more.
@@ -2037,7 +2038,7 @@ async function findingModal(assetId, finding = null, isRetest = false, after, st
           field(fields, 'Explanation *', 'body', { value: editing ? stripLocationPrefix(finding.body) : '', textarea: true, ph: 'how it was found / impact' });
           if (!editing) fileField(fields, 'Images (screenshots)', images);
         }
-        chainSection(fields);
+        if (k === 'vuln') chainSection(fields); // attack-chain linking is a vulnerability concept only
       };
       kindSel.onchange = rebuild;
       rebuild();

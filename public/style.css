@@ -1125,6 +1125,68 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
   font-size: 12px; line-height: 1.45;
 }
 
+/* ── target page: notes/creds chat (middle) + a checklist opened in a popup ── */
+.target-head.slim { padding-bottom: 16px; }
+.notes-col { flex: 1; min-width: 420px; display: flex; flex-direction: column; overflow: hidden; }
+.chat-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.chat-stream { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 26px 8px; display: flex; flex-direction: column; gap: 12px; }
+.chat-empty { color: var(--muted); font-family: var(--mono); font-size: 12px; padding: 26px 4px; line-height: 1.75; }
+
+.checklist-open { display: inline-flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line-3);
+  border-radius: 6px; padding: 7px 12px; color: var(--text-2); cursor: pointer; font-family: var(--mono); font-size: 11px; }
+.checklist-open:hover { border-color: var(--gold); color: var(--fg); }
+.checklist-open .clk-lbl { text-transform: uppercase; letter-spacing: .12em; font-size: 10.5px; }
+.checklist-open .clk-count { color: var(--muted); }
+.checklist-open .clk-flag { display: inline-flex; align-items: center; gap: 3px; color: var(--purple); }
+.checklist-open .clk-bar { width: 46px; height: 5px; background: var(--line); position: relative; overflow: hidden; border-radius: 3px; }
+.checklist-open .clk-bar > span { position: absolute; inset: 0 auto 0 0; background: var(--jade); }
+
+/* one note/credential bubble */
+.chatnote { border: 1px solid var(--line-2); border-left: 3px solid var(--line-hi); background: var(--panel); border-radius: 4px; padding: 10px 12px; }
+.chatnote.mine { border-left-color: var(--gold); }
+.chatnote.cred { background: var(--void); }
+.chatnote.tome { border-color: var(--purple); background: var(--purple-bg); box-shadow: 0 0 0 1px var(--purple), 0 0 18px -4px var(--purple); }
+.cn-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.cn-author { font-family: var(--mono); font-size: 11.5px; color: var(--fg-2); font-weight: 500; }
+.cn-tag { display: inline-flex; align-items: center; gap: 3px; font-family: var(--mono); font-size: 9px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--gold); border: 1px solid var(--line-3); padding: 1px 5px; border-radius: 3px; }
+.cn-when { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--muted-2); white-space: nowrap; }
+.cn-body { font-size: 13px; color: var(--text); line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.cn-body.cred { font-family: var(--mono); font-size: 12px; color: #a8c8ff; background: var(--void); border: 1px solid var(--line);
+  border-radius: 3px; padding: 8px 10px; margin: 0; overflow-x: auto; }
+.cn-shots { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.cn-shots img { width: 72px; height: 72px; object-fit: cover; border: 1px solid var(--line-3); border-radius: 3px; cursor: zoom-in; }
+.cn-foot { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.cn-for { display: inline-flex; align-items: center; gap: 4px; font-family: var(--mono); font-size: 10px; color: var(--purple); }
+.cn-for .avatar.sm { width: 16px; height: 16px; font-size: 8px; color: var(--purple); }
+.cn-tools { margin-left: auto; display: flex; gap: 4px; }
+.ibtn.flagto.on { color: var(--purple); border-color: var(--purple); }
+
+/* composer */
+.chat-composer { border-top: 1px solid var(--line); background: var(--panel-2); padding: 10px 26px 14px; }
+.chat-tools { display: flex; gap: 7px; margin-bottom: 8px; flex-wrap: wrap; }
+.chat-row { display: flex; gap: 8px; align-items: flex-end; }
+.chat-input { flex: 1; resize: none; background: var(--bg); border: 1px solid var(--line-3); border-radius: 6px; padding: 9px 11px;
+  color: var(--text); font-family: var(--sans); font-size: 13px; line-height: 1.5; min-height: 38px; max-height: 160px; }
+.chat-input:focus { outline: none; border-color: var(--gold); }
+.chat-send { flex: none; align-self: stretch; }
+
+/* flag-to-a-teammate menu (reuses .sel-menu / .sel-opt) */
+.flagmenu { padding: 4px; }
+.flagmenu-h { font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--label); padding: 6px 8px 4px; }
+.flagmenu .sel-opt { display: flex; align-items: center; gap: 8px; }
+.flagmenu .opt-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flagmenu .sel-opt.clear { color: var(--muted); border-top: 1px solid var(--line); justify-content: center; }
+
+/* checklist popup */
+.modal.checklist-modal { width: min(920px, 94vw); max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; }
+.checklist-pop { flex: 1; min-height: 0; overflow-y: auto; padding: 0; }
+.clpop-bar { position: sticky; top: 0; z-index: 3; background: var(--panel-hi); padding: 12px 20px 8px; border-bottom: 1px solid var(--line); }
+.clpop-actions { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
+.checklist-pop .checklist { padding: 4px 20px 24px; }
+.checklist-pop .group { margin-top: 18px; }
+.checklist-pop .group:first-child { margin-top: 8px; }
+
 /* ── responsive top bar (split-screen / narrow windows) ── */
 @media (max-width: 1000px) {
   .topbar { gap: 10px; padding: 0 12px; }

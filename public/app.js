@@ -130,6 +130,12 @@ const KIND_OPTS = [
   { value: 'input', label: 'Input value' }, { value: 'trigger', label: 'Trigger (yes/no + follow-up)' },
   { value: 'select', label: 'Select (option chips)' }];
 const daysSince = (iso) => Math.max(1, Math.round((Date.now() - new Date(iso.replace(' ', 'T') + 'Z')) / 864e5));
+// A note's timeline stamp for the chat — date + hour (stored UTC, shown in the viewer's locale/zone).
+const fmtWhen = (iso) => {
+  const d = new Date(String(iso || '').replace(' ', 'T') + 'Z');
+  if (isNaN(d)) return '';
+  return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+};
 
 let TYPES = [];
 // Engagement-group order/labels for the grouped add-target picker (mirrors ENGAGEMENT_GROUPS).
@@ -1220,60 +1226,13 @@ async function renderTarget(id) {
       list));
   }
 
-  const childrenBy = {}, byGroup = {};
-  for (const it of a.items) {
-    (byGroup[it.group_key] ||= []).push(it);
-    if (it.parent_id != null) (childrenBy[it.parent_id] ||= []).push(it);
-  }
-  // An item survives the filter if it matches, or anything beneath it does.
-  // select/group rows are containers rather than work: they carry no status, so in the
-  // unfiltered view they always stay (otherwise a select with nothing chosen vanishes,
-  // taking its option chips with it), and under a filter only if a child matches.
-  const survives = (it) => ACTIONABLE(it)
-    ? MATCH[FILTER](it) || (childrenBy[it.id] || []).some(survives)
-    : FILTER === 'all' || (childrenBy[it.id] || []).some(survives);
-
-  const groups = [];
-  for (const it of a.items) {
-    if (it.parent_id != null) continue;
-    const g = groups[groups.length - 1];
-    if (!g || g.key !== it.group_key) groups.push({ key: it.group_key, title: it.group_title, roots: [it] });
-    else g.roots.push(it);
-  }
-
+  // Progress for the checklist opener — the checklist itself now lives in a popup (openChecklist).
   const actionable = a.items.filter(ACTIONABLE);
   const handled = actionable.filter(i => HANDLED.includes(i.status)).length;
-  const flagged = actionable.filter(i => i.status === 'flag').length;
-  const openCount = actionable.filter(i => i.status === 'todo').length;
+  const flaggedItems = actionable.filter(i => i.status === 'flag').length;
+  const cov = pct(handled, actionable.length);
 
-  // ── sticky header
-  const segbar = el('div', { className: 'segbar' });
-  for (const g of groups) {
-    const all = (byGroup[g.key] || []).filter(ACTIONABLE);
-    const done = all.filter(i => HANDLED.includes(i.status)).length;
-    const gf = all.filter(i => i.status === 'flag').length;
-    segbar.append(el('span', {
-      className: gf ? 'has-flag' : '', title: `${g.title} — ${done}/${all.length}`,
-      style: `flex:${Math.max(all.length, 1)}`,
-    }, el('span', { style: `width:${pct(done, all.length)}%` })));
-  }
-
-  const filters = el('div', { className: 'filters' });
-  for (const f of [{ k: 'all', l: 'All', n: actionable.length }, { k: 'open', l: 'Open', n: openCount },
-  { k: 'flag', l: 'Revisit', n: flagged }, { k: 'done', l: 'Handled', n: handled }]) {
-    filters.append(el('button', {
-      className: 'filt filt-' + f.k + (FILTER === f.k ? ' on' : ''),
-      onclick: () => {
-        FILTER = f.k;
-        if (f.k !== 'all') groups.forEach(g => openGroups.add(g.key)); // show what you filtered for
-        renderTarget(id);
-      },
-    }, f.l, el('span', {}, String(f.n))));
-  }
-
-  // "Who's on this target" — a display-only assignment (any number of operators) anyone can set;
-  // it doesn't gate editing. The roster loads lazily when the menu opens, so it never blocks the
-  // checklist from rendering. Toggling PATCHes but does not re-render, so several can be picked at once.
+  // "Who's on this target" — a display-only assignment anyone can set; it doesn't gate editing.
   const assignCtl = multiAssign({
     selected: assigneeList(a.assignee),
     loadPeople: () => loadAssignees(),
@@ -1282,81 +1241,55 @@ async function renderTarget(id) {
       catch (e) { toast(e.message); }
     },
   });
-  const assignEl = el('div', { className: 'assign' },
-    el('span', { className: 'assign-lbl' }, icon('user', 12), 'Assignees'), assignCtl);
+  const checklistBtn = el('button', { className: 'checklist-open', title: 'Open the checklist', onclick: () => openChecklist(id) },
+    icon('check', 14), el('span', { className: 'clk-lbl' }, 'Checklist'),
+    actionable.length ? el('span', { className: 'clk-count' }, `${handled}/${actionable.length}`) : null,
+    flaggedItems ? el('span', { className: 'clk-flag', title: `${flaggedItems} flagged to revisit` }, icon('flag', 10), String(flaggedItems)) : null,
+    actionable.length ? el('span', { className: 'clk-bar' + (cov > 70 ? ' good' : '') }, el('span', { style: `width:${cov}%` })) : null);
 
-  const head = el('div', { className: 'target-head' },
+  const head = el('div', { className: 'target-head slim' },
     el('div', { style: 'display:flex;align-items:flex-start;gap:16px' },
       el('div', { style: 'min-width:0;flex:1' },
         el('div', { style: 'display:flex;align-items:center;gap:9px' },
           codeBadge(a.type), el('span', { className: 'kicker' }, t.label || a.type)),
         el('h1', {}, a.label)),
       el('div', { className: 'target-actions' },
-        assignEl,
-        el('button', { className: 'btn', onclick: () => { groups.forEach(g => openGroups.add(g.key)); renderTarget(id); } }, 'Expand all'),
-        el('button', { className: 'btn', onclick: () => { openGroups.clear(); renderTarget(id); } }, 'Collapse'),
-        handled < actionable.length
-          ? el('button', { className: 'btn', title: 'Mark every checklist item in this target done', onclick: () => { if (confirm('Mark every checklist item in this target as done?')) markChecklist(id, 'done'); } }, icon('check', 12), 'All done')
-          : null,
-        isEditor() ? el('button', { className: 'btn line', onclick: () => itemModal(id) }, '+ Item') : null)),
-    el('div', { className: 'seg' }, segbar,
-      el('span', { className: 'count' }, String(handled), el('b', {}, '/' + actionable.length)),
-      flagged ? el('span', { className: 'flagcount' }, icon('flag', 11), String(flagged)) : null),
-    filters);
+        el('div', { className: 'assign' }, el('span', { className: 'assign-lbl' }, icon('user', 12), 'Assignees'), assignCtl),
+        checklistBtn)));
 
-  // ── checklist
-  const list = el('div', { className: 'checklist' });
-  let shown = 0;
-  groups.forEach((g, gi) => {
-    const all = (byGroup[g.key] || []).filter(ACTIONABLE);
-    const done = all.filter(i => HANDLED.includes(i.status)).length;
-    const gf = all.filter(i => i.status === 'flag').length;
-    const roots = g.roots.filter(survives);
-    if (!roots.length) return;
-    shown += roots.length;
-    const open = openGroups.has(g.key);
-    const hdr = el('button', { className: 'ghdr' + (open ? ' open' : '') },
-      el('span', { className: 'gnum' }, pad(gi + 1)),
-      el('span', { className: 'gchev' }, '▶'),
-      el('span', { className: 'gtitle' }, g.title),
-      gf ? el('span', { className: 'gflag' }, '⚑ ' + gf) : null,
-      // mark every item in this section done at once (only shown while something's still open)
-      (all.length && done < all.length)
-        ? (() => { const s = el('span', { className: 'gdone', title: 'Mark this section done', role: 'button' }, icon('check', 12));
-            s.onclick = (e) => { e.stopPropagation(); markChecklist(id, 'done', g.key); }; return s; })()
-        : null,
-      el('span', { className: 'gcount' }, String(done), el('b', {}, '/' + all.length)),
-      el('span', { className: 'bar' + (pct(done, all.length) > 70 ? ' good' : '') }, el('span', { style: `width:${pct(done, all.length)}%` })));
-    hdr.onclick = () => { open ? openGroups.delete(g.key) : openGroups.add(g.key); renderTarget(id); };
-    const box = el('div', { className: 'group' }, hdr);
-    if (open) {
-      const body = el('div', { className: 'gbody' });
-      let n = 0;
-      const walk = (it, depth) => {
-        if (!survives(it)) return;
-        body.append(renderItem(it, id, ++n, depth, childrenBy, spawnedByItem));
-        for (const k of (childrenBy[it.id] || []).sort((x, y) => x.sort - y.sort)) walk(k, depth + 1);
-      };
-      for (const it of roots) walk(it, 0);
-      box.append(body);
-    }
-    list.append(box);
-  });
-  if (!shown) list.append(el('div', { className: 'empty', style: 'margin-top:26px' },
-    `Nothing matches “${FILTER}”.`));
+  // ── middle: the notes/creds chat — everyone jots what they checked; each note carries who + when,
+  // and can be flagged to a teammate (glows for them). Vulns never appear here; they live on the right.
+  const notes = a.findings.filter(f => f.kind === 'note' || f.kind === 'credential')
+    .slice().sort((x, y) => String(x.created_at).localeCompare(String(y.created_at))); // oldest → newest (chat order)
+  const stream = el('div', { className: 'chat-stream' });
+  if (!notes.length) stream.append(el('div', { className: 'chat-empty' },
+    'No notes yet. Jot down what you checked, drop a credential, or flag a teammate to take a look.'));
+  else for (const f of notes) stream.append(chatNote(f, id));
 
-  // ── evidence dock
+  const ta = el('textarea', { className: 'chat-input', rows: 1, placeholder: 'Write a note — what you checked, what you saw… (Enter to send, Shift+Enter for a new line)' });
+  const send = async () => {
+    const text = ta.value.trim(); if (!text) return;
+    try { await api('/targets/' + id + '/findings', { method: 'POST', body: { title: text.split('\n')[0].slice(0, 80) || 'Note', kind: 'note', body: text } }); ta.value = ''; renderTarget(id); }
+    catch (e) { toast(e.message); }
+  };
+  ta.oninput = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'; };
+  ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
+  const composer = el('div', { className: 'chat-composer' },
+    el('div', { className: 'chat-tools' },
+      el('button', { className: 'btn line sm', title: 'A note with screenshots', onclick: () => addFinding(id, false, () => renderTarget(id), 'note') }, icon('image', 12), 'Evidence'),
+      el('button', { className: 'btn line sm', title: 'Record a credential', onclick: () => addFinding(id, false, () => renderTarget(id), 'credential') }, icon('key', 12), 'Creds'),
+      el('button', { className: 'btn line sm', title: 'Open the checklist', onclick: () => openChecklist(id) }, icon('check', 12), 'Checklist')),
+    el('div', { className: 'chat-row' }, ta, el('button', { className: 'btn gold chat-send', onclick: send }, 'Send')));
+  const midCol = el('div', { className: 'target-col notes-col' }, head, el('div', { className: 'chat-wrap' }, stream, composer));
+
+  // ── right: findings (confirmed vulnerabilities only), with search + sort.
   const dock = el('aside', { className: 'dock' },
     el('div', { className: 'dock-head' },
-      el('span', { className: 'kicker' }, 'Evidence log'),
-      el('button', { className: 'btn line sm', style: 'margin-left:auto', onclick: () => addFinding(id) }, '+ Capture')));
+      el('span', { className: 'kicker' }, 'Findings'),
+      el('button', { className: 'btn line sm', style: 'margin-left:auto', onclick: () => addFinding(id, false, () => renderTarget(id), 'vuln') }, '+ Finding')));
   const dbody = el('div', { className: 'dock-body' });
-  // This target's own evidence, plus — when it has sub-targets — theirs too, so a task and its subs
-  // are seen together. Sub-target cards carry a chip linking to their target. Descendant evidence is
-  // fetched in the background (one call) so it never blocks the checklist from painting.
-  let dockFindings = a.findings.map(f => ({ ...f }));
+  let dockFindings = a.findings.filter(f => f.kind === 'vuln').map(f => ({ ...f }));
   const findList = el('div', { className: 'find-list' });
-  const tabs = el('div', { className: 'evtabs' });
   const search = el('input', { className: 'evsearch', type: 'search', placeholder: 'Search findings…', value: EVID.q });
   const sortSel = customSelect({ className: 'evsort', value: EVID.sort,
     options: [{ value: 'new', label: 'Newest' }, { value: 'sev', label: 'Severity' }, { value: 'title', label: 'Name' }] });
@@ -1368,26 +1301,25 @@ async function renderTarget(id) {
       findingCard(f, f._target.id, () => renderTarget(id)));
   };
   const repaint = () => {
-    [...tabs.children].forEach(b => b.classList.toggle('on', b.dataset.k === EVID.kind));
-    const shown = filterSortFindings(dockFindings);
+    let shown = dockFindings.filter(f => f.kind === 'vuln');
+    const q = search.value.trim().toLowerCase();
+    if (q) shown = shown.filter(f => `${f.title || ''} ${f.body || ''}`.toLowerCase().includes(q));
+    if (EVID.sort === 'sev') shown.sort((x, y) => (SEV_RANK[x.severity] ?? 9) - (SEV_RANK[y.severity] ?? 9));
+    else if (EVID.sort === 'title') shown.sort((x, y) => (x.title || '').localeCompare(y.title || ''));
     findList.replaceChildren();
     if (!shown.length) findList.append(el('div', { className: 'pmeta', style: 'padding:6px 2px;line-height:1.7' },
-      dockFindings.length ? 'No evidence matches.' : 'Nothing captured yet. Save raw requests, credentials and confirmed vulnerabilities here — the export is built from them.'));
+      dockFindings.length ? 'No findings match.' : 'No confirmed vulnerabilities yet. Add one here — a lead grades its severity. Notes and credentials go in the chat on the left.'));
     else for (const f of shown) findList.append(cardOf(f));
   };
-  for (const [k, l] of [['all', 'All'], ['note', 'Notes'], ['credential', 'Creds'], ['vuln', 'Vulns']]) {
-    const b = el('button', { className: 'evtab', 'data-k': k, onclick: () => { EVID.kind = k; repaint(); } }, l);
-    b.dataset.k = k; tabs.append(b);
-  }
   search.oninput = () => { EVID.q = search.value; repaint(); };
   sortSel.onchange = () => { EVID.sort = sortSel.value; repaint(); };
-  dbody.append(el('div', { className: 'evfilter' }, tabs, el('div', { className: 'evrow' }, search, sortSel)), findList);
+  dbody.append(el('div', { className: 'evfilter' }, el('div', { className: 'evrow' }, search, sortSel)), findList);
   repaint();
   if (descendantIds.length && pid) {
     const gen = curAssetId; // if the user navigates away before this resolves, don't touch the DOM
     api('/projects/' + pid + '/findings').then(pf => {
       if (curAssetId !== gen) return;
-      const subs = pf.filter(f => descendantIds.includes(f.target_id))
+      const subs = pf.filter(f => descendantIds.includes(f.target_id) && f.kind === 'vuln')
         .map(f => ({ ...f, _target: { id: f.target_id, label: f.target, type: f.target_type } }));
       if (subs.length) { dockFindings = dockFindings.concat(subs); repaint(); }
     }).catch(() => {});
@@ -1395,13 +1327,189 @@ async function renderTarget(id) {
   dock.append(dbody);
 
   dock.style.flex = `0 0 ${DOCK_W}px`; dock.style.width = DOCK_W + 'px';
-  const y = $('.target-col')?.scrollTop || 0;
-  $('#view').replaceChildren(el('div', { className: 'target' },
-    el('div', { className: 'target-col' }, head, list), dockResizer(dock), dock));
-  const col = $('.target-col'); if (col) col.scrollTop = y;
+  $('#view').replaceChildren(el('div', { className: 'target' }, midCol, dockResizer(dock), dock));
+  // The chat reads top→bottom, newest last — land at the bottom like a messaging app.
+  requestAnimationFrame(() => { stream.scrollTop = stream.scrollHeight; });
 }
 
-function renderItem(it, assetId, num, depth, childrenBy = {}, spawnedByItem = {}) {
+// One note/credential in the target's chat: who wrote it, when, the text, any screenshots, and a
+// flag-to-a-teammate control. A note flagged to the current user glows (a "check this" nudge).
+function chatNote(f, id) {
+  const mine = CURRENT_USER && f.author === CURRENT_USER;
+  const toMe = CURRENT_USER && f.flagged_to && f.flagged_to === CURRENT_USER;
+  const isCred = f.kind === 'credential';
+  const wrap = el('div', { className: 'chatnote' + (mine ? ' mine' : '') + (f.flagged_to ? ' flagged' : '') + (toMe ? ' tome' : '') + (isCred ? ' cred' : '') });
+  const cnHead = el('div', { className: 'cn-head' },
+    avatarSm(f.author || '?'),
+    el('span', { className: 'cn-author' }, f.author || 'someone'),
+    isCred ? el('span', { className: 'cn-tag' }, icon('key', 10), 'creds') : null,
+    el('span', { className: 'cn-when', title: f.created_at }, fmtWhen(f.created_at)));
+  const text = f.body || f.title || '';
+  const cnBody = isCred ? el('pre', { className: 'cn-body cred' }, text) : el('div', { className: 'cn-body' }, text);
+  wrap.append(cnHead, cnBody);
+  if ((f.attachments || []).length) {
+    const shots = el('div', { className: 'cn-shots' });
+    for (const im of f.attachments) { const th = attachmentImg(im.id, { title: im.filename, loading: 'lazy' }); th.onclick = () => openLightbox(im); shots.append(th); }
+    wrap.append(shots);
+  }
+  const foot = el('div', { className: 'cn-foot' });
+  if (f.flagged_to) foot.append(el('span', { className: 'cn-for' + (toMe ? ' me' : '') }, icon('flag', 10), 'for ', avatarSm(f.flagged_to), f.flagged_to));
+  foot.append(el('div', { className: 'cn-tools' },
+    flagToControl(f, id),
+    el('button', { className: 'ibtn', title: 'Edit', onclick: () => editFinding(f, id, () => renderTarget(id)) }, icon('edit', 11)),
+    el('button', { className: 'ibtn del', title: 'Delete', onclick: async () => { if (confirm('Delete this note?')) { await api('/findings/' + f.id, { method: 'DELETE' }); renderTarget(id); } } }, icon('x', 11))));
+  wrap.append(foot);
+  return wrap;
+}
+
+// The little flag button on a note: pick a teammate to flag it to ("check this"), or clear the flag.
+// The roster loads lazily when the menu opens.
+function flagToControl(f, id) {
+  const btn = el('button', { className: 'ibtn flagto' + (f.flagged_to ? ' on' : ''), title: f.flagged_to ? 'Flagged to ' + f.flagged_to : 'Flag to a teammate' }, icon('flag', 11));
+  let menu = null;
+  const close = () => { if (menu) { menu.remove(); menu = null; document.removeEventListener('mousedown', onDown, true); window.removeEventListener('resize', close); } };
+  const onDown = (e) => { if (menu && !menu.contains(e.target) && e.target !== btn && !btn.contains(e.target)) close(); };
+  const setFlag = async (u) => { close(); try { await api('/findings/' + f.id, { method: 'PATCH', body: { flagged_to: u } }); renderTarget(id); } catch (e) { toast(e.message); } };
+  btn.onclick = async (e) => {
+    e.stopPropagation();
+    if (menu) return close();
+    menu = el('div', { className: 'sel-menu flagmenu' }, el('div', { className: 'sel-opt', style: 'color:var(--muted)' }, 'Loading…'));
+    document.body.append(menu);
+    const place = () => { const r = btn.getBoundingClientRect(); menu.style.left = Math.max(8, r.right - 200) + 'px'; menu.style.top = (r.bottom + 4) + 'px'; menu.style.minWidth = '190px'; };
+    place();
+    document.addEventListener('mousedown', onDown, true); window.addEventListener('resize', close);
+    let people = []; try { people = await loadAssignees(); } catch {}
+    if (!menu) return;
+    menu.replaceChildren(
+      el('div', { className: 'flagmenu-h' }, 'Flag this note to'),
+      ...(people.length ? people : [{ username: '(no teammates yet)' }]).map(p => p.username.startsWith('(')
+        ? el('div', { className: 'sel-opt', style: 'color:var(--muted)' }, p.username)
+        : el('div', { className: 'sel-opt' + (f.flagged_to === p.username ? ' on' : ''), onmousedown: (ev) => { ev.preventDefault(); setFlag(p.username); } },
+            avatarSm(p.username), el('span', { className: 'opt-name' }, p.username))),
+      f.flagged_to ? el('div', { className: 'sel-opt clear', onmousedown: (ev) => { ev.preventDefault(); setFlag(null); } }, 'Clear flag') : null);
+    place();
+  };
+  return btn;
+}
+
+// The checklist, now opened in a popup from the target page. Refetches on each change so option
+// chips, spawned sub-targets and follow-ups stay live; on close, refreshes the target for its
+// progress. Per plain check it's Handled · Flag (the popup drops the inline N/A).
+async function openChecklist(id) {
+  const root = $('#modalRoot');
+  let dirty = false;
+  const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('.lightbox')) { e.preventDefault(); close(); } };
+  const close = () => { document.removeEventListener('keydown', onKey, true); root.replaceChildren(); if (dirty) renderTarget(id); };
+  const bodyEl = el('div', { className: 'modal-body checklist-pop' });
+  const panel = el('div', { className: 'modal wide checklist-modal' },
+    el('div', { className: 'modal-head' }, el('span', { className: 'modal-kicker' }, 'Checklist'),
+      el('button', { type: 'button', className: 'modal-x', title: 'Close', onclick: close }, icon('x'))),
+    bodyEl);
+  root.replaceChildren(el('div', { className: 'overlay' }, panel));
+  document.addEventListener('keydown', onKey, true);
+
+  let project = null; // fetched once, for spawn_type items to list their spawned sub-targets
+  const rerender = async () => { dirty = true; await paint(); };
+  async function paint() {
+    let a;
+    try { a = await api('/targets/' + id); } catch (e) { bodyEl.replaceChildren(el('div', { className: 'pmeta', style: 'padding:20px' }, e.message)); return; }
+    const pid = a.project?.id ?? a.folder?.project_id;
+    if (pid && !project) { try { project = await api('/projects/' + pid); } catch {} }
+    const spawnedByItem = {};
+    for (const fo of (project?.assets || [])) for (const tg of (fo.items || [])) {
+      const from = tg.metadata?.spawned_from_item; if (from) (spawnedByItem[from] ||= []).push(tg);
+    }
+    const childrenBy = {}, byGroup = {};
+    for (const it of a.items) { (byGroup[it.group_key] ||= []).push(it); if (it.parent_id != null) (childrenBy[it.parent_id] ||= []).push(it); }
+    const survives = (it) => ACTIONABLE(it)
+      ? MATCH[FILTER](it) || (childrenBy[it.id] || []).some(survives)
+      : FILTER === 'all' || (childrenBy[it.id] || []).some(survives);
+    const groups = [];
+    for (const it of a.items) {
+      if (it.parent_id != null) continue;
+      const g = groups[groups.length - 1];
+      if (!g || g.key !== it.group_key) groups.push({ key: it.group_key, title: it.group_title, roots: [it] });
+      else g.roots.push(it);
+    }
+    const actionable = a.items.filter(ACTIONABLE);
+    const handled = actionable.filter(i => HANDLED.includes(i.status)).length;
+    const flagged = actionable.filter(i => i.status === 'flag').length;
+    const openCount = actionable.filter(i => i.status === 'todo').length;
+
+    const segbar = el('div', { className: 'segbar' });
+    for (const g of groups) {
+      const all = (byGroup[g.key] || []).filter(ACTIONABLE);
+      const done = all.filter(i => HANDLED.includes(i.status)).length;
+      const gf = all.filter(i => i.status === 'flag').length;
+      segbar.append(el('span', { className: gf ? 'has-flag' : '', title: `${g.title} — ${done}/${all.length}`, style: `flex:${Math.max(all.length, 1)}` },
+        el('span', { style: `width:${pct(done, all.length)}%` })));
+    }
+    const filters = el('div', { className: 'filters' });
+    for (const fo of [{ k: 'all', l: 'All', n: actionable.length }, { k: 'open', l: 'Open', n: openCount },
+    { k: 'flag', l: 'Revisit', n: flagged }, { k: 'done', l: 'Handled', n: handled }]) {
+      filters.append(el('button', { className: 'filt filt-' + fo.k + (FILTER === fo.k ? ' on' : ''),
+        onclick: () => { FILTER = fo.k; if (fo.k !== 'all') groups.forEach(g => openGroups.add(g.key)); rerender(); } },
+        fo.l, el('span', {}, String(fo.n))));
+    }
+    const bar = el('div', { className: 'clpop-bar' },
+      el('div', { className: 'seg' }, segbar,
+        el('span', { className: 'count' }, String(handled), el('b', {}, '/' + actionable.length)),
+        flagged ? el('span', { className: 'flagcount' }, icon('flag', 11), String(flagged)) : null),
+      el('div', { className: 'clpop-actions' },
+        el('button', { className: 'btn sm', onclick: () => { groups.forEach(g => openGroups.add(g.key)); rerender(); } }, 'Expand all'),
+        el('button', { className: 'btn sm', onclick: () => { openGroups.clear(); rerender(); } }, 'Collapse'),
+        handled < actionable.length
+          ? el('button', { className: 'btn sm', title: 'Mark every checklist item done', onclick: async () => { if (confirm('Mark every checklist item as done?')) { await api('/targets/' + id + '/mark', { method: 'POST', body: { status: 'done' } }); rerender(); } } }, icon('check', 12), 'All done')
+          : null,
+        isEditor() ? el('button', { className: 'btn line sm', onclick: () => itemModal(id, null, null, rerender) }, '+ Item') : null),
+      filters);
+
+    const list = el('div', { className: 'checklist' });
+    let anyShown = 0;
+    groups.forEach((g, gi) => {
+      const all = (byGroup[g.key] || []).filter(ACTIONABLE);
+      const done = all.filter(i => HANDLED.includes(i.status)).length;
+      const gf = all.filter(i => i.status === 'flag').length;
+      const roots = g.roots.filter(survives);
+      if (!roots.length) return;
+      anyShown += roots.length;
+      const open = openGroups.has(g.key);
+      const hdr = el('button', { className: 'ghdr' + (open ? ' open' : '') },
+        el('span', { className: 'gnum' }, pad(gi + 1)),
+        el('span', { className: 'gchev' }, '▶'),
+        el('span', { className: 'gtitle' }, g.title),
+        gf ? el('span', { className: 'gflag' }, '⚑ ' + gf) : null,
+        (all.length && done < all.length)
+          ? (() => { const s = el('span', { className: 'gdone', title: 'Mark this section done', role: 'button' }, icon('check', 12));
+              s.onclick = async (e) => { e.stopPropagation(); await api('/targets/' + id + '/mark', { method: 'POST', body: { status: 'done', group_key: g.key } }); rerender(); }; return s; })()
+          : null,
+        el('span', { className: 'gcount' }, String(done), el('b', {}, '/' + all.length)),
+        el('span', { className: 'bar' + (pct(done, all.length) > 70 ? ' good' : '') }, el('span', { style: `width:${pct(done, all.length)}%` })));
+      hdr.onclick = () => { open ? openGroups.delete(g.key) : openGroups.add(g.key); rerender(); };
+      const box = el('div', { className: 'group' }, hdr);
+      if (open) {
+        const gbody = el('div', { className: 'gbody' });
+        let n = 0;
+        const walk = (it, depth) => {
+          if (!survives(it)) return;
+          gbody.append(renderItem(it, id, ++n, depth, childrenBy, spawnedByItem, { rerender, popup: true }));
+          for (const k of (childrenBy[it.id] || []).sort((x, y) => x.sort - y.sort)) walk(k, depth + 1);
+        };
+        for (const it of roots) walk(it, 0);
+        box.append(gbody);
+      }
+      list.append(box);
+    });
+    if (!actionable.length) list.append(el('div', { className: 'empty', style: 'margin-top:16px;border:0' }, 'This target has no checklist items.'));
+    else if (!anyShown) list.append(el('div', { className: 'empty', style: 'margin-top:16px;border:0' }, `Nothing matches “${FILTER}”.`));
+    bodyEl.replaceChildren(bar, list);
+  }
+  await paint();
+}
+
+function renderItem(it, assetId, num, depth, childrenBy = {}, spawnedByItem = {}, opts = {}) {
+  const rerender = opts.rerender || (() => renderTarget(assetId)); // popup passes its own repaint
+  const popup = !!opts.popup;
   const isTrigger = it.kind === 'trigger';
   const isSelect = it.kind === 'select';
   const isGroup = it.kind === 'group';
@@ -1422,7 +1530,7 @@ function renderItem(it, assetId, num, depth, childrenBy = {}, spawnedByItem = {}
   const pOpen = openPayloads.has(it.id);
   if (pcount) row.append(el('button', {
     className: 'ptoggle',
-    onclick: () => { pOpen ? openPayloads.delete(it.id) : openPayloads.add(it.id); renderTarget(assetId); },
+    onclick: () => { pOpen ? openPayloads.delete(it.id) : openPayloads.add(it.id); rerender(); },
   }, `${pOpen ? '▾' : '▸'} ${pcount} payload${pcount > 1 ? 's' : ''}`));
   body.append(row);
   if (it.detail) body.append(el('p', { className: 'detail' }, subst(it.detail)));
@@ -1434,7 +1542,7 @@ function renderItem(it, assetId, num, depth, childrenBy = {}, spawnedByItem = {}
       const on = chosen.has(o.key);
       chips.append(el('button', {
         className: 'chip' + (on ? ' on' : ''),
-        onclick: async () => { await api('/items/' + it.id + '/select', { method: 'POST', body: { key: o.key } }); renderTarget(assetId); },
+        onclick: async () => { await api('/items/' + it.id + '/select', { method: 'POST', body: { key: o.key } }); rerender(); },
       }, (on ? '✓ ' : '') + o.label));
     }
     body.append(chips);
@@ -1463,7 +1571,7 @@ function renderItem(it, assetId, num, depth, childrenBy = {}, spawnedByItem = {}
     const add = async () => {
       const label = inp.value.trim(); if (!label) return;
       try { await api('/items/' + it.id + '/spawn-target', { method: 'POST', body: { label } });
-        inp.value = ''; toast(`Added ${it.spawn_type} target · ${label}`); renderTarget(assetId);
+        inp.value = ''; toast(`Added ${it.spawn_type} target · ${label}`); rerender();
       } catch (e) { toast(e.message); }
     };
     inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } };
@@ -1492,7 +1600,7 @@ function renderItem(it, assetId, num, depth, childrenBy = {}, spawnedByItem = {}
 
   if (isTrigger && it.spawns) {
     body.append(el('div', { className: 'spawnbtn' },
-      el('button', { className: 'btn line sm', onclick: () => doSpawn(it, assetId) },
+      el('button', { className: 'btn line sm', onclick: () => doSpawn(it, assetId, rerender) },
         hasGroup ? '+ Add another follow-up' : '+ Add follow-up checklist')));
   }
 
@@ -1500,19 +1608,21 @@ function renderItem(it, assetId, num, depth, childrenBy = {}, spawnedByItem = {}
   const actions = el('div', { className: 'iactions' });
   if (!isSelect && !isGroup) {
     const stBox = el('div', { className: 'status' });
-    // Order is Yes · No · Flag (and Handled · N/A · Flag for plain checks): flag always sits last,
-    // and means "check later" — a purple revisit bookmark, not a finding.
+    // Flag always sits last and means "check later" — a revisit bookmark, not a finding. In the
+    // checklist popup a plain check is just Handled · Flag (no N/A); triggers keep their Yes/No.
     const opts = isTrigger
       ? [{ k: 'yes', i: 'check', c: 'done', t: 'Yes' }, { k: 'no', i: 'na', c: 'na', t: 'No' }, { k: 'flag', i: 'flag', c: 'flag', t: 'Flag — check later' }]
-      : [{ k: 'done', i: 'check', c: 'done', t: 'Handled' }, { k: 'na', i: 'na', c: 'na', t: 'Not applicable' }, { k: 'flag', i: 'flag', c: 'flag', t: 'Flag — check later' }];
+      : popup
+        ? [{ k: 'done', i: 'check', c: 'done', t: 'Handled' }, { k: 'flag', i: 'flag', c: 'flag', t: 'Flag — check later' }]
+        : [{ k: 'done', i: 'check', c: 'done', t: 'Handled' }, { k: 'na', i: 'na', c: 'na', t: 'Not applicable' }, { k: 'flag', i: 'flag', c: 'flag', t: 'Flag — check later' }];
     for (const s of opts) {
       const b = el('button', { className: 'st ' + s.c + (it.status === s.k ? ' on-' + s.c : ''), title: s.t }, icon(s.i, 12));
       b.onclick = async () => {
         const next = it.status === s.k ? 'todo' : s.k;
         await api('/items/' + it.id, { method: 'PATCH', body: { status: next } });
         it.status = next;
-        if (isTrigger && next === 'yes' && it.spawns && !hasGroup) return doSpawn(it, assetId);
-        renderTarget(assetId);
+        if (isTrigger && next === 'yes' && it.spawns && !hasGroup) return doSpawn(it, assetId, rerender);
+        rerender();
       };
       stBox.append(b);
     }
@@ -1520,25 +1630,26 @@ function renderItem(it, assetId, num, depth, childrenBy = {}, spawnedByItem = {}
   }
   // Editing the checklist itself (add sub-item / edit / delete) is admin-only; workers tick boxes.
   if (isEditor()) actions.append(el('div', { className: 'itools' },
-    el('button', { className: 'ibtn', title: 'Add sub-item', onclick: () => itemModal(assetId, null, it.id) }, icon('plus', 12)),
-    el('button', { className: 'ibtn', title: 'Edit', onclick: () => itemModal(assetId, it) }, icon('edit', 12)),
+    el('button', { className: 'ibtn', title: 'Add sub-item', onclick: () => itemModal(assetId, null, it.id, rerender) }, icon('plus', 12)),
+    el('button', { className: 'ibtn', title: 'Edit', onclick: () => itemModal(assetId, it, null, rerender) }, icon('edit', 12)),
     el('button', {
       className: 'ibtn del', title: 'Delete',
-      onclick: async () => { if (confirm(kids.length ? 'Delete this item and everything under it?' : 'Delete this item?')) { await api('/items/' + it.id, { method: 'DELETE' }); renderTarget(assetId); } },
+      onclick: async () => { if (confirm(kids.length ? 'Delete this item and everything under it?' : 'Delete this item?')) { await api('/items/' + it.id, { method: 'DELETE' }); rerender(); } },
     }, icon('x', 12))));
 
   node.append(el('span', { className: 'inum' }, pad(num)), body, actions);
   return node;
 }
 
-async function doSpawn(it, assetId) {
+async function doSpawn(it, assetId, after) {
   const r = await api('/items/' + it.id + '/spawn', { method: 'POST' });
   toast(r.instance > 1 ? `Added follow-up #${r.instance}` : `Added ${r.added} items`);
-  renderTarget(assetId);
+  (after || (() => renderTarget(assetId)))();
 }
 
-function itemModal(assetId, item = null, parentId = null) {
+function itemModal(assetId, item = null, parentId = null, after) {
   const editing = !!item;
+  const done = after || (() => renderTarget(assetId));
   const kinds = KIND_OPTS.filter(k => k.value !== 'select' || item?.kind === 'select');
   modal({
     kicker: editing ? 'Edit' : 'Checklist',
@@ -1560,7 +1671,7 @@ function itemModal(assetId, item = null, parentId = null) {
         else openGroups.add(o.group_title === 'Custom / Notes' ? 'custom' : o.group_title);
         await api(`/assets/${assetId}/items`, { method: 'POST', body: o });
       }
-      renderTarget(assetId);
+      done();
     },
   });
 }
@@ -1772,10 +1883,10 @@ function fileField(parent, label, bucket) {
 //   note        → title + details (no severity, no images)
 //   credential  → title + username / password / server
 //   vuln        → title + severity + location + explanation + images
-async function findingModal(assetId, finding = null, isRetest = false, after) {
+async function findingModal(assetId, finding = null, isRetest = false, after, startKindOverride) {
   const editing = !!finding;
   after = after || (() => renderTarget(assetId)); // where to return once saved (target dock or findings page)
-  const startKind = finding?.kind === 'request' ? 'note' : (finding?.kind || 'note');
+  const startKind = startKindOverride || (finding?.kind === 'request' ? 'note' : (finding?.kind || 'note'));
   const images = [];
   const selectedRefs = new Set(finding?.ref_uids || []);
   // Other findings across the engagement, to link as an attack chain (or a retest reference).
@@ -1925,7 +2036,7 @@ async function findingModal(assetId, finding = null, isRetest = false, after) {
     },
   });
 }
-const addFinding = (assetId, isRetest = false, after) => findingModal(assetId, null, isRetest, after);
+const addFinding = (assetId, isRetest = false, after, startKind) => findingModal(assetId, null, isRetest, after, startKind);
 const editFinding = (finding, assetId, after) => findingModal(assetId, finding, finding?.fix_status != null || finding?.kind === 'retest', after);
 
 // Upload one or more images to a finding via the raw endpoint (no base64 bloat).

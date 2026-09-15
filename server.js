@@ -1564,14 +1564,14 @@ function creditFinding(uid) {
 app.post('/api/targets/:id/findings', async (req, res) => {
   const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'asset not found' });
-  const { title, kind, body, refs, fix_status } = req.body || {};
+  const { title, kind, body, refs, fix_status, flagged_to } = req.body || {};
   if (!title) return res.status(400).json({ error: 'title required' });
   // Attribute the finding to whoever recorded it — the team identity (username) so it stays
   // stable as the row syncs between a client and the server. Powers the admin ranking.
   const author = currentUser(req)?.username || null;
   const { severity, cvss: vector } = gradeFields(req.body || {}, await canEdit(req)); // workers can't grade
-  const info = q(`INSERT INTO findings (asset_id, title, kind, severity, body, refs, fix_status, author, cvss) VALUES (?,?,?,?,?,?,?,?,?)`)
-    .run(req.params.id, title, kind || 'note', severity, body || null, cleanRefs(refs), cleanFix(fix_status), author, vector);
+  const info = q(`INSERT INTO findings (asset_id, title, kind, severity, body, refs, fix_status, author, cvss, flagged_to) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .run(req.params.id, title, kind || 'note', severity, body || null, cleanRefs(refs), cleanFix(fix_status), author, vector, flagged_to ? String(flagged_to).slice(0, 120) : null);
   const row = q(`SELECT * FROM findings WHERE id=?`).get(info.lastInsertRowid);
   creditFinding(row.uid);
   res.status(201).json(row);
@@ -1590,7 +1590,7 @@ app.get('/api/targets/:id/finding-candidates', (req, res) => {
 // reached from the engagement stat tiles (vulns / notes / creds).
 app.get('/api/projects/:id/findings', (req, res) => {
   if (!q(`SELECT 1 FROM projects WHERE id=?`).get(req.params.id)) return res.status(404).json({ error: 'not found' });
-  const rows = q(`SELECT f.id, f.uid, f.title, f.kind, f.severity, f.cvss, f.author, f.body, f.in_report, f.needs_improvement, f.review_note, f.created_at,
+  const rows = q(`SELECT f.id, f.uid, f.title, f.kind, f.severity, f.cvss, f.author, f.body, f.in_report, f.needs_improvement, f.review_note, f.flagged_to, f.created_at,
       a.id AS target_id, a.label AS target, a.type AS target_type
     FROM findings f JOIN assets a ON a.id=f.asset_id
     WHERE a.project_id=? ORDER BY f.created_at DESC`).all(req.params.id);
@@ -1627,12 +1627,14 @@ app.patch('/api/findings/:id', async (req, res) => {
     note = ni ? (b.review_note ? String(b.review_note).slice(0, 1000) : null) : null;
   }
   if (editor && (('severity' in b) || ('cvss' in b)) && (severity || vector)) { ni = 0; note = null; } // graded → resolved
-  q(`UPDATE findings SET title=?, kind=?, severity=?, body=?, refs=?, fix_status=?, in_report=?, cvss=?, needs_improvement=?, review_note=? WHERE id=?`).run(
+  // Flagging a note to a teammate (or clearing it) is collaboration, open to any operator.
+  const flaggedTo = 'flagged_to' in b ? (b.flagged_to ? String(b.flagged_to).slice(0, 120) : null) : cur.flagged_to;
+  q(`UPDATE findings SET title=?, kind=?, severity=?, body=?, refs=?, fix_status=?, in_report=?, cvss=?, needs_improvement=?, review_note=?, flagged_to=? WHERE id=?`).run(
     b.title ?? cur.title, b.kind ?? cur.kind, severity,
     b.body === undefined ? cur.body : (b.body || null),
     'refs' in b ? cleanRefs(b.refs) : cur.refs,
     'fix_status' in b ? cleanFix(b.fix_status) : cur.fix_status,
-    'in_report' in b ? (b.in_report ? 1 : 0) : cur.in_report, vector, ni, note, cur.id);
+    'in_report' in b ? (b.in_report ? 1 : 0) : cur.in_report, vector, ni, note, flaggedTo, cur.id);
   creditFinding(cur.uid);
   res.json(q(`SELECT * FROM findings WHERE id=?`).get(cur.id));
 });

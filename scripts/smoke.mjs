@@ -106,13 +106,28 @@ checks.push(['asset folder screen paints', await ev(`
   const d = await (await fetch("/api/projects/" + p.id)).json();
   location.hash = "#/asset/" + d.assets[0].id; await new Promise(r => setTimeout(r, 1200));
   return document.querySelectorAll(".trow").length > 0`)]);
-checks.push(['checklist screen paints', await ev(`
+checks.push(['target chat + findings dock render', await ev(`
   const p = (await (await fetch("/api/projects")).json())[0];
   const d = await (await fetch("/api/projects/" + p.id)).json();
   const f = await (await fetch("/api/assets/" + d.assets[0].id)).json();
   location.hash = "#/target/" + f.targets[0].id; await new Promise(r => setTimeout(r, 1400));
-  document.querySelectorAll(".ghdr")[0]?.click(); await new Promise(r => setTimeout(r, 700));
-  return document.querySelectorAll(".item").length > 0`)]);
+  const hasComposer = !!document.querySelector(".chat-composer .chat-input");
+  const hasDock = /Findings/.test(document.querySelector(".dock-head")?.textContent || "");
+  // a quick chat note posts and lands in the stream with an author + timestamp
+  const ta = document.querySelector(".chat-input"); ta.value = "checked the login flow";
+  document.querySelector(".chat-send").click(); await new Promise(r => setTimeout(r, 800));
+  const note = [...document.querySelectorAll(".chatnote")].find(n => /checked the login flow/.test(n.querySelector(".cn-body")?.textContent || ""));
+  const credited = !!note && !!note.querySelector(".cn-author") && !!note.querySelector(".cn-when");
+  return hasComposer && hasDock && credited`)]);
+checks.push(['checklist popup paints', await ev(`
+  const p = (await (await fetch("/api/projects")).json())[0];
+  const d = await (await fetch("/api/projects/" + p.id)).json();
+  const f = await (await fetch("/api/assets/" + d.assets[0].id)).json();
+  location.hash = "#/target/" + f.targets[0].id; await new Promise(r => setTimeout(r, 1400));
+  // the checklist now lives in a popup opened from the target page
+  document.querySelector(".checklist-open")?.click(); await new Promise(r => setTimeout(r, 1000));
+  document.querySelectorAll(".checklist-pop .ghdr")[0]?.click(); await new Promise(r => setTimeout(r, 900));
+  return document.querySelectorAll(".checklist-pop .item").length > 0`)]);
 // The vuln finding editor opens a full CVSS 3.1 editor (segmented controls, live score) whose
 // applied vector sets the severity. (This local admin IS a grader, so the calculator shows.)
 checks.push(['CVSS editor opens, scores, and applies to the finding', await ev(`

@@ -1979,14 +1979,16 @@ async function findingModal(assetId, finding = null, isRetest = false, after, st
     note: editing ? 'Update the finding. Attached images stay put.'
       : 'Notes, credentials and confirmed vulnerabilities — these become the findings in the report.',
     build: (b) => {
-      // Editing lets you reclassify freely (note ↔ credential ↔ vuln). Adding is scoped to the
-      // button you came from: "Evidence" offers Note or Vulnerability (creds have their own button),
-      // "Creds" is locked to credential.
-      const kindOpts = editing ? FINDING_KINDS
-        : startKindOverride === 'credential' ? FINDING_KINDS.filter(k => k.value === 'credential')
-        : startKindOverride === 'note' ? FINDING_KINDS.filter(k => k.value !== 'credential')
-        : FINDING_KINDS;
-      const kindSel = field(b, 'Type', 'kind', { value: startKind, options: kindOpts });
+      // On ADD the kind is fixed by the button you came from (Evidence/Creds each have their own
+      // form), so there's no Type picker. Only when EDITING do you get to reclassify freely
+      // (note ↔ credential ↔ vuln), which is also how a note is promoted into a vulnerability.
+      let kindSel;
+      if (editing) {
+        kindSel = field(b, 'Type', 'kind', { value: startKind, options: FINDING_KINDS });
+      } else {
+        b.append(el('input', { type: 'hidden', name: 'kind', value: startKind }));
+        kindSel = { value: startKind }; // fixed; rebuild() reads .value, there's nothing to change
+      }
       const fields = el('div', { className: 'kindfields' });
       b.append(fields);
       const rebuild = () => {

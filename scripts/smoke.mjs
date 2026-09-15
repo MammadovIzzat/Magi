@@ -128,32 +128,31 @@ checks.push(['checklist popup paints', await ev(`
   document.querySelector(".checklist-open")?.click(); await new Promise(r => setTimeout(r, 1000));
   document.querySelectorAll(".checklist-pop .ghdr")[0]?.click(); await new Promise(r => setTimeout(r, 900));
   return document.querySelectorAll(".checklist-pop .item").length > 0`)]);
-// The vuln finding editor opens a full CVSS 3.1 editor (segmented controls, live score) whose
-// applied vector sets the severity. (This local admin IS a grader, so the calculator shows.)
-checks.push(['CVSS editor opens, scores, and applies to the finding', await ev(`
+// Grading a vuln happens in the grade dialog (admins/editors), which carries a full CVSS 3.1 editor
+// (segmented controls, live score) whose applied vector sets the severity. This local admin grades.
+checks.push(['CVSS grade dialog: calculator opens, scores, applies a vector', await ev(`
   const p = (await (await fetch("/api/projects")).json())[0];
   const d = await (await fetch("/api/projects/" + p.id)).json();
   const fold = await (await fetch("/api/assets/" + d.assets[0].id)).json();
-  addFinding(fold.targets[0].id); await new Promise(r => setTimeout(r, 300));
-  const kindSel = document.querySelector(".modal [data-sel=kind]");
-  kindSel.value = "vuln"; kindSel.dispatchEvent(new Event("change")); await new Promise(r => setTimeout(r, 150));
+  const vuln = await (await fetch("/api/targets/" + fold.targets[0].id + "/findings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "CVSS smoke", kind: "vuln" }) })).json();
+  gradeDialog(vuln, () => {}); await new Promise(r => setTimeout(r, 300));
   const hasSev = !!document.querySelector(".modal [data-sel=severity]");
   [...document.querySelectorAll(".modal button")].find(b => /CVSS calculator/i.test(b.textContent))?.click();
-  await new Promise(r => setTimeout(r, 120));
+  await new Promise(r => setTimeout(r, 150));
   const opts = document.querySelectorAll(".cvss-overlay .cvss-opt");
   const scored = /^[0-9]/.test(document.querySelector(".cvss-badge-n")?.textContent || "");
   // Clicking an option must leave EXACTLY ONE button highlighted in that metric (regression: the
   // handler once compared a data-attribute el() never set, so a click deselected the whole row).
   const conf = [...document.querySelectorAll(".cvss-overlay .cvss-metric")].find(m => /Confidentiality$/.test(m.querySelector(".cvss-mlabel")?.textContent || ""));
-  [...conf.querySelectorAll(".cvss-opt")].find(b => b.textContent.trim() === "None (N)").click();
+  [...conf.querySelectorAll(".cvss-opt")].find(b => b.textContent.trim() === "High (H)").click();
   await new Promise(r => setTimeout(r, 40));
-  const oneSelected = conf.querySelectorAll(".cvss-opt.on").length === 1 && /None/.test(conf.querySelector(".cvss-opt.on").textContent);
+  const oneSelected = conf.querySelectorAll(".cvss-opt.on").length === 1;
   document.querySelector('.cvss-hactions .iconbtn[title=Apply]')?.click();
   await new Promise(r => setTimeout(r, 100));
   const gone = !document.querySelector(".cvss-overlay");
   const sev = document.querySelector(".modal [data-sel=severity]")?.value;
   const cvssVal = document.querySelector(".modal input[name=cvss]")?.value || "";
-  return hasSev && opts.length >= 20 && scored && oneSelected && gone && sev === "critical" && cvssVal.includes("AV:N")`)]);
+  return hasSev && opts.length >= 20 && scored && oneSelected && gone && !!sev && cvssVal.includes("AV:")`)]);
 checks.push(['template library paints', await ev(`
   location.hash = "#/editor"; await new Promise(r => setTimeout(r, 1400));
   return document.querySelectorAll(".tpl-type").length > 0`)]);

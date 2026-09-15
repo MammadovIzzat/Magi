@@ -76,7 +76,9 @@ app.use(express.static(join(__dirname, 'public'), {
 
 // ---- helpers ----
 const q = (sql) => db.prepare(sql);
-function assetSummary(row) { return { ...row, metadata: JSON.parse(row.metadata || '{}') }; }
+// The `notebook` (a target's full Markdown workspace) can be large, so it's stripped from list
+// summaries and returned only by the single-target GET.
+function assetSummary(row) { const { notebook, ...rest } = row; return { ...rest, metadata: JSON.parse(rest.metadata || '{}') }; }
 // Attachment metadata for a set of findings in ONE query, grouped by finding_id — avoids the
 // per-finding query (N+1) when listing a target's / a project's / the grading queue's findings.
 function attachmentsFor(findingIds) {
@@ -1350,7 +1352,7 @@ app.get('/api/targets/:id', (req, res) => {
     .map(f => ({ ...f, refs: undefined, links: resolveLinks(f.refs), ref_uids: refUids(f.refs), attachments: att.get(f.id) || [] }));
   const folder = q(`SELECT id, grp, label, project_id FROM folders WHERE id=?`).get(a.folder_id);
   const project = folder ? q(`SELECT id, name FROM projects WHERE id=?`).get(folder.project_id) : null;
-  res.json({ ...assetSummary(a), items, findings, folder, project });
+  res.json({ ...assetSummary(a), notebook: a.notebook || '', items, findings, folder, project });
 });
 
 // Assign a target to an operator. This is a "who's on this" label only — it does NOT gate who can
@@ -1368,6 +1370,17 @@ app.patch('/api/targets/:id/assignee', (req, res) => {
   const assignee = list.length ? list.join(',') : null;
   q(`UPDATE assets SET assignee=? WHERE id=?`).run(assignee, a.id);
   res.json(assetSummary(q(`SELECT * FROM assets WHERE id=?`).get(a.id)));
+});
+
+// The target's Markdown workspace (Obsidian-style notes). Its assignees and leads may write it; a
+// capped size keeps a runaway paste from bloating a synced row.
+app.patch('/api/targets/:id/notebook', async (req, res) => {
+  const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
+  if (!a) return res.status(404).json({ error: 'not found' });
+  if (!(await canWorkTarget(req, a.id))) return res.status(403).json({ error: 'writing this target’s notes is for its assignees and leads' });
+  const md = req.body?.notebook == null ? '' : String(req.body.notebook).slice(0, 200000);
+  q(`UPDATE assets SET notebook=? WHERE id=?`).run(md, a.id);
+  res.json({ ok: true });
 });
 
 // The roster a target can be assigned to. On a server that's the accounts table; a linked client

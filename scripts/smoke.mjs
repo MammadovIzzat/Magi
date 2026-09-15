@@ -106,23 +106,25 @@ checks.push(['asset folder screen paints', await ev(`
   const d = await (await fetch("/api/projects/" + p.id)).json();
   location.hash = "#/asset/" + d.assets[0].id; await new Promise(r => setTimeout(r, 1200));
   return document.querySelectorAll(".trow").length > 0`)]);
-checks.push(['target chat + findings dock render', await ev(`
+checks.push(['target notebook + findings dock render', await ev(`
   const p = (await (await fetch("/api/projects")).json())[0];
   const d = await (await fetch("/api/projects/" + p.id)).json();
   const f = await (await fetch("/api/assets/" + d.assets[0].id)).json();
   location.hash = "#/target/" + f.targets[0].id; await new Promise(r => setTimeout(r, 1400));
-  const hasComposer = !!document.querySelector(".chat-composer .chat-input");
+  const hasNotebook = !!document.querySelector(".nb-wrap .nb-input");
+  const hasTools = !!document.querySelector(".task-tools");
   const hasDock = /Findings/.test(document.querySelector(".dock-head")?.textContent || "");
-  // a quick chat note posts and lands in the stream with an author + timestamp
-  const ta = document.querySelector(".chat-input"); ta.value = "checked the login flow";
-  document.querySelector(".chat-send").click(); await new Promise(r => setTimeout(r, 800));
-  const note = [...document.querySelectorAll(".chatnote")].find(n => /checked the login flow/.test(n.querySelector(".cn-body")?.textContent || ""));
-  const credited = !!note && !!note.querySelector(".cn-author") && !!note.querySelector(".cn-when");
-  // the note is auto-named "<target> | <user> Note <n>" (body holds the typed text, not the title)
-  const tgt = await (await fetch("/api/targets/" + f.targets[0].id)).json();
-  const row = (tgt.findings || []).find(x => x.kind === "note" && /checked the login flow/.test(x.body || ""));
-  const named = !!row && (row.title || "").startsWith(f.targets[0].label) && (row.title || "").includes(" | ") && / Note \\d+$/.test(row.title || "");
-  return hasComposer && hasDock && credited && named`)]);
+  // type Markdown into the notebook, let it autosave, and confirm it persisted to the target
+  const ta = document.querySelector(".nb-input");
+  ta.value = "## Recon\\n- [ ] revisit login"; ta.dispatchEvent(new Event("input", { bubbles: true }));
+  await new Promise(r => setTimeout(r, 900));
+  const saved = await (await fetch("/api/targets/" + f.targets[0].id)).json();
+  const persisted = /Recon/.test(saved.notebook || "");
+  // Preview renders the Markdown — an H2 and an interactive task checkbox
+  [...document.querySelectorAll(".nb-tab")].find(b => /Preview/.test(b.textContent))?.click();
+  await new Promise(r => setTimeout(r, 150));
+  const rendered = !!document.querySelector(".nb-preview h2") && !!document.querySelector(".nb-preview input.md-task");
+  return hasNotebook && hasTools && hasDock && persisted && rendered`)]);
 checks.push(['checklist popup paints', await ev(`
   const p = (await (await fetch("/api/projects")).json())[0];
   const d = await (await fetch("/api/projects/" + p.id)).json();
@@ -166,7 +168,7 @@ checks.push(['a vuln card exposes a grade control', await ev(`
   const fold = await (await fetch("/api/assets/" + d.assets[0].id)).json();
   await renderTarget(fold.targets[0].id); await new Promise(r => setTimeout(r, 600));
   return !!document.querySelector(".dock .finding .f-sev.grade")`)]);
-// The engagement-wide findings page lists vulnerabilities only — notes/creds live in the target chat.
+// The engagement-wide findings page lists vulnerabilities only — notes live in each target notebook.
 checks.push(['the findings page is vulns-only (no note/cred tabs)', await ev(`
   const p = (await (await fetch("/api/projects")).json())[0];
   location.hash = "#/findings/" + p.id; await new Promise(r => setTimeout(r, 1200));

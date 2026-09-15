@@ -1257,6 +1257,7 @@ async function renderTarget(id) {
     flaggedItems ? el('span', { className: 'clk-flag', title: `${flaggedItems} flagged to revisit` }, icon('flag', 10), String(flaggedItems)) : null,
     actionable.length ? el('span', { className: 'clk-bar' + (cov > 70 ? ' good' : '') }, el('span', { style: `width:${cov}%` })) : null);
 
+  const credCount = a.findings.filter(f => f.kind === 'credential').length;
   const head = el('div', { className: 'target-head slim' },
     el('div', { style: 'display:flex;align-items:flex-start;gap:16px' },
       el('div', { style: 'min-width:0;flex:1' },
@@ -1264,43 +1265,18 @@ async function renderTarget(id) {
           codeBadge(a.type), el('span', { className: 'kicker' }, t.label || a.type)),
         el('h1', {}, a.label)),
       el('div', { className: 'target-actions' },
-        el('div', { className: 'assign' }, el('span', { className: 'assign-lbl' }, icon('user', 12), 'Assignees'), assignCtl),
-        checklistBtn)));
+        el('div', { className: 'assign' }, el('span', { className: 'assign-lbl' }, icon('user', 12), 'Assignees'), assignCtl))),
+    // Task tools on one line under the title: open the checklist, record a finding, manage creds.
+    // Findings show on the right; credentials open in a popup.
+    el('div', { className: 'task-tools' },
+      checklistBtn,
+      mayContribute ? el('button', { className: 'btn line sm', title: 'Record a vulnerability (a report finding)', onclick: () => addFinding(id, false, () => renderTarget(id), 'vuln') }, icon('plus', 12), 'Finding') : null,
+      el('button', { className: 'btn line sm', title: 'Credentials for this target', onclick: () => openCreds(id) },
+        icon('key', 12), 'Creds', credCount ? el('span', { className: 'tt-count' }, String(credCount)) : null)));
 
-  // ── middle: the notes/creds chat — everyone jots what they checked; each note carries who + when,
-  // and can be flagged to a teammate (glows for them). Vulns never appear here; they live on the right.
-  const notes = a.findings.filter(f => f.kind === 'note' || f.kind === 'credential')
-    .slice().sort((x, y) => String(x.created_at).localeCompare(String(y.created_at))); // oldest → newest (chat order)
-  const stream = el('div', { className: 'chat-stream' });
-  if (!notes.length) stream.append(el('div', { className: 'chat-empty' },
-    'No notes yet. Jot down what you checked, drop a credential, or flag a teammate to take a look.'));
-  else for (const f of notes) stream.append(chatNote(f, id, mayContribute));
-
-  // Grow the note box with its content up to a cap, then scroll inside it — no scrollbar until then.
-  const ta = el('textarea', { className: 'chat-input', rows: 1, placeholder: 'Write a note — what you checked, what you saw… (Enter to send, Shift+Enter for a new line)' });
-  const grow = () => { ta.style.height = 'auto'; const h = Math.min(ta.scrollHeight, 160); ta.style.height = h + 'px'; ta.style.overflowY = ta.scrollHeight > 160 ? 'auto' : 'hidden'; };
-  const send = async () => {
-    const text = ta.value.trim(); if (!text) return;
-    // Notes get a structured name — "<target> | <user> Note <n>" — instead of echoing their text,
-    // so the title reads cleanly in the report/list while the body holds what was typed.
-    const n = a.findings.filter(f => f.kind === 'note').length + 1;
-    const title = `${a.label} | ${CURRENT_USER || 'anon'} Note ${n}`;
-    try { await api('/targets/' + id + '/findings', { method: 'POST', body: { title, kind: 'note', body: text } }); ta.value = ''; renderTarget(id); }
-    catch (e) { toast(e.message); }
-  };
-  ta.oninput = grow;
-  ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
-  const composer = mayContribute
-    ? el('div', { className: 'chat-composer' },
-        el('div', { className: 'chat-tools' },
-          el('button', { className: 'btn line sm', title: 'Record a vulnerability (a report finding)', onclick: () => addFinding(id, false, () => renderTarget(id), 'vuln') }, icon('plus', 12), 'Finding'),
-          el('button', { className: 'btn line sm', title: 'Record a credential', onclick: () => addFinding(id, false, () => renderTarget(id), 'credential') }, icon('key', 12), 'Creds'),
-          el('button', { className: 'btn line sm', title: 'Open the checklist', onclick: () => openChecklist(id) }, icon('check', 12), 'Checklist')),
-        el('div', { className: 'chat-row' }, ta, el('button', { className: 'btn gold chat-send', onclick: send }, 'Send')))
-    : el('div', { className: 'chat-composer readonly' },
-        el('span', { className: 'muted small' }, `Assigned to ${roster.join(', ')} — ask a lead to add you before recording here.`),
-        el('button', { className: 'btn line sm', style: 'margin-left:auto', onclick: () => openChecklist(id) }, icon('check', 12), 'Checklist'));
-  const midCol = el('div', { className: 'target-col notes-col' }, head, el('div', { className: 'chat-wrap' }, stream, composer));
+  // ── middle: the target's own Markdown workspace (Obsidian-style). One page the assignee writes —
+  // headers, key points, task lists — autosaved. Read-only for non-contributors.
+  const midCol = el('div', { className: 'target-col notes-col' }, head, notebookEditor(id, a.notebook || '', mayContribute));
 
   // ── right: findings (confirmed vulnerabilities only), with search + sort. Vulns are recorded from
   // the middle composer's "Evidence" button (Type → Vulnerability), so there's no add button here.
@@ -1328,7 +1304,7 @@ async function renderTarget(id) {
     else if (EVID.sort === 'title') shown.sort((x, y) => (x.title || '').localeCompare(y.title || ''));
     findList.replaceChildren();
     if (!shown.length) findList.append(el('div', { className: 'pmeta', style: 'padding:6px 2px;line-height:1.7' },
-      dockFindings.length ? 'No findings match.' : 'No confirmed vulnerabilities yet. Add one here — a lead grades its severity. Notes and credentials go in the chat on the left.'));
+      dockFindings.length ? 'No findings match.' : 'No confirmed vulnerabilities yet. Use “+ Finding” above — a lead grades its severity. Working notes go in the notebook; credentials in the Creds popup.'));
     else for (const f of shown) findList.append(cardOf(f));
   };
   search.oninput = () => { EVID.q = search.value; repaint(); };
@@ -1348,69 +1324,152 @@ async function renderTarget(id) {
 
   dock.style.flex = `0 0 ${DOCK_W}px`; dock.style.width = DOCK_W + 'px';
   $('#view').replaceChildren(el('div', { className: 'target' }, midCol, dockResizer(dock), dock));
-  // The chat reads top→bottom, newest last — land at the bottom like a messaging app; size the box.
-  requestAnimationFrame(() => { stream.scrollTop = stream.scrollHeight; if (mayContribute) grow(); });
 }
 
-// One note/credential in the target's chat: who wrote it, when, the text, any screenshots, and a
-// flag-to-a-teammate control. A note flagged to the current user glows (a "check this" nudge).
-function chatNote(f, id, mayContribute = true) {
-  const mine = CURRENT_USER && f.author === CURRENT_USER;
-  const toMe = CURRENT_USER && f.flagged_to && f.flagged_to === CURRENT_USER;
-  const isCred = f.kind === 'credential';
-  const wrap = el('div', { className: 'chatnote' + (mine ? ' mine' : '') + (f.flagged_to ? ' flagged' : '') + (toMe ? ' tome' : '') + (isCred ? ' cred' : '') });
-  const cnHead = el('div', { className: 'cn-head' },
-    avatarSm(f.author || '?'),
-    el('span', { className: 'cn-author' }, f.author || 'someone'),
-    isCred ? el('span', { className: 'cn-tag' }, icon('key', 10), 'creds') : null,
-    el('span', { className: 'cn-when', title: f.created_at }, fmtWhen(f.created_at)));
-  const text = f.body || f.title || '';
-  const cnBody = isCred ? el('pre', { className: 'cn-body cred' }, text) : el('div', { className: 'cn-body' }, text);
-  wrap.append(cnHead, cnBody);
-  if ((f.attachments || []).length) {
-    const shots = el('div', { className: 'cn-shots' });
-    for (const im of f.attachments) { const th = attachmentImg(im.id, { title: im.filename, loading: 'lazy' }); th.onclick = () => openLightbox(im, f.attachments); shots.append(th); }
-    wrap.append(shots);
+// ---------- notebook: the target's Markdown workspace (Obsidian-style) ----------
+const escHtml = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// Inline spans on an ALREADY html-escaped string: `code`, **bold**, *italic*, [text](url).
+function mdInline(s) {
+  s = s.replace(/`([^`]+)`/g, (m, c) => '<code>' + c + '</code>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^*])\*([^*\s][^*]*?)\*/g, '$1<em>$2</em>');
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, t, u) => `<a href="${/^https?:|^mailto:/.test(u) ? u : '#'}" target="_blank" rel="noreferrer noopener">${t}</a>`);
+  return s;
+}
+// A small, safe Markdown → HTML renderer (content is escaped first). Supports #..#### headers,
+// - / * bullets, 1. numbers, - [ ] / - [x] task lists (interactive), > quotes, ``` fences, --- rules.
+function mdToHtml(src) {
+  const lines = String(src || '').replace(/\r\n?/g, '\n').split('\n');
+  let html = '', taskIdx = 0, inUl = false, inOl = false, inCode = false; let para = [];
+  const flushPara = () => { if (para.length) { html += '<p>' + mdInline(escHtml(para.join(' '))) + '</p>'; para = []; } };
+  const closeLists = () => { if (inUl) { html += '</ul>'; inUl = false; } if (inOl) { html += '</ol>'; inOl = false; } };
+  for (const raw of lines) {
+    if (/^```/.test(raw)) { flushPara(); closeLists(); if (!inCode) { html += '<pre class="nb-code"><code>'; inCode = true; } else { html += '</code></pre>'; inCode = false; } continue; }
+    if (inCode) { html += escHtml(raw) + '\n'; continue; }
+    if (/^\s*$/.test(raw)) { flushPara(); closeLists(); continue; }
+    let m;
+    if (m = /^(#{1,4})\s+(.*)$/.exec(raw)) { flushPara(); closeLists(); const lvl = m[1].length; html += `<h${lvl}>` + mdInline(escHtml(m[2])) + `</h${lvl}>`; continue; }
+    if (/^\s*([-*]\s*){3,}$/.test(raw) || /^\s*_{3,}\s*$/.test(raw)) { flushPara(); closeLists(); html += '<hr>'; continue; }
+    if (m = /^\s*[-*]\s+\[([ xX])\]\s+(.*)$/.exec(raw)) { flushPara(); if (inOl) { html += '</ol>'; inOl = false; } if (!inUl) { html += '<ul class="md-tasks">'; inUl = true; } const ck = /[xX]/.test(m[1]); html += `<li class="md-taskitem"><input type="checkbox" class="md-task" data-i="${taskIdx++}"${ck ? ' checked' : ''}> <span${ck ? ' class="md-done"' : ''}>` + mdInline(escHtml(m[2])) + '</span></li>'; continue; }
+    if (m = /^\s*[-*]\s+(.*)$/.exec(raw)) { flushPara(); if (inOl) { html += '</ol>'; inOl = false; } if (!inUl) { html += '<ul>'; inUl = true; } html += '<li>' + mdInline(escHtml(m[1])) + '</li>'; continue; }
+    if (m = /^\s*\d+\.\s+(.*)$/.exec(raw)) { flushPara(); if (inUl) { html += '</ul>'; inUl = false; } if (!inOl) { html += '<ol>'; inOl = true; } html += '<li>' + mdInline(escHtml(m[1])) + '</li>'; continue; }
+    if (m = /^\s*>\s?(.*)$/.exec(raw)) { flushPara(); closeLists(); html += '<blockquote>' + mdInline(escHtml(m[1])) + '</blockquote>'; continue; }
+    para.push(raw.trim());
   }
-  const foot = el('div', { className: 'cn-foot' });
-  if (f.flagged_to) foot.append(el('span', { className: 'cn-for' + (toMe ? ' me' : '') }, icon('flag', 10), 'for ', avatarSm(f.flagged_to), f.flagged_to));
-  if (mayContribute) foot.append(el('div', { className: 'cn-tools' },
-    el('button', { className: 'ibtn', title: 'Add image', onclick: () => uploadToFinding(f.id, id, () => renderTarget(id)) }, icon('image', 11)),
-    flagToControl(f, id),
-    el('button', { className: 'ibtn', title: 'Edit', onclick: () => editFinding(f, id, () => renderTarget(id)) }, icon('edit', 11)),
-    el('button', { className: 'ibtn del', title: 'Delete', onclick: () => confirmDanger('Delete this note?', async () => { await api('/findings/' + f.id, { method: 'DELETE' }); renderTarget(id); }) }, icon('x', 11))));
-  wrap.append(foot);
-  return wrap;
+  flushPara(); closeLists(); if (inCode) html += '</code></pre>';
+  return html || '<p class="nb-hint">Nothing written yet.</p>';
+}
+// Flip the n-th "- [ ]" / "- [x]" task box in the source text (used when a preview checkbox is toggled).
+function toggleTask(src, i, checked) {
+  let n = 0;
+  return String(src).replace(/^(\s*[-*]\s+\[)([ xX])(\])/gm, (m, pre, mark, post) => (n++ === i ? pre + (checked ? 'x' : ' ') + post : m));
+}
+// Textarea helpers for the toolbar: wrap the selection, or prefix the current line.
+function taWrap(ta, before, after) {
+  const s = ta.selectionStart, e = ta.selectionEnd, v = ta.value, sel = v.slice(s, e);
+  ta.value = v.slice(0, s) + before + sel + after + v.slice(e);
+  const caret = sel ? e + before.length : s + before.length;
+  ta.focus(); ta.setSelectionRange(sel ? s + before.length : caret, caret);
+}
+function taPrefix(ta, prefix) {
+  const s = ta.selectionStart, v = ta.value, ls = v.lastIndexOf('\n', s - 1) + 1;
+  ta.value = v.slice(0, ls) + prefix + v.slice(ls);
+  ta.focus(); ta.setSelectionRange(s + prefix.length, s + prefix.length);
 }
 
-// The little flag button on a note: pick a teammate to flag it to ("check this"), or clear the flag.
-// The roster loads lazily when the menu opens.
-function flagToControl(f, id) {
-  const btn = el('button', { className: 'ibtn flagto' + (f.flagged_to ? ' on' : ''), title: f.flagged_to ? 'Flagged to ' + f.flagged_to : 'Flag to a teammate' }, icon('flag', 11));
-  let menu = null;
-  const close = () => { if (menu) { menu.remove(); menu = null; document.removeEventListener('mousedown', onDown, true); window.removeEventListener('resize', close); } };
-  const onDown = (e) => { if (menu && !menu.contains(e.target) && e.target !== btn && !btn.contains(e.target)) close(); };
-  const setFlag = async (u) => { close(); try { await api('/findings/' + f.id, { method: 'PATCH', body: { flagged_to: u } }); renderTarget(id); } catch (e) { toast(e.message); } };
-  btn.onclick = async (e) => {
-    e.stopPropagation();
-    if (menu) return close();
-    menu = el('div', { className: 'sel-menu flagmenu' }, el('div', { className: 'sel-opt', style: 'color:var(--muted)' }, 'Loading…'));
-    document.body.append(menu);
-    const place = () => { const r = btn.getBoundingClientRect(); menu.style.left = Math.max(8, r.right - 200) + 'px'; menu.style.top = (r.bottom + 4) + 'px'; menu.style.minWidth = '190px'; };
-    place();
-    document.addEventListener('mousedown', onDown, true); window.addEventListener('resize', close);
-    let people = []; try { people = await loadAssignees(); } catch {}
-    if (!menu) return;
-    menu.replaceChildren(
-      el('div', { className: 'flagmenu-h' }, 'Flag this note to'),
-      ...(people.length ? people : [{ username: '(no teammates yet)' }]).map(p => p.username.startsWith('(')
-        ? el('div', { className: 'sel-opt', style: 'color:var(--muted)' }, p.username)
-        : el('div', { className: 'sel-opt' + (f.flagged_to === p.username ? ' on' : ''), onmousedown: (ev) => { ev.preventDefault(); setFlag(p.username); } },
-            avatarSm(p.username), el('span', { className: 'opt-name' }, p.username))),
-      f.flagged_to ? el('div', { className: 'sel-opt clear', onmousedown: (ev) => { ev.preventDefault(); setFlag(null); } }, 'Clear flag') : null);
-    place();
+// The per-target notebook: a Write ⇄ Preview Markdown editor with a formatting toolbar, autosaved.
+// Preview checkboxes are live (toggling one rewrites its "- [ ]" in the source). Read-only when the
+// viewer can't contribute (shows the rendered page only).
+function notebookEditor(id, initialMd, editable) {
+  let md = initialMd || '';
+  const ta = el('textarea', { className: 'nb-input', value: md,
+    placeholder: '# Notes\n\nWrite your working notes here.\n\n## Recon\n- found /admin\n- [ ] revisit the login\n\n**Markdown**: # H1, ## H2, - bullet, - [ ] task, **bold**, `code`.' });
+  const preview = el('div', { className: 'nb-preview markdown' });
+  const status = el('span', { className: 'nb-status' }, editable ? 'Saved' : 'Read-only');
+  let saveTmr;
+  const save = () => {
+    if (!editable) return;
+    status.textContent = 'Saving…'; clearTimeout(saveTmr);
+    saveTmr = setTimeout(async () => {
+      try { await api('/targets/' + id + '/notebook', { method: 'PATCH', body: { notebook: md } }); status.textContent = 'Saved'; }
+      catch (e) { status.textContent = 'Not saved — ' + e.message; }
+    }, 600);
   };
-  return btn;
+  const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.max(340, ta.scrollHeight + 4) + 'px'; };
+  const paintPreview = () => {
+    preview.innerHTML = mdToHtml(md);
+    if (editable) preview.querySelectorAll('input.md-task').forEach((cb) => {
+      cb.onchange = () => { md = toggleTask(md, Number(cb.dataset.i), cb.checked); ta.value = md; save(); paintPreview(); };
+    });
+    else preview.querySelectorAll('input.md-task').forEach((cb) => { cb.disabled = true; });
+  };
+  ta.oninput = () => { md = ta.value; save(); grow(); };
+  const tbtn = (label, title, fn) => el('button', { type: 'button', className: 'nb-tb', title, onmousedown: (e) => { e.preventDefault(); fn(); md = ta.value; save(); grow(); } }, label);
+  const toolbar = el('div', { className: 'nb-toolbar' },
+    tbtn('H1', 'Heading 1', () => taPrefix(ta, '# ')), tbtn('H2', 'Heading 2', () => taPrefix(ta, '## ')), tbtn('H3', 'Heading 3', () => taPrefix(ta, '### ')),
+    el('span', { className: 'nb-sep' }),
+    tbtn('B', 'Bold', () => taWrap(ta, '**', '**')), tbtn('I', 'Italic', () => taWrap(ta, '*', '*')), tbtn('</>', 'Code', () => taWrap(ta, '`', '`')),
+    el('span', { className: 'nb-sep' }),
+    tbtn('•', 'Bullet list', () => taPrefix(ta, '- ')), tbtn('1.', 'Numbered list', () => taPrefix(ta, '1. ')), tbtn('☐', 'Task', () => taPrefix(ta, '- [ ] ')),
+    tbtn('❝', 'Quote', () => taPrefix(ta, '> ')), tbtn('🔗', 'Link', () => taWrap(ta, '[', '](https://)')));
+
+  const writeBtn = el('button', { type: 'button', className: 'nb-tab', onclick: () => setMode('write') }, 'Write');
+  const prevBtn = el('button', { type: 'button', className: 'nb-tab', onclick: () => setMode('preview') }, 'Preview');
+  const setMode = (m) => {
+    ta.hidden = m !== 'write'; toolbar.hidden = m !== 'write'; preview.hidden = m !== 'preview';
+    writeBtn.classList.toggle('on', m === 'write'); prevBtn.classList.toggle('on', m === 'preview');
+    if (m === 'preview') paintPreview(); else requestAnimationFrame(grow);
+  };
+  const bar = el('div', { className: 'nb-bar' },
+    editable ? el('div', { className: 'nb-tabs' }, writeBtn, prevBtn) : el('span', { className: 'kicker' }, 'Notebook'),
+    status);
+  const box = el('div', { className: 'nb-wrap' }, bar, toolbar, ta, preview);
+  if (!editable) { ta.remove(); toolbar.remove(); }
+  setMode(editable && !md ? 'write' : 'preview');
+  return box;
+}
+
+// Credentials for a target, in a popup (title + username / password / server, each copyable). Add /
+// edit reuse the finding editor (kind: credential); the list refetches on change and the target
+// refreshes on close for its count.
+async function openCreds(id) {
+  const root = $('#modalRoot');
+  let dirty = false;
+  const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('.lightbox')) { e.preventDefault(); close(); } };
+  const close = () => { document.removeEventListener('keydown', onKey, true); root.replaceChildren(); if (dirty) renderTarget(id); };
+  const bodyEl = el('div', { className: 'modal-body creds-pop' });
+  const panel = el('div', { className: 'modal wide' },
+    el('div', { className: 'modal-head' }, el('span', { className: 'modal-kicker' }, 'Credentials'),
+      el('button', { type: 'button', className: 'modal-x', title: 'Close', onclick: close }, icon('x'))),
+    bodyEl);
+  root.replaceChildren(el('div', { className: 'overlay' }, panel));
+  document.addEventListener('keydown', onKey, true);
+  const rerender = () => { dirty = true; paint(); };
+  const copy = (v) => { navigator.clipboard?.writeText(v); toast('Copied'); };
+  async function paint() {
+    let a;
+    try { a = await api('/targets/' + id); } catch (e) { bodyEl.replaceChildren(el('div', { className: 'pmeta', style: 'padding:20px' }, e.message)); return; }
+    const creds = (a.findings || []).filter(f => f.kind === 'credential');
+    const mayAdd = isEditor() || (!!CURRENT_USER && assigneeList(a.assignee).includes(CURRENT_USER)) || !assigneeList(a.assignee).length;
+    const rows = creds.map(c => {
+      const u = credField(c.body, 'Username'), p = credField(c.body, 'Password'), sv = credField(c.body, 'Server');
+      const cell = (lbl, val) => val ? el('div', { className: 'cred-cell' }, el('span', { className: 'cred-k' }, lbl),
+        el('code', { className: 'cred-v', title: 'Click to copy', onclick: () => copy(val) }, val)) : null;
+      return el('div', { className: 'cred-card' },
+        el('div', { className: 'cred-top' }, el('strong', {}, c.title),
+          mayAdd ? el('div', { className: 'cred-tools' },
+            el('button', { className: 'ibtn', title: 'Edit', onclick: () => editFinding(c, id, rerender) }, icon('edit', 11)),
+            el('button', { className: 'ibtn del', title: 'Delete', onclick: () => confirmDanger('Delete this credential?', async () => { await api('/findings/' + c.id, { method: 'DELETE' }); rerender(); }) }, icon('x', 11))) : null),
+        cell('user', u), cell('pass', p), cell('server', sv),
+        c.author ? el('div', { className: 'cred-by' }, avatarSm(c.author), 'by ' + c.author + (c.created_at ? ' · ' + fmtWhen(c.created_at) : '')) : null);
+    });
+    bodyEl.replaceChildren(
+      el('div', { className: 'creds-bar' },
+        el('span', { className: 'muted small' }, `${creds.length} credential${creds.length === 1 ? '' : 's'}`),
+        mayAdd ? el('button', { className: 'btn line sm', style: 'margin-left:auto', onclick: () => addFinding(id, false, rerender, 'credential') }, icon('plus', 12), 'Add creds') : null),
+      creds.length ? el('div', { className: 'creds-list' }, ...rows) : el('div', { className: 'pmeta', style: 'padding:18px 2px' }, 'No credentials recorded for this target yet.'));
+  }
+  await paint();
 }
 
 // The checklist, now opened in a popup from the target page. Refetches on each change so option

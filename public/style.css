@@ -1140,13 +1140,13 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
   font-size: 12px; line-height: 1.45;
 }
 
-/* ── target page: notes/creds chat (middle) + a checklist opened in a popup ── */
-.target-head.slim { padding-bottom: 16px; }
-.notes-col { flex: 1; min-width: 420px; display: flex; flex-direction: column; overflow: hidden; }
-.chat-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.chat-stream { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 26px 8px; display: flex; flex-direction: column; gap: 12px; }
-.chat-empty { color: var(--muted); font-family: var(--mono); font-size: 12px; padding: 26px 4px; line-height: 1.75; }
+/* ── target page: a per-target Markdown notebook (middle) + a checklist opened in a popup ── */
+.target-head.slim { padding-bottom: 14px; }
+.notes-col { flex: 1; min-width: 460px; display: flex; flex-direction: column; overflow-y: auto; }
 
+/* task tools line under the title: checklist opener + record-finding + creds */
+.task-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 14px; }
+.tt-count { margin-left: 6px; font-family: var(--mono); font-size: 10px; color: var(--muted); background: var(--row-sel); border-radius: 8px; padding: 0 6px; }
 .checklist-open { display: inline-flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line-3);
   border-radius: 6px; padding: 7px 12px; color: var(--text-2); cursor: pointer; font-family: var(--mono); font-size: 11px; }
 .checklist-open:hover { border-color: var(--gold); color: var(--fg); }
@@ -1156,44 +1156,56 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 .checklist-open .clk-bar { width: 46px; height: 5px; background: var(--line); position: relative; overflow: hidden; border-radius: 3px; }
 .checklist-open .clk-bar > span { position: absolute; inset: 0 auto 0 0; background: var(--jade); }
 
-/* one note/credential bubble */
-.chatnote { border: 1px solid var(--line-2); border-left: 3px solid var(--line-hi); background: var(--panel); border-radius: 4px; padding: 10px 12px; }
-.chatnote.mine { border-left-color: var(--gold); }
-.chatnote.cred { background: var(--void); }
-.chatnote.tome { border-color: var(--gold); background: var(--gold-wash); box-shadow: 0 0 0 1px var(--gold), 0 0 18px -5px var(--gold); }
-.cn-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.cn-author { font-family: var(--mono); font-size: 11.5px; color: var(--fg-2); font-weight: 500; }
-.cn-tag { display: inline-flex; align-items: center; gap: 3px; font-family: var(--mono); font-size: 9px; letter-spacing: .1em;
-  text-transform: uppercase; color: var(--gold); border: 1px solid var(--line-3); padding: 1px 5px; border-radius: 3px; }
-.cn-when { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--muted-2); white-space: nowrap; }
-.cn-body { font-size: 13px; color: var(--text); line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
-.cn-body.cred { font-family: var(--mono); font-size: 12px; color: #a8c8ff; background: var(--void); border: 1px solid var(--line);
-  border-radius: 3px; padding: 8px 10px; margin: 0; overflow-x: auto; }
-.cn-shots { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.cn-shots img { width: 72px; height: 72px; object-fit: cover; border: 1px solid var(--line-3); border-radius: 3px; cursor: zoom-in; }
-.cn-foot { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-.cn-for { display: inline-flex; align-items: center; gap: 4px; font-family: var(--mono); font-size: 10px; color: var(--gold); }
-.cn-for .avatar.sm { width: 16px; height: 16px; font-size: 8px; color: var(--gold); }
-.cn-tools { margin-left: auto; display: flex; gap: 4px; }
-.ibtn.flagto.on { color: var(--gold); border-color: var(--gold); }
+/* notebook editor */
+.nb-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 16px 26px 60px; }
+.nb-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.nb-tabs { display: inline-flex; border: 1px solid var(--line-3); border-radius: 6px; overflow: hidden; }
+.nb-tab { background: none; border: 0; padding: 6px 14px; font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); cursor: pointer; }
+.nb-tab.on { background: var(--row-sel); color: var(--fg); }
+.nb-tab + .nb-tab { border-left: 1px solid var(--line-3); }
+.nb-status { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--muted-2); }
+.nb-toolbar { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 8px; }
+.nb-tb { min-width: 30px; height: 28px; padding: 0 8px; background: var(--panel); border: 1px solid var(--line-3); border-radius: 5px; color: var(--text-2); font-family: var(--mono); font-size: 12px; cursor: pointer; }
+.nb-tb:hover { border-color: var(--gold); color: var(--gold); }
+.nb-sep { width: 1px; height: 18px; background: var(--line-3); margin: 0 4px; }
+.nb-input { width: 100%; min-height: 340px; resize: none; background: var(--void); border: 1px solid var(--line-3); border-radius: 8px;
+  padding: 16px 18px; color: var(--text); font-family: var(--mono); font-size: 13px; line-height: 1.7; }
+.nb-input:focus { outline: none; border-color: var(--gold); }
+.nb-preview { min-height: 200px; }
 
-/* composer */
-.chat-composer { border-top: 1px solid var(--line); background: var(--panel-2); padding: 10px 26px 14px; }
-.chat-composer.readonly { display: flex; align-items: center; gap: 10px; }
-.chat-tools { display: flex; gap: 7px; margin-bottom: 8px; flex-wrap: wrap; }
-.chat-row { display: flex; gap: 8px; align-items: flex-end; }
-.chat-input { flex: 1 1 auto; min-width: 0; resize: none; background: var(--bg); border: 1px solid var(--line-3); border-radius: 6px;
-  padding: 9px 11px; color: var(--text); font-family: var(--sans); font-size: 13px; line-height: 1.5; min-height: 38px; max-height: 160px; overflow-y: hidden; }
-.chat-input:focus { outline: none; border-color: var(--gold); }
-/* the Send button keeps its size and sits at the bottom — it must not stretch/shrink as the note box grows */
-.chat-send { flex: 0 0 auto; align-self: flex-end; white-space: nowrap; }
+/* rendered Markdown (shared class .markdown) */
+.markdown h1 { font-size: 24px; margin: 18px 0 8px; }
+.markdown h2 { font-size: 19px; margin: 16px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+.markdown h3 { font-size: 15px; margin: 14px 0 6px; }
+.markdown h4 { font-size: 13px; margin: 12px 0 6px; color: var(--muted); }
+.markdown p { margin: 8px 0; line-height: 1.7; }
+.markdown ul, .markdown ol { margin: 8px 0; padding-left: 22px; line-height: 1.7; }
+.markdown li { margin: 3px 0; }
+.markdown ul.md-tasks { list-style: none; padding-left: 2px; }
+.markdown .md-taskitem { display: flex; align-items: flex-start; gap: 8px; }
+.markdown .md-task { margin-top: 3px; accent-color: var(--gold); cursor: pointer; }
+.markdown .md-done { color: var(--muted); text-decoration: line-through; }
+.markdown code { font-family: var(--mono); font-size: 12px; background: var(--void); border: 1px solid var(--line); border-radius: 3px; padding: 1px 5px; }
+.markdown pre.nb-code { background: var(--void); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; overflow-x: auto; }
+.markdown pre.nb-code code { border: 0; background: none; padding: 0; color: #a8c8ff; }
+.markdown blockquote { margin: 8px 0; padding: 4px 14px; border-left: 3px solid var(--line-hi); color: var(--muted); }
+.markdown hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
+.markdown a { color: var(--gold); }
+.markdown .nb-hint { color: var(--muted); font-family: var(--mono); font-size: 12px; }
 
-/* flag-to-a-teammate menu (reuses .sel-menu / .sel-opt) */
-.flagmenu { padding: 4px; }
-.flagmenu-h { font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--label); padding: 6px 8px 4px; }
-.flagmenu .sel-opt { display: flex; align-items: center; gap: 8px; }
-.flagmenu .opt-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.flagmenu .sel-opt.clear { color: var(--muted); border-top: 1px solid var(--line); justify-content: center; }
+/* credentials popup */
+.creds-pop { overflow-y: auto; }
+.creds-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.creds-list { display: flex; flex-direction: column; gap: 10px; }
+.cred-card { border: 1px solid var(--line-2); border-radius: 6px; padding: 12px 14px; background: var(--panel); }
+.cred-top { display: flex; align-items: center; gap: 10px; }
+.cred-top strong { font-size: 14px; }
+.cred-tools { margin-left: auto; display: flex; gap: 4px; }
+.cred-cell { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.cred-k { font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--label); width: 52px; flex: none; }
+.cred-v { font-family: var(--mono); font-size: 12.5px; color: var(--text); background: var(--void); border: 1px solid var(--line); border-radius: 3px; padding: 3px 8px; cursor: pointer; overflow-wrap: anywhere; }
+.cred-v:hover { border-color: var(--gold); color: var(--gold); }
+.cred-by { margin-top: 8px; display: flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 10px; color: var(--muted-2); }
 
 /* checklist popup */
 .modal.checklist-modal { width: min(920px, 94vw); max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; }

@@ -1384,24 +1384,37 @@ function toggleTask(src, i, checked) {
   let n = 0;
   return String(src).replace(/^(\s*[-*]\s+\[)([ xX]?)(\])/gm, (m, pre, mark, post) => (n++ === i ? pre + (checked ? 'x' : ' ') + post : m));
 }
-// Textarea helpers for the toolbar: wrap the selection, prefix the current line, or insert a block.
+// Textarea edit primitive that goes THROUGH the browser's edit history, so Ctrl+Z / Ctrl+Y undo and
+// redo toolbar actions just like typing. Selects [start,end], replaces it via execCommand('insertText'),
+// then restores a caret/selection. Falls back to a direct splice only where execCommand is unavailable.
+function taReplace(ta, start, end, text, selStart, selEnd) {
+  ta.focus(); ta.setSelectionRange(start, end);
+  let ok = false;
+  try { ok = document.execCommand('insertText', false, text); } catch { ok = false; }
+  if (!ok) { ta.setRangeText(text, start, end, 'end'); ta.dispatchEvent(new Event('input', { bubbles: true })); }
+  if (selStart != null) ta.setSelectionRange(selStart, selEnd == null ? selStart : selEnd);
+}
+// Wrap the selection (or the caret) with before/after — bold, italic, code, link…
 function taWrap(ta, before, after) {
-  const s = ta.selectionStart, e = ta.selectionEnd, v = ta.value, sel = v.slice(s, e);
-  ta.value = v.slice(0, s) + before + sel + after + v.slice(e);
-  const caret = sel ? e + before.length : s + before.length;
-  ta.focus(); ta.setSelectionRange(sel ? s + before.length : caret, caret);
+  const s = ta.selectionStart, e = ta.selectionEnd, sel = ta.value.slice(s, e);
+  taReplace(ta, s, e, before + sel + after, s + before.length, e + before.length);
 }
-function taPrefix(ta, prefix) {
-  const s = ta.selectionStart, v = ta.value, ls = v.lastIndexOf('\n', s - 1) + 1;
-  ta.value = v.slice(0, ls) + prefix + v.slice(ls);
-  ta.focus(); ta.setSelectionRange(s + prefix.length, s + prefix.length);
+// Prefix EVERY line the selection touches (a single line when there's no selection). `prefixFor(i)`
+// returns the prefix for the i-th selected line — a constant for bullets/tasks/headers/quotes, or an
+// incrementing "1. ", "2. "… for numbered lists.
+function taPrefix(ta, prefixFor) {
+  const fn = typeof prefixFor === 'function' ? prefixFor : () => prefixFor;
+  const v = ta.value, s = ta.selectionStart, e = ta.selectionEnd;
+  const from = v.lastIndexOf('\n', s - 1) + 1;
+  let to = v.indexOf('\n', e); if (to === -1) to = v.length;
+  const out = v.slice(from, to).split('\n').map((ln, i) => fn(i) + ln).join('\n');
+  taReplace(ta, from, to, out, from, from + out.length);
 }
+// Insert a block at the caret, on its own line.
 function taInsert(ta, text) {
   const s = ta.selectionStart, v = ta.value;
   const pre = (s > 0 && v[s - 1] !== '\n') ? '\n' : '';
-  ta.value = v.slice(0, s) + pre + text + v.slice(s);
-  const caret = s + pre.length + text.length;
-  ta.focus(); ta.setSelectionRange(caret, caret);
+  taReplace(ta, s, s, pre + text, s + pre.length + text.length);
 }
 
 // The per-target notebook: a Write ⇄ Preview Markdown editor with a formatting toolbar, autosaved.
@@ -1423,42 +1436,58 @@ function notebookEditor(id, initialMd, editable) {
     }, 600);
   };
   const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.max(340, ta.scrollHeight + 4) + 'px'; };
+  // A line-number gutter: a hidden mirror div (same width/font/wrapping as the textarea) measures the
+  // rendered height of each source line — including wrapped ones — so every logical line gets a number
+  // aligned to where it starts.
+  const gutter = el('div', { className: 'nb-gutter' });
+  const mirror = el('div', { className: 'nb-mirror markdownless' });
+  const renderGutter = () => {
+    const lines = ta.value.split('\n');
+    mirror.style.width = ta.offsetWidth + 'px';
+    mirror.replaceChildren(...lines.map(ln => el('div', { className: 'nb-mline' }, ln === '' ? '​' : ln)));
+    gutter.replaceChildren(...[...mirror.children].map((d, i) => el('div', { className: 'nb-lino', style: `height:${d.offsetHeight || 22}px` }, String(i + 1))));
+  };
+  let gpending = false;
+  const scheduleGutter = () => { if (gpending) return; gpending = true; requestAnimationFrame(() => { gpending = false; renderGutter(); }); };
   const paintPreview = () => {
     preview.innerHTML = mdToHtml(md);
     if (editable) preview.querySelectorAll('input.md-task').forEach((cb) => {
-      cb.onchange = () => { md = toggleTask(md, Number(cb.dataset.i), cb.checked); ta.value = md; save(); paintPreview(); };
+      cb.onchange = () => { md = toggleTask(md, Number(cb.dataset.i), cb.checked); ta.value = md; save(); paintPreview(); scheduleGutter(); };
     });
     else preview.querySelectorAll('input.md-task').forEach((cb) => { cb.disabled = true; });
   };
   const livePreview = () => { if (!preview.hidden) paintPreview(); };
-  ta.oninput = () => { md = ta.value; save(); grow(); livePreview(); };
-  const tbtn = (label, title, fn) => el('button', { type: 'button', className: 'nb-tb', title, onmousedown: (e) => { e.preventDefault(); fn(); md = ta.value; save(); grow(); livePreview(); } }, label);
+  ta.oninput = () => { md = ta.value; save(); grow(); scheduleGutter(); livePreview(); };
+  // Toolbar actions run through taReplace (execCommand), so each is a single undoable edit.
+  const tbtn = (label, title, fn) => el('button', { type: 'button', className: 'nb-tb', title, onmousedown: (e) => { e.preventDefault(); fn(); } }, label);
   const TABLE = '| Column1 | Column2 | Column3 |\n| --- | --- | --- |\n| Text | Text | Text |\n';
   const toolbar = el('div', { className: 'nb-toolbar' },
     tbtn('H1', 'Heading 1', () => taPrefix(ta, '# ')), tbtn('H2', 'Heading 2', () => taPrefix(ta, '## ')), tbtn('H3', 'Heading 3', () => taPrefix(ta, '### ')),
     el('span', { className: 'nb-sep' }),
     tbtn('B', 'Bold', () => taWrap(ta, '**', '**')), tbtn('I', 'Italic', () => taWrap(ta, '*', '*')), tbtn('S', 'Strikethrough', () => taWrap(ta, '~~', '~~')), tbtn('</>', 'Code', () => taWrap(ta, '`', '`')),
     el('span', { className: 'nb-sep' }),
-    tbtn('•', 'Bullet list', () => taPrefix(ta, '- ')), tbtn('1.', 'Numbered list', () => taPrefix(ta, '1. ')), tbtn('☐', 'Task', () => taPrefix(ta, '- [ ] ')),
+    tbtn('•', 'Bullet list', () => taPrefix(ta, '- ')), tbtn('1.', 'Numbered list', () => taPrefix(ta, i => (i + 1) + '. ')), tbtn('☐', 'Task', () => taPrefix(ta, '- [ ] ')),
     tbtn('❝', 'Quote', () => taPrefix(ta, '> ')), tbtn('⊞', 'Table', () => taInsert(ta, TABLE)), tbtn('🔗', 'Link', () => taWrap(ta, '[', '](https://)')));
 
-  const body = el('div', { className: 'nb-body' }, ta, preview);
+  const editor = el('div', { className: 'nb-editor' }, gutter, ta, mirror);
+  const body = el('div', { className: 'nb-body' }, editor, preview);
   const tab = (label, m) => el('button', { type: 'button', className: 'nb-tab', onclick: () => setMode(m) }, label);
   const writeBtn = tab('Write', 'write'), splitBtn = tab('Split', 'split'), prevBtn = tab('Preview', 'preview');
   const setMode = (m) => {
     const showWrite = m === 'write' || m === 'split';
     const showPrev = m === 'preview' || m === 'split';
-    ta.hidden = !showWrite; toolbar.hidden = !showWrite; preview.hidden = !showPrev;
+    editor.hidden = !showWrite; toolbar.hidden = !showWrite; preview.hidden = !showPrev;
     body.classList.toggle('split', m === 'split');
     for (const [b, k] of [[writeBtn, 'write'], [splitBtn, 'split'], [prevBtn, 'preview']]) b.classList.toggle('on', m === k);
     if (showPrev) paintPreview();
-    if (showWrite) requestAnimationFrame(grow);
+    if (showWrite) { requestAnimationFrame(grow); scheduleGutter(); }
   };
   const bar = el('div', { className: 'nb-bar' },
     editable ? el('div', { className: 'nb-tabs' }, writeBtn, splitBtn, prevBtn) : el('span', { className: 'kicker' }, 'Notebook'),
     status);
   const box = el('div', { className: 'nb-wrap' }, bar, toolbar, body);
-  if (!editable) { ta.remove(); toolbar.remove(); }
+  if (!editable) { editor.remove(); toolbar.remove(); }
+  else { try { new ResizeObserver(scheduleGutter).observe(ta); } catch { window.addEventListener('resize', scheduleGutter); } } // re-number on width change (mode switch, resize)
   setMode(editable ? (md ? 'split' : 'write') : 'preview');
   return box;
 }

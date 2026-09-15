@@ -1441,14 +1441,23 @@ function notebookEditor(id, initialMd, editable) {
   // aligned to where it starts.
   const gutter = el('div', { className: 'nb-gutter' });
   const mirror = el('div', { className: 'nb-mirror markdownless' });
+  let lastSig = '';
   const renderGutter = () => {
     const lines = ta.value.split('\n');
     mirror.style.width = ta.offsetWidth + 'px';
     mirror.replaceChildren(...lines.map(ln => el('div', { className: 'nb-mline' }, ln === '' ? '​' : ln)));
-    gutter.replaceChildren(...[...mirror.children].map((d, i) => el('div', { className: 'nb-lino', style: `height:${d.offsetHeight || 22}px` }, String(i + 1))));
+    const heights = [...mirror.children].map(d => d.offsetHeight || 22);
+    const sig = ta.offsetWidth + '|' + heights.join(',');
+    if (sig === lastSig) return;   // line layout unchanged (typing within a line that didn't re-wrap) → skip the DOM churn
+    lastSig = sig;
+    gutter.replaceChildren(...heights.map((h, i) => el('div', { className: 'nb-lino', style: `height:${h}px` }, String(i + 1))));
   };
-  let gpending = false;
-  const scheduleGutter = () => { if (gpending) return; gpending = true; requestAnimationFrame(() => { gpending = false; renderGutter(); }); };
+  // Throttle the gutter (measuring every line forces a reflow) and debounce the preview (a full
+  // re-parse + re-render) so typing stays smooth in a large notebook instead of doing both per key.
+  let gLast = 0, gTmr; const scheduleGutter = () => {
+    clearTimeout(gTmr); const now = Date.now();
+    if (now - gLast > 120) { gLast = now; renderGutter(); } else gTmr = setTimeout(() => { gLast = Date.now(); renderGutter(); }, 120);
+  };
   const paintPreview = () => {
     preview.innerHTML = mdToHtml(md);
     if (editable) preview.querySelectorAll('input.md-task').forEach((cb) => {
@@ -1456,7 +1465,7 @@ function notebookEditor(id, initialMd, editable) {
     });
     else preview.querySelectorAll('input.md-task').forEach((cb) => { cb.disabled = true; });
   };
-  const livePreview = () => { if (!preview.hidden) paintPreview(); };
+  let pTmr; const livePreview = () => { if (preview.hidden) return; clearTimeout(pTmr); pTmr = setTimeout(paintPreview, 180); };
   ta.oninput = () => { md = ta.value; save(); grow(); scheduleGutter(); livePreview(); };
   // Toolbar actions run through taReplace (execCommand), so each is a single undoable edit.
   const tbtn = (label, title, fn) => el('button', { type: 'button', className: 'nb-tb', title, onmousedown: (e) => { e.preventDefault(); fn(); } }, label);

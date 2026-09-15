@@ -126,6 +126,28 @@ checks.push(['target notebook + findings dock render', await ev(`
   const split = !!document.querySelector(".nb-body.split") && !document.querySelector(".nb-body.split .nb-input").hidden && !document.querySelector(".nb-body.split .nb-preview").hidden;
   const rendered = !!document.querySelector(".nb-preview h2") && !!document.querySelector(".nb-preview table.md-table") && !!document.querySelector(".nb-preview input.md-task");
   return hasNotebook && hasTools && hasDock && persisted && split && rendered`)]);
+// Toolbar formatting toggles: Bold adds then removes; a heading switches level (H1 -> H2).
+checks.push(['notebook toolbar toggles/switches formatting', await ev(`
+  const p = (await (await fetch("/api/projects")).json())[0];
+  const d = await (await fetch("/api/projects/" + p.id)).json();
+  const f = await (await fetch("/api/assets/" + d.assets[0].id)).json();
+  location.hash = "#/target/" + f.targets[0].id; await new Promise(r => setTimeout(r, 1200));
+  const ta = document.querySelector(".nb-input");
+  const btn = (name) => [...document.querySelectorAll(".nb-tb")].find(b => b.title === name);
+  const press = (b) => b.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  const sel = (a, b) => { ta.focus(); ta.setSelectionRange(a, b); };
+  ta.value = "hello"; ta.dispatchEvent(new Event("input", { bubbles: true }));
+  sel(0, 5); press(btn("Bold")); await new Promise(r => setTimeout(r, 40));
+  const boldOn = ta.value === "**hello**";
+  sel(0, ta.value.length); press(btn("Bold")); await new Promise(r => setTimeout(r, 40));
+  const boldOff = ta.value === "hello";
+  sel(0, ta.value.length); press(btn("Heading 1")); await new Promise(r => setTimeout(r, 40));
+  const h1 = ta.value === "# hello";
+  sel(0, ta.value.length); press(btn("Heading 2")); await new Promise(r => setTimeout(r, 40));
+  const h2 = ta.value === "## hello";
+  sel(0, ta.value.length); press(btn("Heading 2")); await new Promise(r => setTimeout(r, 40));
+  const h2off = ta.value === "hello";
+  return boldOn && boldOff && h1 && h2 && h2off`)]);
 checks.push(['checklist popup paints', await ev(`
   const p = (await (await fetch("/api/projects")).json())[0];
   const d = await (await fetch("/api/projects/" + p.id)).json();

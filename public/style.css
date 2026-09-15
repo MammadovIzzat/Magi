@@ -1230,8 +1230,15 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 .clpop-bar { position: sticky; top: 0; z-index: 3; background: var(--panel-hi); padding: 12px 20px 8px; border-bottom: 1px solid var(--line); }
 .clpop-actions { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
 .checklist-pop .checklist { padding: 4px 20px 24px; }
-.checklist-pop .group { margin-top: 18px; }
-.checklist-pop .group:first-child { margin-top: 8px; }
+/* the popup is a denser space than the old full page — tighten groups and item cards */
+.checklist-pop .group { margin-top: 10px; }
+.checklist-pop .group:first-child { margin-top: 4px; }
+.checklist-pop .ghdr { padding: 8px 2px; }
+.checklist-pop .gbody { padding: 6px 0 2px; }
+.checklist-pop .item { padding: 9px 12px; margin-bottom: 5px; gap: 10px; }
+.checklist-pop .item .ititle { font-size: 13.5px; }
+.checklist-pop .item .detail { margin-top: 3px; }
+.checklist-pop .item .inum { padding-top: 1px; }
 
 /* ── responsive top bar (split-screen / narrow windows) ── */
 @media (max-width: 1000px) {

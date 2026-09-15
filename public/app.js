@@ -1394,20 +1394,44 @@ function taReplace(ta, start, end, text, selStart, selEnd) {
   if (!ok) { ta.setRangeText(text, start, end, 'end'); ta.dispatchEvent(new Event('input', { bubbles: true })); }
   if (selStart != null) ta.setSelectionRange(selStart, selEnd == null ? selStart : selEnd);
 }
-// Wrap the selection (or the caret) with before/after — bold, italic, code, link…
+// TOGGLE the selection's wrap with before/after — bold, italic, strike, code, link. Pressing the
+// button again (when already wrapped, inside or just outside the selection) removes it, like SysReptor.
 function taWrap(ta, before, after) {
-  const s = ta.selectionStart, e = ta.selectionEnd, sel = ta.value.slice(s, e);
+  const s = ta.selectionStart, e = ta.selectionEnd, v = ta.value, sel = v.slice(s, e);
+  if (sel.length >= before.length + after.length && sel.startsWith(before) && sel.endsWith(after)) {
+    const inner = sel.slice(before.length, sel.length - after.length);
+    return taReplace(ta, s, e, inner, s, s + inner.length);        // was wrapped → unwrap
+  }
+  if (v.slice(s - before.length, s) === before && v.slice(e, e + after.length) === after) {
+    return taReplace(ta, s - before.length, e + after.length, sel, s - before.length, s - before.length + sel.length);
+  }
   taReplace(ta, s, e, before + sel + after, s + before.length, e + before.length);
 }
-// Prefix EVERY line the selection touches (a single line when there's no selection). `prefixFor(i)`
-// returns the prefix for the i-th selected line — a constant for bullets/tasks/headers/quotes, or an
-// incrementing "1. ", "2. "… for numbered lists.
-function taPrefix(ta, prefixFor) {
-  const fn = typeof prefixFor === 'function' ? prefixFor : () => prefixFor;
-  const v = ta.value, s = ta.selectionStart, e = ta.selectionEnd;
+// Block-level formatting on every line the selection touches, with SysReptor-style toggle/switch: the
+// existing block token is stripped first, so pressing H1 on an H1 line clears it, pressing H2 on an
+// H1 line switches it, and a bullet on a numbered line switches list style.
+const NB_BLOCK = {
+  h1: { re: /^#\s/, mk: () => '# ' }, h2: { re: /^##\s/, mk: () => '## ' }, h3: { re: /^###\s/, mk: () => '### ' },
+  ul: { re: /^[-*]\s(?!\[)/, mk: () => '- ' }, ol: { re: /^\d+\.\s/, mk: (i) => (i + 1) + '. ' },
+  task: { re: /^[-*]\s\[[ xX]?\]\s/, mk: () => '- [ ] ' }, quote: { re: /^>\s/, mk: () => '> ' },
+};
+// Split a line into its leading whitespace, any known block token, and the rest.
+const nbStrip = (line) => {
+  const m = /^(\s*)(#{1,6}\s+|[-*]\s+\[[ xX]?\]\s+|[-*]\s+|\d+\.\s+|>\s+)?([\s\S]*)$/.exec(line);
+  return { indent: m[1] || '', rest: m[3] || '' };
+};
+function taBlock(ta, type) {
+  const spec = NB_BLOCK[type], v = ta.value, s = ta.selectionStart, e = ta.selectionEnd;
   const from = v.lastIndexOf('\n', s - 1) + 1;
   let to = v.indexOf('\n', e); if (to === -1) to = v.length;
-  const out = v.slice(from, to).split('\n').map((ln, i) => fn(i) + ln).join('\n');
+  const lines = v.slice(from, to).split('\n');
+  const nonEmpty = lines.filter(l => l.trim() !== '');
+  const allSet = nonEmpty.length > 0 && nonEmpty.every(l => spec.re.test(l.replace(/^\s*/, ''))); // already this type everywhere → toggle off
+  let n = 0;
+  const out = lines.map((line) => {
+    const { indent, rest } = nbStrip(line);
+    return allSet ? indent + rest : indent + spec.mk(n++) + rest;
+  }).join('\n');
   taReplace(ta, from, to, out, from, from + out.length);
 }
 // Insert a block at the caret, on its own line.
@@ -1471,12 +1495,12 @@ function notebookEditor(id, initialMd, editable) {
   const tbtn = (label, title, fn) => el('button', { type: 'button', className: 'nb-tb', title, onmousedown: (e) => { e.preventDefault(); fn(); } }, label);
   const TABLE = '| Column1 | Column2 | Column3 |\n| --- | --- | --- |\n| Text | Text | Text |\n';
   const toolbar = el('div', { className: 'nb-toolbar' },
-    tbtn('H1', 'Heading 1', () => taPrefix(ta, '# ')), tbtn('H2', 'Heading 2', () => taPrefix(ta, '## ')), tbtn('H3', 'Heading 3', () => taPrefix(ta, '### ')),
+    tbtn('H1', 'Heading 1', () => taBlock(ta, 'h1')), tbtn('H2', 'Heading 2', () => taBlock(ta, 'h2')), tbtn('H3', 'Heading 3', () => taBlock(ta, 'h3')),
     el('span', { className: 'nb-sep' }),
     tbtn('B', 'Bold', () => taWrap(ta, '**', '**')), tbtn('I', 'Italic', () => taWrap(ta, '*', '*')), tbtn('S', 'Strikethrough', () => taWrap(ta, '~~', '~~')), tbtn('</>', 'Code', () => taWrap(ta, '`', '`')),
     el('span', { className: 'nb-sep' }),
-    tbtn('•', 'Bullet list', () => taPrefix(ta, '- ')), tbtn('1.', 'Numbered list', () => taPrefix(ta, i => (i + 1) + '. ')), tbtn('☐', 'Task', () => taPrefix(ta, '- [ ] ')),
-    tbtn('❝', 'Quote', () => taPrefix(ta, '> ')), tbtn('⊞', 'Table', () => taInsert(ta, TABLE)), tbtn('🔗', 'Link', () => taWrap(ta, '[', '](https://)')));
+    tbtn('•', 'Bullet list', () => taBlock(ta, 'ul')), tbtn('1.', 'Numbered list', () => taBlock(ta, 'ol')), tbtn('☐', 'Task', () => taBlock(ta, 'task')),
+    tbtn('❝', 'Quote', () => taBlock(ta, 'quote')), tbtn('⊞', 'Table', () => taInsert(ta, TABLE)), tbtn('🔗', 'Link', () => taWrap(ta, '[', '](https://)')));
 
   const editor = el('div', { className: 'nb-editor' }, gutter, ta, mirror);
   const body = el('div', { className: 'nb-body' }, editor, preview);

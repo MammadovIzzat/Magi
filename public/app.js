@@ -251,8 +251,8 @@ function modal(opts) {
 }
 // A themed confirm dialog for destructive actions — replaces the native confirm() so delete prompts
 // match the app. `onYes` runs when the red button is pressed; Cancel / ✕ / Esc just close.
-function confirmDanger(title, onYes, { cta = 'Delete', note } = {}) {
-  modal({ kicker: 'Confirm', title, note, danger: true, cta, build: () => {}, onSubmit: async () => { await onYes(); } });
+function confirmDanger(title, onYes, { cta = 'Delete', note, danger = true } = {}) {
+  modal({ kicker: 'Confirm', title, note, danger, cta, build: () => {}, onSubmit: async () => { await onYes(); } });
 }
 // A fully app-styled dropdown replacing the native <select> — its option popup is OS chrome that
 // CSS can't theme reliably. Returns an element that behaves like a <select>: a `value` get/set
@@ -1281,7 +1281,11 @@ async function renderTarget(id) {
   const grow = () => { ta.style.height = 'auto'; const h = Math.min(ta.scrollHeight, 160); ta.style.height = h + 'px'; ta.style.overflowY = ta.scrollHeight > 160 ? 'auto' : 'hidden'; };
   const send = async () => {
     const text = ta.value.trim(); if (!text) return;
-    try { await api('/targets/' + id + '/findings', { method: 'POST', body: { title: text.split('\n')[0].slice(0, 80) || 'Note', kind: 'note', body: text } }); ta.value = ''; renderTarget(id); }
+    // Notes get a structured name — "<target> | <user> Note <n>" — instead of echoing their text,
+    // so the title reads cleanly in the report/list while the body holds what was typed.
+    const n = a.findings.filter(f => f.kind === 'note').length + 1;
+    const title = `${a.label} | ${CURRENT_USER || 'anon'} Note ${n}`;
+    try { await api('/targets/' + id + '/findings', { method: 'POST', body: { title, kind: 'note', body: text } }); ta.value = ''; renderTarget(id); }
     catch (e) { toast(e.message); }
   };
   ta.oninput = grow;
@@ -1289,7 +1293,7 @@ async function renderTarget(id) {
   const composer = mayContribute
     ? el('div', { className: 'chat-composer' },
         el('div', { className: 'chat-tools' },
-          el('button', { className: 'btn line sm', title: 'A note with screenshots', onclick: () => addFinding(id, false, () => renderTarget(id), 'note') }, icon('image', 12), 'Evidence'),
+          el('button', { className: 'btn line sm', title: 'Record a vulnerability (a report finding)', onclick: () => addFinding(id, false, () => renderTarget(id), 'vuln') }, icon('plus', 12), 'Finding'),
           el('button', { className: 'btn line sm', title: 'Record a credential', onclick: () => addFinding(id, false, () => renderTarget(id), 'credential') }, icon('key', 12), 'Creds'),
           el('button', { className: 'btn line sm', title: 'Open the checklist', onclick: () => openChecklist(id) }, icon('check', 12), 'Checklist')),
         el('div', { className: 'chat-row' }, ta, el('button', { className: 'btn gold chat-send', onclick: send }, 'Send')))
@@ -1477,7 +1481,10 @@ async function openChecklist(id) {
         el('button', { className: 'btn sm', onclick: () => { groups.forEach(g => openGroups.add(g.key)); rerender(); } }, 'Expand all'),
         el('button', { className: 'btn sm', onclick: () => { openGroups.clear(); rerender(); } }, 'Collapse'),
         handled < actionable.length
-          ? el('button', { className: 'btn sm', title: 'Mark every checklist item done', onclick: async () => { if (confirm('Mark every checklist item as done?')) { await api('/targets/' + id + '/mark', { method: 'POST', body: { status: 'done' } }); rerender(); } } }, icon('check', 12), 'All done')
+          ? el('button', { className: 'btn sm', title: 'Mark every checklist item done', onclick: () => confirmDanger('Mark every checklist item as done?', async () => { await api('/targets/' + id + '/mark', { method: 'POST', body: { status: 'done' } }); rerender(); }, { cta: 'Mark all done', danger: false }) }, icon('check', 12), 'All done')
+          : null,
+        handled > 0
+          ? el('button', { className: 'btn sm', title: 'Reopen every checklist item (back to not done)', onclick: () => confirmDanger('Reopen every checklist item?', async () => { await api('/targets/' + id + '/mark', { method: 'POST', body: { status: 'todo' } }); rerender(); }, { cta: 'Reopen all', danger: false }) }, icon('up', 12), 'Reopen all')
           : null,
         mayEdit ? el('button', { className: 'btn line sm', onclick: () => itemModal(id, null, null, rerender) }, '+ Item') : null),
       filters);
@@ -1985,16 +1992,11 @@ async function findingModal(assetId, finding = null, isRetest = false, after, st
     note: editing ? 'Update the finding. Attached images stay put.'
       : 'Notes, credentials and confirmed vulnerabilities — these become the findings in the report.',
     build: (b) => {
-      // On ADD the kind is fixed by the button you came from (Evidence/Creds each have their own
-      // form), so there's no Type picker. Only when EDITING do you get to reclassify freely
-      // (note ↔ credential ↔ vuln), which is also how a note is promoted into a vulnerability.
-      let kindSel;
-      if (editing) {
-        kindSel = field(b, 'Type', 'kind', { value: startKind, options: FINDING_KINDS });
-      } else {
-        b.append(el('input', { type: 'hidden', name: 'kind', value: startKind }));
-        kindSel = { value: startKind }; // fixed; rebuild() reads .value, there's nothing to change
-      }
+      // A finding's kind is fixed for its whole life — a note stays a note, a credential a
+      // credential, a vulnerability a vulnerability. It's decided by how you create it (the chat for
+      // notes, the Finding / Creds buttons) and can never be switched, so there is no Type picker.
+      b.append(el('input', { type: 'hidden', name: 'kind', value: startKind }));
+      const kindSel = { value: startKind };
       const fields = el('div', { className: 'kindfields' });
       b.append(fields);
       const rebuild = () => {
@@ -2006,8 +2008,8 @@ async function findingModal(assetId, finding = null, isRetest = false, after, st
           if (!editing) fileField(fields, 'Images', images);
         } else if (k === 'credential') {
           field(fields, 'Title *', 'title', { value: finding?.title || '', ph: 'e.g. admin panel login' });
-          field(fields, 'Username', 'cred_user', { value: finding ? credField(finding.body, 'Username') : '', ph: 'user' });
-          field(fields, 'Password', 'cred_pass', { value: finding ? credField(finding.body, 'Password') : '', ph: 'pass' });
+          field(fields, 'Username *', 'cred_user', { value: finding ? credField(finding.body, 'Username') : '', ph: 'user' });
+          field(fields, 'Password *', 'cred_pass', { value: finding ? credField(finding.body, 'Password') : '', ph: 'pass' });
           field(fields, 'Server / URL *', 'cred_server', { value: finding ? credField(finding.body, 'Server') : '', ph: 'https://…  or  host' });
           if (!editing) fileField(fields, 'Images', images);
         } else {
@@ -2055,7 +2057,7 @@ async function findingModal(assetId, finding = null, isRetest = false, after, st
       const miss = [];
       if (!title) miss.push('a title');
       if (kind === 'note') { if (!bodyText) miss.push('the details'); }
-      else if (kind === 'credential') { if (!cs) miss.push('the server / URL'); if (!cu && !cp) miss.push('a username or password'); }
+      else if (kind === 'credential') { if (!cs) miss.push('the server / URL'); if (!cu) miss.push('a username'); if (!cp) miss.push('a password'); }
       else if (kind === 'vuln') { if (!locs.length) miss.push('at least one location'); if (!bodyText) miss.push('an explanation'); }
       if (miss.length) throw new Error('Please add ' + miss.join(', ') + '.');
 

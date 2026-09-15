@@ -118,7 +118,11 @@ checks.push(['target chat + findings dock render', await ev(`
   document.querySelector(".chat-send").click(); await new Promise(r => setTimeout(r, 800));
   const note = [...document.querySelectorAll(".chatnote")].find(n => /checked the login flow/.test(n.querySelector(".cn-body")?.textContent || ""));
   const credited = !!note && !!note.querySelector(".cn-author") && !!note.querySelector(".cn-when");
-  return hasComposer && hasDock && credited`)]);
+  // the note is auto-named "<target> | <user> Note <n>" (body holds the typed text, not the title)
+  const tgt = await (await fetch("/api/targets/" + f.targets[0].id)).json();
+  const row = (tgt.findings || []).find(x => x.kind === "note" && /checked the login flow/.test(x.body || ""));
+  const named = !!row && (row.title || "").startsWith(f.targets[0].label) && (row.title || "").includes(" | ") && / Note \\d+$/.test(row.title || "");
+  return hasComposer && hasDock && credited && named`)]);
 checks.push(['checklist popup paints', await ev(`
   const p = (await (await fetch("/api/projects")).json())[0];
   const d = await (await fetch("/api/projects/" + p.id)).json();

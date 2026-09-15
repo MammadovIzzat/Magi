@@ -1810,22 +1810,28 @@ async function findingModal(assetId, finding = null, isRetest = false, after) {
       kicker: 'Retest', title: editing ? 'Edit retest item' : 'Add retest item', cta: 'Save',
       note: 'Re-checking a finding from the previous engagement — record its ID, current severity, whether it was fixed, and evidence.',
       build: (b) => {
-        field(b, 'Original finding ID', 'title', { value: finding?.title || '', ph: 'e.g. ACME-2024-014 — SQLi in /search' });
+        field(b, 'Original finding ID *', 'title', { value: finding?.title || '', ph: 'e.g. ACME-2024-014 — SQLi in /search' });
         const c1 = el('div'), c2 = el('div');
         // Severity is a grader's (admin/editor) call; a worker just records the fix status.
         if (isEditor()) field(c1, 'Severity', 'severity', { value: finding?.severity || 'medium', options: SEVERITIES.filter(s => s.value) });
         else if (finding?.severity) c1.append(el('label', {}, 'Severity'), el('div', { className: 'readonly-sev' }, el('span', { className: 'fd-sev sev-' + finding.severity }, finding.severity.toUpperCase())));
         field(c2, 'Fix status', 'fix_status', { value: finding?.fix_status || 'not_fixed', options: FIX_STATUS });
         b.append(el('div', { className: 'field-row' }, c1, c2));
-        field(b, 'Explanation', 'body', { value: finding?.body || '', textarea: true, ph: 'what you re-tested and the result' });
+        field(b, 'Explanation *', 'body', { value: finding?.body || '', textarea: true, ph: 'what you re-tested and the result' });
         chainSection(b);
         if (!editing) fileField(b, 'Images (screenshots)', images);
       },
       onSubmit: async (fd) => {
         const raw = Object.fromEntries(fd);
+        const title = (raw.title || '').trim(), body = (raw.body || '').trim();
+        // A retest item must name the original finding and say what was re-tested — no empty rows.
+        const miss = [];
+        if (!title) miss.push('the original finding ID');
+        if (!body) miss.push('an explanation');
+        if (miss.length) throw new Error('Please add ' + miss.join(', ') + '.');
         await saveFinding(editing, finding, assetId, {
-          title: raw.title || 'Retest item', kind: 'vuln', severity: raw.severity || null,
-          body: raw.body || '', fix_status: raw.fix_status || 'not_fixed', refs: [...selectedRefs],
+          title, kind: 'vuln', severity: raw.severity || null,
+          body, fix_status: raw.fix_status || 'not_fixed', refs: [...selectedRefs],
         }, images);
         after();
       },

@@ -1172,6 +1172,10 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
   padding: 16px 18px; color: var(--text); font-family: var(--mono); font-size: 13px; line-height: 1.7; }
 .nb-input:focus { outline: none; border-color: var(--gold); }
 .nb-preview { min-height: 200px; }
+/* split view: editor on the left, live preview on the right */
+.nb-body.split { display: flex; gap: 14px; align-items: flex-start; }
+.nb-body.split > .nb-input, .nb-body.split > .nb-preview { flex: 1 1 50%; min-width: 0; }
+.nb-body.split > .nb-preview { border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; min-height: 340px; background: var(--panel); overflow-x: auto; }
 
 /* rendered Markdown (shared class .markdown) */
 .markdown h1 { font-size: 24px; margin: 18px 0 8px; }
@@ -1191,6 +1195,10 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 .markdown blockquote { margin: 8px 0; padding: 4px 14px; border-left: 3px solid var(--line-hi); color: var(--muted); }
 .markdown hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 .markdown a { color: var(--gold); }
+.markdown del { color: var(--muted); }
+.markdown table.md-table { border-collapse: collapse; margin: 10px 0; }
+.markdown .md-table th, .markdown .md-table td { border: 1px solid var(--line-3); padding: 6px 10px; text-align: left; font-size: 12.5px; }
+.markdown .md-table th { background: var(--row-sel); font-family: var(--mono); font-size: 11px; letter-spacing: .04em; }
 .markdown .nb-hint { color: var(--muted); font-family: var(--mono); font-size: 12px; }
 
 /* credentials popup */

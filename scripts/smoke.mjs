@@ -114,17 +114,18 @@ checks.push(['target notebook + findings dock render', await ev(`
   const hasNotebook = !!document.querySelector(".nb-wrap .nb-input");
   const hasTools = !!document.querySelector(".task-tools");
   const hasDock = /Findings/.test(document.querySelector(".dock-head")?.textContent || "");
-  // type Markdown into the notebook, let it autosave, and confirm it persisted to the target
+  // type Markdown (header, table, task) into the notebook, let it autosave, confirm it persisted
   const ta = document.querySelector(".nb-input");
-  ta.value = "## Recon\\n- [ ] revisit login"; ta.dispatchEvent(new Event("input", { bubbles: true }));
+  ta.value = "## Recon\\n\\n| A | B |\\n| --- | --- |\\n| 1 | 2 |\\n\\n- [ ] revisit login"; ta.dispatchEvent(new Event("input", { bubbles: true }));
   await new Promise(r => setTimeout(r, 900));
   const saved = await (await fetch("/api/targets/" + f.targets[0].id)).json();
   const persisted = /Recon/.test(saved.notebook || "");
-  // Preview renders the Markdown — an H2 and an interactive task checkbox
-  [...document.querySelectorAll(".nb-tab")].find(b => /Preview/.test(b.textContent))?.click();
-  await new Promise(r => setTimeout(r, 150));
-  const rendered = !!document.querySelector(".nb-preview h2") && !!document.querySelector(".nb-preview input.md-task");
-  return hasNotebook && hasTools && hasDock && persisted && rendered`)]);
+  // Split shows the editor AND the live preview together; the preview renders H2, a table and a task box
+  [...document.querySelectorAll(".nb-tab")].find(b => /Split/.test(b.textContent))?.click();
+  await new Promise(r => setTimeout(r, 200));
+  const split = !!document.querySelector(".nb-body.split") && !document.querySelector(".nb-body.split .nb-input").hidden && !document.querySelector(".nb-body.split .nb-preview").hidden;
+  const rendered = !!document.querySelector(".nb-preview h2") && !!document.querySelector(".nb-preview table.md-table") && !!document.querySelector(".nb-preview input.md-task");
+  return hasNotebook && hasTools && hasDock && persisted && split && rendered`)]);
 checks.push(['checklist popup paints', await ev(`
   const p = (await (await fetch("/api/projects")).json())[0];
   const d = await (await fetch("/api/projects/" + p.id)).json();

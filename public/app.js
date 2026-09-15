@@ -1331,26 +1331,45 @@ const escHtml = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', 
 // Inline spans on an ALREADY html-escaped string: `code`, **bold**, *italic*, [text](url).
 function mdInline(s) {
   s = s.replace(/`([^`]+)`/g, (m, c) => '<code>' + c + '</code>');
-  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  s = s.replace(/(^|[^*])\*([^*\s][^*]*?)\*/g, '$1<em>$2</em>');
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, t, u) => `<a href="${/^https?:|^mailto:/.test(u) ? u : '#'}" target="_blank" rel="noreferrer noopener">${t}</a>`);
+  s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');                        // ~~strikethrough~~
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');              // **bold**
+  s = s.replace(/__([^_]+)__/g, '<strong>$1</strong>');                  // __bold__
+  s = s.replace(/(^|[^*])\*([^*\s][^*]*?)\*/g, '$1<em>$2</em>');          // *italic*
+  s = s.replace(/(^|[^_\w])_([^_\s][^_]*?)_/g, '$1<em>$2</em>');          // _italic_ (not mid-word)
+  s = s.replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, (m, t, u) => {              // [text](url), empty text ok
+    const safe = /^https?:|^mailto:/.test(u) ? u : '#';
+    return `<a href="${safe}" target="_blank" rel="noreferrer noopener">${t || escHtml(u)}</a>`;
+  });
   return s;
 }
 // A small, safe Markdown → HTML renderer (content is escaped first). Supports #..#### headers,
-// - / * bullets, 1. numbers, - [ ] / - [x] task lists (interactive), > quotes, ``` fences, --- rules.
+// - / * bullets, 1. numbers, - [ ]/- [x] (and empty - []) task lists (interactive), > quotes,
+// ``` fences, --- rules, and | pipe | tables.
 function mdToHtml(src) {
   const lines = String(src || '').replace(/\r\n?/g, '\n').split('\n');
   let html = '', taskIdx = 0, inUl = false, inOl = false, inCode = false; let para = [];
   const flushPara = () => { if (para.length) { html += '<p>' + mdInline(escHtml(para.join(' '))) + '</p>'; para = []; } };
   const closeLists = () => { if (inUl) { html += '</ul>'; inUl = false; } if (inOl) { html += '</ol>'; inOl = false; } };
-  for (const raw of lines) {
+  const isRow = (s) => /^\s*\|.*\|\s*$/.test(s);
+  const isSep = (s) => /-/.test(s) && /^\s*\|?[\s:|-]+\|?\s*$/.test(s);
+  const cells = (s) => s.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
     if (/^```/.test(raw)) { flushPara(); closeLists(); if (!inCode) { html += '<pre class="nb-code"><code>'; inCode = true; } else { html += '</code></pre>'; inCode = false; } continue; }
     if (inCode) { html += escHtml(raw) + '\n'; continue; }
     if (/^\s*$/.test(raw)) { flushPara(); closeLists(); continue; }
+    // table: a | row | immediately followed by a | --- | separator
+    if (isRow(raw) && i + 1 < lines.length && isSep(lines[i + 1])) {
+      flushPara(); closeLists();
+      const header = cells(raw); let j = i + 2, body = '';
+      while (j < lines.length && isRow(lines[j])) { body += '<tr>' + cells(lines[j]).map(c => '<td>' + mdInline(escHtml(c)) + '</td>').join('') + '</tr>'; j++; }
+      html += '<table class="md-table"><thead><tr>' + header.map(c => '<th>' + mdInline(escHtml(c)) + '</th>').join('') + '</tr></thead><tbody>' + body + '</tbody></table>';
+      i = j - 1; continue;
+    }
     let m;
     if (m = /^(#{1,4})\s+(.*)$/.exec(raw)) { flushPara(); closeLists(); const lvl = m[1].length; html += `<h${lvl}>` + mdInline(escHtml(m[2])) + `</h${lvl}>`; continue; }
     if (/^\s*([-*]\s*){3,}$/.test(raw) || /^\s*_{3,}\s*$/.test(raw)) { flushPara(); closeLists(); html += '<hr>'; continue; }
-    if (m = /^\s*[-*]\s+\[([ xX])\]\s+(.*)$/.exec(raw)) { flushPara(); if (inOl) { html += '</ol>'; inOl = false; } if (!inUl) { html += '<ul class="md-tasks">'; inUl = true; } const ck = /[xX]/.test(m[1]); html += `<li class="md-taskitem"><input type="checkbox" class="md-task" data-i="${taskIdx++}"${ck ? ' checked' : ''}> <span${ck ? ' class="md-done"' : ''}>` + mdInline(escHtml(m[2])) + '</span></li>'; continue; }
+    if (m = /^\s*[-*]\s+\[([ xX]?)\]\s*(.*)$/.exec(raw)) { flushPara(); if (inOl) { html += '</ol>'; inOl = false; } if (!inUl) { html += '<ul class="md-tasks">'; inUl = true; } const ck = /[xX]/.test(m[1]); html += `<li class="md-taskitem"><input type="checkbox" class="md-task" data-i="${taskIdx++}"${ck ? ' checked' : ''}> <span${ck ? ' class="md-done"' : ''}>` + mdInline(escHtml(m[2])) + '</span></li>'; continue; }
     if (m = /^\s*[-*]\s+(.*)$/.exec(raw)) { flushPara(); if (inOl) { html += '</ol>'; inOl = false; } if (!inUl) { html += '<ul>'; inUl = true; } html += '<li>' + mdInline(escHtml(m[1])) + '</li>'; continue; }
     if (m = /^\s*\d+\.\s+(.*)$/.exec(raw)) { flushPara(); if (inUl) { html += '</ul>'; inUl = false; } if (!inOl) { html += '<ol>'; inOl = true; } html += '<li>' + mdInline(escHtml(m[1])) + '</li>'; continue; }
     if (m = /^\s*>\s?(.*)$/.exec(raw)) { flushPara(); closeLists(); html += '<blockquote>' + mdInline(escHtml(m[1])) + '</blockquote>'; continue; }
@@ -1359,12 +1378,13 @@ function mdToHtml(src) {
   flushPara(); closeLists(); if (inCode) html += '</code></pre>';
   return html || '<p class="nb-hint">Nothing written yet.</p>';
 }
-// Flip the n-th "- [ ]" / "- [x]" task box in the source text (used when a preview checkbox is toggled).
+// Flip the n-th task box in the source text (used when a preview checkbox is toggled). Matches
+// "- [ ]", "- [x]" and the empty "- []".
 function toggleTask(src, i, checked) {
   let n = 0;
-  return String(src).replace(/^(\s*[-*]\s+\[)([ xX])(\])/gm, (m, pre, mark, post) => (n++ === i ? pre + (checked ? 'x' : ' ') + post : m));
+  return String(src).replace(/^(\s*[-*]\s+\[)([ xX]?)(\])/gm, (m, pre, mark, post) => (n++ === i ? pre + (checked ? 'x' : ' ') + post : m));
 }
-// Textarea helpers for the toolbar: wrap the selection, or prefix the current line.
+// Textarea helpers for the toolbar: wrap the selection, prefix the current line, or insert a block.
 function taWrap(ta, before, after) {
   const s = ta.selectionStart, e = ta.selectionEnd, v = ta.value, sel = v.slice(s, e);
   ta.value = v.slice(0, s) + before + sel + after + v.slice(e);
@@ -1375,6 +1395,13 @@ function taPrefix(ta, prefix) {
   const s = ta.selectionStart, v = ta.value, ls = v.lastIndexOf('\n', s - 1) + 1;
   ta.value = v.slice(0, ls) + prefix + v.slice(ls);
   ta.focus(); ta.setSelectionRange(s + prefix.length, s + prefix.length);
+}
+function taInsert(ta, text) {
+  const s = ta.selectionStart, v = ta.value;
+  const pre = (s > 0 && v[s - 1] !== '\n') ? '\n' : '';
+  ta.value = v.slice(0, s) + pre + text + v.slice(s);
+  const caret = s + pre.length + text.length;
+  ta.focus(); ta.setSelectionRange(caret, caret);
 }
 
 // The per-target notebook: a Write ⇄ Preview Markdown editor with a formatting toolbar, autosaved.
@@ -1403,29 +1430,36 @@ function notebookEditor(id, initialMd, editable) {
     });
     else preview.querySelectorAll('input.md-task').forEach((cb) => { cb.disabled = true; });
   };
-  ta.oninput = () => { md = ta.value; save(); grow(); };
-  const tbtn = (label, title, fn) => el('button', { type: 'button', className: 'nb-tb', title, onmousedown: (e) => { e.preventDefault(); fn(); md = ta.value; save(); grow(); } }, label);
+  const livePreview = () => { if (!preview.hidden) paintPreview(); };
+  ta.oninput = () => { md = ta.value; save(); grow(); livePreview(); };
+  const tbtn = (label, title, fn) => el('button', { type: 'button', className: 'nb-tb', title, onmousedown: (e) => { e.preventDefault(); fn(); md = ta.value; save(); grow(); livePreview(); } }, label);
+  const TABLE = '| Column1 | Column2 | Column3 |\n| --- | --- | --- |\n| Text | Text | Text |\n';
   const toolbar = el('div', { className: 'nb-toolbar' },
     tbtn('H1', 'Heading 1', () => taPrefix(ta, '# ')), tbtn('H2', 'Heading 2', () => taPrefix(ta, '## ')), tbtn('H3', 'Heading 3', () => taPrefix(ta, '### ')),
     el('span', { className: 'nb-sep' }),
-    tbtn('B', 'Bold', () => taWrap(ta, '**', '**')), tbtn('I', 'Italic', () => taWrap(ta, '*', '*')), tbtn('</>', 'Code', () => taWrap(ta, '`', '`')),
+    tbtn('B', 'Bold', () => taWrap(ta, '**', '**')), tbtn('I', 'Italic', () => taWrap(ta, '*', '*')), tbtn('S', 'Strikethrough', () => taWrap(ta, '~~', '~~')), tbtn('</>', 'Code', () => taWrap(ta, '`', '`')),
     el('span', { className: 'nb-sep' }),
     tbtn('•', 'Bullet list', () => taPrefix(ta, '- ')), tbtn('1.', 'Numbered list', () => taPrefix(ta, '1. ')), tbtn('☐', 'Task', () => taPrefix(ta, '- [ ] ')),
-    tbtn('❝', 'Quote', () => taPrefix(ta, '> ')), tbtn('🔗', 'Link', () => taWrap(ta, '[', '](https://)')));
+    tbtn('❝', 'Quote', () => taPrefix(ta, '> ')), tbtn('⊞', 'Table', () => taInsert(ta, TABLE)), tbtn('🔗', 'Link', () => taWrap(ta, '[', '](https://)')));
 
-  const writeBtn = el('button', { type: 'button', className: 'nb-tab', onclick: () => setMode('write') }, 'Write');
-  const prevBtn = el('button', { type: 'button', className: 'nb-tab', onclick: () => setMode('preview') }, 'Preview');
+  const body = el('div', { className: 'nb-body' }, ta, preview);
+  const tab = (label, m) => el('button', { type: 'button', className: 'nb-tab', onclick: () => setMode(m) }, label);
+  const writeBtn = tab('Write', 'write'), splitBtn = tab('Split', 'split'), prevBtn = tab('Preview', 'preview');
   const setMode = (m) => {
-    ta.hidden = m !== 'write'; toolbar.hidden = m !== 'write'; preview.hidden = m !== 'preview';
-    writeBtn.classList.toggle('on', m === 'write'); prevBtn.classList.toggle('on', m === 'preview');
-    if (m === 'preview') paintPreview(); else requestAnimationFrame(grow);
+    const showWrite = m === 'write' || m === 'split';
+    const showPrev = m === 'preview' || m === 'split';
+    ta.hidden = !showWrite; toolbar.hidden = !showWrite; preview.hidden = !showPrev;
+    body.classList.toggle('split', m === 'split');
+    for (const [b, k] of [[writeBtn, 'write'], [splitBtn, 'split'], [prevBtn, 'preview']]) b.classList.toggle('on', m === k);
+    if (showPrev) paintPreview();
+    if (showWrite) requestAnimationFrame(grow);
   };
   const bar = el('div', { className: 'nb-bar' },
-    editable ? el('div', { className: 'nb-tabs' }, writeBtn, prevBtn) : el('span', { className: 'kicker' }, 'Notebook'),
+    editable ? el('div', { className: 'nb-tabs' }, writeBtn, splitBtn, prevBtn) : el('span', { className: 'kicker' }, 'Notebook'),
     status);
-  const box = el('div', { className: 'nb-wrap' }, bar, toolbar, ta, preview);
+  const box = el('div', { className: 'nb-wrap' }, bar, toolbar, body);
   if (!editable) { ta.remove(); toolbar.remove(); }
-  setMode(editable && !md ? 'write' : 'preview');
+  setMode(editable ? (md ? 'split' : 'write') : 'preview');
   return box;
 }
 

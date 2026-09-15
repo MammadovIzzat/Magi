@@ -190,8 +190,22 @@ check('a worker can record a finding', wf.status === 201 && !!wf.json?.id);
 const anItem = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.items[0];
 const wTick = await req('PATCH', `/api/items/${anItem.id}`, { token: workerToken, device: dev1, body: { status: 'done' } });
 check('a worker can tick a checklist item', wTick.status === 200 && wTick.json?.status === 'done');
-const wItemEdit = await req('PATCH', `/api/items/${anItem.id}`, { token: workerToken, device: dev1, body: { title: 'hacked title' } });
-check('a worker cannot edit a checklist item’s text', wItemEdit.status === 403);
+// #7: recording on webT auto-claimed it for ana, so as its assignee she may now edit its checklist.
+const wItemEdit = await req('PATCH', `/api/items/${anItem.id}`, { token: workerToken, device: dev1, body: { title: 'assignee edit' } });
+check('an assigned worker CAN edit a checklist item’s text', wItemEdit.status === 200 && wItemEdit.json?.title === 'assignee edit');
+// but a worker who is NOT on the target cannot touch its checklist structure
+const webT2 = (await req('POST', `/api/assets/${extAsset.id}/targets`, { token: adminTok, body: { type: 'web', label: 'https://x2.test' } })).json;
+await req('PATCH', `/api/targets/${webT2.id}/assignee`, { token: adminTok, body: { assignee: ['bob'] } });
+const item2 = (await req('GET', `/api/targets/${webT2.id}`, { token: adminTok })).json.items.find(i => i.kind === 'check');
+const wItemEdit2 = await req('PATCH', `/api/items/${item2.id}`, { token: workerToken, device: dev1, body: { title: 'nope' } });
+check('a worker NOT on the target cannot edit its checklist items', wItemEdit2.status === 403);
+const wItemAdd2 = await req('POST', `/api/targets/${webT2.id}/items`, { token: workerToken, device: dev1, body: { title: 'nope' } });
+check('a worker NOT on the target cannot add checklist items', wItemAdd2.status === 403);
+// #10: task ownership. Recording auto-claimed webT for ana; a worker can't record on someone else's.
+const webTOwner = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.assignee;
+check('recording on an unassigned target auto-claims it for the recorder', String(webTOwner || '').split(',').includes('ana'));
+const wFindBlocked = await req('POST', `/api/targets/${webT2.id}/findings`, { token: workerToken, device: dev1, body: { title: 'x', kind: 'note' } });
+check('a worker cannot record on a target assigned to someone else', wFindBlocked.status === 403);
 const fA = await req('POST', `/api/targets/${webT.id}/findings`, { token: adminTok, body: { title: 'Creds', kind: 'credential', body: 'a:b' } });
 check('a finding can be created on a target', fA.status === 201 && !!fA.json?.id);
 const aUid = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.findings.find(f => f.title === 'Creds').uid;

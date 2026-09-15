@@ -87,8 +87,12 @@ function attachmentImg(id, attrs = {}) {
   attachmentSrc(id).then(u => { img.src = u; }).catch(() => { /* leave broken-image; a reload retries */ });
   return img;
 }
-function openLightbox(im) {
-  attachmentSrc(im.id).then(src => lightbox(src, im.filename, () => downloadAttachment(im))).catch(() => toast('Could not load the image'));
+// Open the image `im`; when `list` (the finding's attachments) has more than one, the lightbox
+// gets prev/next arrows and ←/→ keys to step through them.
+function openLightbox(im, list) {
+  const arr = (Array.isArray(list) && list.length) ? list : [im];
+  const idx = Math.max(0, arr.findIndex(x => x.id === im.id));
+  lightbox(arr, idx);
 }
 
 async function api(path, opts) {
@@ -1231,6 +1235,12 @@ async function renderTarget(id) {
   const handled = actionable.filter(i => HANDLED.includes(i.status)).length;
   const flaggedItems = actionable.filter(i => i.status === 'flag').length;
   const cov = pct(handled, actionable.length);
+  // You work your OWN targets: a lead (editor/admin), someone already assigned, or anyone when the
+  // target is still unassigned (the first note/finding auto-claims it). Otherwise it's read-only.
+  const roster = assigneeList(a.assignee);
+  const meAssigned = !!CURRENT_USER && roster.includes(CURRENT_USER);
+  const mayContribute = isEditor() || meAssigned || !roster.length;   // add notes/creds/findings (#10)
+  const mayEditChecklist = isEditor() || meAssigned;                  // add/edit/delete checklist items (#7)
 
   // "Who's on this target" — a display-only assignment anyone can set; it doesn't gate editing.
   const assignCtl = multiAssign({
@@ -1264,29 +1274,35 @@ async function renderTarget(id) {
   const stream = el('div', { className: 'chat-stream' });
   if (!notes.length) stream.append(el('div', { className: 'chat-empty' },
     'No notes yet. Jot down what you checked, drop a credential, or flag a teammate to take a look.'));
-  else for (const f of notes) stream.append(chatNote(f, id));
+  else for (const f of notes) stream.append(chatNote(f, id, mayContribute));
 
+  // Grow the note box with its content up to a cap, then scroll inside it — no scrollbar until then.
   const ta = el('textarea', { className: 'chat-input', rows: 1, placeholder: 'Write a note — what you checked, what you saw… (Enter to send, Shift+Enter for a new line)' });
+  const grow = () => { ta.style.height = 'auto'; const h = Math.min(ta.scrollHeight, 160); ta.style.height = h + 'px'; ta.style.overflowY = ta.scrollHeight > 160 ? 'auto' : 'hidden'; };
   const send = async () => {
     const text = ta.value.trim(); if (!text) return;
     try { await api('/targets/' + id + '/findings', { method: 'POST', body: { title: text.split('\n')[0].slice(0, 80) || 'Note', kind: 'note', body: text } }); ta.value = ''; renderTarget(id); }
     catch (e) { toast(e.message); }
   };
-  ta.oninput = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'; };
+  ta.oninput = grow;
   ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
-  const composer = el('div', { className: 'chat-composer' },
-    el('div', { className: 'chat-tools' },
-      el('button', { className: 'btn line sm', title: 'A note with screenshots', onclick: () => addFinding(id, false, () => renderTarget(id), 'note') }, icon('image', 12), 'Evidence'),
-      el('button', { className: 'btn line sm', title: 'Record a credential', onclick: () => addFinding(id, false, () => renderTarget(id), 'credential') }, icon('key', 12), 'Creds'),
-      el('button', { className: 'btn line sm', title: 'Open the checklist', onclick: () => openChecklist(id) }, icon('check', 12), 'Checklist')),
-    el('div', { className: 'chat-row' }, ta, el('button', { className: 'btn gold chat-send', onclick: send }, 'Send')));
+  const composer = mayContribute
+    ? el('div', { className: 'chat-composer' },
+        el('div', { className: 'chat-tools' },
+          el('button', { className: 'btn line sm', title: 'A note with screenshots', onclick: () => addFinding(id, false, () => renderTarget(id), 'note') }, icon('image', 12), 'Evidence'),
+          el('button', { className: 'btn line sm', title: 'Record a credential', onclick: () => addFinding(id, false, () => renderTarget(id), 'credential') }, icon('key', 12), 'Creds'),
+          el('button', { className: 'btn line sm', title: 'Open the checklist', onclick: () => openChecklist(id) }, icon('check', 12), 'Checklist')),
+        el('div', { className: 'chat-row' }, ta, el('button', { className: 'btn gold chat-send', onclick: send }, 'Send')))
+    : el('div', { className: 'chat-composer readonly' },
+        el('span', { className: 'muted small' }, `Assigned to ${roster.join(', ')} — ask a lead to add you before recording here.`),
+        el('button', { className: 'btn line sm', style: 'margin-left:auto', onclick: () => openChecklist(id) }, icon('check', 12), 'Checklist'));
   const midCol = el('div', { className: 'target-col notes-col' }, head, el('div', { className: 'chat-wrap' }, stream, composer));
 
-  // ── right: findings (confirmed vulnerabilities only), with search + sort.
+  // ── right: findings (confirmed vulnerabilities only), with search + sort. Vulns are recorded from
+  // the middle composer's "Evidence" button (Type → Vulnerability), so there's no add button here.
   const dock = el('aside', { className: 'dock' },
     el('div', { className: 'dock-head' },
-      el('span', { className: 'kicker' }, 'Findings'),
-      el('button', { className: 'btn line sm', style: 'margin-left:auto', onclick: () => addFinding(id, false, () => renderTarget(id), 'vuln') }, '+ Finding')));
+      el('span', { className: 'kicker' }, 'Findings')));
   const dbody = el('div', { className: 'dock-body' });
   let dockFindings = a.findings.filter(f => f.kind === 'vuln').map(f => ({ ...f }));
   const findList = el('div', { className: 'find-list' });
@@ -1328,13 +1344,13 @@ async function renderTarget(id) {
 
   dock.style.flex = `0 0 ${DOCK_W}px`; dock.style.width = DOCK_W + 'px';
   $('#view').replaceChildren(el('div', { className: 'target' }, midCol, dockResizer(dock), dock));
-  // The chat reads top→bottom, newest last — land at the bottom like a messaging app.
-  requestAnimationFrame(() => { stream.scrollTop = stream.scrollHeight; });
+  // The chat reads top→bottom, newest last — land at the bottom like a messaging app; size the box.
+  requestAnimationFrame(() => { stream.scrollTop = stream.scrollHeight; if (mayContribute) grow(); });
 }
 
 // One note/credential in the target's chat: who wrote it, when, the text, any screenshots, and a
 // flag-to-a-teammate control. A note flagged to the current user glows (a "check this" nudge).
-function chatNote(f, id) {
+function chatNote(f, id, mayContribute = true) {
   const mine = CURRENT_USER && f.author === CURRENT_USER;
   const toMe = CURRENT_USER && f.flagged_to && f.flagged_to === CURRENT_USER;
   const isCred = f.kind === 'credential';
@@ -1349,12 +1365,13 @@ function chatNote(f, id) {
   wrap.append(cnHead, cnBody);
   if ((f.attachments || []).length) {
     const shots = el('div', { className: 'cn-shots' });
-    for (const im of f.attachments) { const th = attachmentImg(im.id, { title: im.filename, loading: 'lazy' }); th.onclick = () => openLightbox(im); shots.append(th); }
+    for (const im of f.attachments) { const th = attachmentImg(im.id, { title: im.filename, loading: 'lazy' }); th.onclick = () => openLightbox(im, f.attachments); shots.append(th); }
     wrap.append(shots);
   }
   const foot = el('div', { className: 'cn-foot' });
   if (f.flagged_to) foot.append(el('span', { className: 'cn-for' + (toMe ? ' me' : '') }, icon('flag', 10), 'for ', avatarSm(f.flagged_to), f.flagged_to));
-  foot.append(el('div', { className: 'cn-tools' },
+  if (mayContribute) foot.append(el('div', { className: 'cn-tools' },
+    el('button', { className: 'ibtn', title: 'Add image', onclick: () => uploadToFinding(f.id, id, () => renderTarget(id)) }, icon('image', 11)),
     flagToControl(f, id),
     el('button', { className: 'ibtn', title: 'Edit', onclick: () => editFinding(f, id, () => renderTarget(id)) }, icon('edit', 11)),
     el('button', { className: 'ibtn del', title: 'Delete', onclick: async () => { if (confirm('Delete this note?')) { await api('/findings/' + f.id, { method: 'DELETE' }); renderTarget(id); } } }, icon('x', 11))));
@@ -1419,6 +1436,7 @@ async function openChecklist(id) {
     for (const fo of (project?.assets || [])) for (const tg of (fo.items || [])) {
       const from = tg.metadata?.spawned_from_item; if (from) (spawnedByItem[from] ||= []).push(tg);
     }
+    const mayEdit = isEditor() || (!!CURRENT_USER && assigneeList(a.assignee).includes(CURRENT_USER)); // #7
     const childrenBy = {}, byGroup = {};
     for (const it of a.items) { (byGroup[it.group_key] ||= []).push(it); if (it.parent_id != null) (childrenBy[it.parent_id] ||= []).push(it); }
     const survives = (it) => ACTIONABLE(it)
@@ -1461,7 +1479,7 @@ async function openChecklist(id) {
         handled < actionable.length
           ? el('button', { className: 'btn sm', title: 'Mark every checklist item done', onclick: async () => { if (confirm('Mark every checklist item as done?')) { await api('/targets/' + id + '/mark', { method: 'POST', body: { status: 'done' } }); rerender(); } } }, icon('check', 12), 'All done')
           : null,
-        isEditor() ? el('button', { className: 'btn line sm', onclick: () => itemModal(id, null, null, rerender) }, '+ Item') : null),
+        mayEdit ? el('button', { className: 'btn line sm', onclick: () => itemModal(id, null, null, rerender) }, '+ Item') : null),
       filters);
 
     const list = el('div', { className: 'checklist' });
@@ -1492,7 +1510,7 @@ async function openChecklist(id) {
         let n = 0;
         const walk = (it, depth) => {
           if (!survives(it)) return;
-          gbody.append(renderItem(it, id, ++n, depth, childrenBy, spawnedByItem, { rerender, popup: true }));
+          gbody.append(renderItem(it, id, ++n, depth, childrenBy, spawnedByItem, { rerender, popup: true, mayEdit }));
           for (const k of (childrenBy[it.id] || []).sort((x, y) => x.sort - y.sort)) walk(k, depth + 1);
         };
         for (const it of roots) walk(it, 0);
@@ -1510,6 +1528,7 @@ async function openChecklist(id) {
 function renderItem(it, assetId, num, depth, childrenBy = {}, spawnedByItem = {}, opts = {}) {
   const rerender = opts.rerender || (() => renderTarget(assetId)); // popup passes its own repaint
   const popup = !!opts.popup;
+  const mayEdit = opts.mayEdit !== undefined ? opts.mayEdit : isEditor(); // add/edit/delete the item itself
   const isTrigger = it.kind === 'trigger';
   const isSelect = it.kind === 'select';
   const isGroup = it.kind === 'group';
@@ -1628,8 +1647,9 @@ function renderItem(it, assetId, num, depth, childrenBy = {}, spawnedByItem = {}
     }
     actions.append(stBox);
   }
-  // Editing the checklist itself (add sub-item / edit / delete) is admin-only; workers tick boxes.
-  if (isEditor()) actions.append(el('div', { className: 'itools' },
+  // Editing the checklist itself (add sub-item / edit / delete) is for the target's assignees and
+  // leads; everyone else just ticks boxes.
+  if (mayEdit) actions.append(el('div', { className: 'itools' },
     el('button', { className: 'ibtn', title: 'Add sub-item', onclick: () => itemModal(assetId, null, it.id, rerender) }, icon('plus', 12)),
     el('button', { className: 'ibtn', title: 'Edit', onclick: () => itemModal(assetId, it, null, rerender) }, icon('edit', 12)),
     el('button', {
@@ -1669,7 +1689,7 @@ function itemModal(assetId, item = null, parentId = null, after) {
       else {
         if (parentId) o.parent_id = parentId;
         else openGroups.add(o.group_title === 'Custom / Notes' ? 'custom' : o.group_title);
-        await api(`/assets/${assetId}/items`, { method: 'POST', body: o });
+        await api(`/targets/${assetId}/items`, { method: 'POST', body: o });
       }
       done();
     },
@@ -1790,7 +1810,7 @@ function findingCard(f, id, after) {
   const shots = el('div', { className: 'f-shots', onclick: stop });
   for (const im of (f.attachments || [])) {
     const thumb = attachmentImg(im.id, { title: im.filename, loading: 'lazy' });
-    thumb.onclick = (e) => { e.stopPropagation(); openLightbox(im); };
+    thumb.onclick = (e) => { e.stopPropagation(); openLightbox(im, f.attachments); };
     const dl = el('button', { className: 'shotdl', title: 'Download image', onclick: (e) => { e.stopPropagation(); downloadAttachment(im); } }, icon('down', 10));
     const x = el('button', { className: 'shotx', title: 'Remove image', onclick: async (e) => { e.stopPropagation(); await api('/attachments/' + im.id, { method: 'DELETE' }); after(); } }, '✕');
     shots.append(el('span', { className: 'f-shot' }, thumb, dl, x));
@@ -1807,7 +1827,10 @@ function findingCard(f, id, after) {
       f.kind === 'vuln' ? reportTick(f, after) : null,   // "written into the report" is a vuln thing; notes/creds don't get it
       tools),
     el('div', { className: 'f-title' }, f.title),
-    f.author ? el('div', { className: 'f-by', title: 'Recorded by ' + f.author }, avatarSm(f.author), 'recorded by ' + f.author) : null,
+    (f.author || f.created_at) ? el('div', { className: 'f-by', title: 'Recorded ' + (f.created_at || '') },
+      f.author ? avatarSm(f.author) : null,
+      f.author ? 'recorded by ' + f.author : 'recorded',
+      f.created_at ? el('span', { className: 'f-when' }, ' · ' + fmtWhen(f.created_at)) : null) : null,
     f.needs_improvement && f.review_note ? el('div', { className: 'f-improve-note' }, icon('edit', 11), f.review_note) : null,
     f.body ? el('pre', {}, f.body) : null,
     links,
@@ -1829,6 +1852,7 @@ function findingDetail(f, id, after) {
         f.severity ? el('span', { className: 'fd-sev sev-' + f.severity }, f.severity.toUpperCase()) : null,
         f.cvss ? el('span', { className: 'fd-cvss', title: f.cvss }, 'CVSS ' + (MagiCVSS.score(f.cvss)?.toFixed(1) ?? '—')) : null,
         f.author ? el('span', { className: 'fd-by' }, avatarSm(f.author), 'by ' + f.author) : null,
+        f.created_at ? el('span', { className: 'fd-by', title: f.created_at }, fmtWhen(f.created_at)) : null,
         // An admin can (re)grade a vuln from here — even one already graded, which the grading queue
         // no longer lists. Reuses the grade dialog (severity + CVSS).
         (isAdmin() && f.kind === 'vuln') ? el('button', { className: 'btn line sm', onclick: () => gradeDialog(f, after) }, icon('edit', 12), (f.severity || f.cvss) ? 'Change severity' : 'Set severity') : null,
@@ -1845,7 +1869,7 @@ function findingDetail(f, id, after) {
       if ((f.attachments || []).length) {
         b.append(el('label', {}, `Screenshots (${f.attachments.length})`));
         const g = el('div', { className: 'fd-shots' });
-        for (const im of f.attachments) { const img = attachmentImg(im.id, { title: im.filename, loading: 'lazy' }); img.onclick = () => openLightbox(im); g.append(img); }
+        for (const im of f.attachments) { const img = attachmentImg(im.id, { title: im.filename, loading: 'lazy' }); img.onclick = () => openLightbox(im, f.attachments); g.append(img); }
         b.append(g);
       }
     },
@@ -1955,7 +1979,14 @@ async function findingModal(assetId, finding = null, isRetest = false, after, st
     note: editing ? 'Update the finding. Attached images stay put.'
       : 'Notes, credentials and confirmed vulnerabilities — these become the findings in the report.',
     build: (b) => {
-      const kindSel = field(b, 'Type', 'kind', { value: startKind, options: FINDING_KINDS });
+      // Editing lets you reclassify freely (note ↔ credential ↔ vuln). Adding is scoped to the
+      // button you came from: "Evidence" offers Note or Vulnerability (creds have their own button),
+      // "Creds" is locked to credential.
+      const kindOpts = editing ? FINDING_KINDS
+        : startKindOverride === 'credential' ? FINDING_KINDS.filter(k => k.value === 'credential')
+        : startKindOverride === 'note' ? FINDING_KINDS.filter(k => k.value !== 'credential')
+        : FINDING_KINDS;
+      const kindSel = field(b, 'Type', 'kind', { value: startKind, options: kindOpts });
       const fields = el('div', { className: 'kindfields' });
       b.append(fields);
       const rebuild = () => {
@@ -2076,20 +2107,33 @@ async function downloadAttachment(im) {
 }
 
 // Full-size image overlay, with a Download button so a screenshot can be saved locally.
-function lightbox(src, caption, onDownload) {
+function lightbox(arr, idx) {
   // Its OWN element on top of whatever is open (z-index 80 > the modal overlay's 60), NOT the shared
   // #modalRoot — so viewing an image from inside a dialog, then closing it, leaves the dialog intact.
-  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); close(); } };
+  const multi = arr.length > 1;
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); close(); }
+    else if (multi && e.key === 'ArrowRight') { e.preventDefault(); go(1); }
+    else if (multi && e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }
+  };
   const close = () => { wrap.remove(); document.removeEventListener('keydown', onKey, true); };
-  const bar = el('div', { className: 'lb-bar', onclick: (e) => e.stopPropagation() },
-    onDownload ? el('button', { className: 'btn sm', onclick: onDownload }, icon('down', 12), 'Download') : null,
-    el('button', { className: 'btn sm', onclick: close }, 'Close'));
-  const wrap = el('div', { className: 'lightbox', onclick: close },
-    bar,
-    el('img', { src, onclick: (e) => e.stopPropagation() }),
-    caption ? el('div', { className: 'lb-cap' }, caption) : null);
+  const img = el('img', { onclick: (e) => e.stopPropagation() });
+  const cap = el('div', { className: 'lb-cap' });
+  const dlBtn = el('button', { className: 'btn sm', onclick: (e) => { e.stopPropagation(); downloadAttachment(arr[idx]); } }, icon('down', 12), 'Download');
+  const show = () => {
+    const im = arr[idx];
+    cap.textContent = (multi ? `${idx + 1} / ${arr.length}  ·  ` : '') + (im.filename || '');
+    img.removeAttribute('src');
+    attachmentSrc(im.id).then(src => { img.src = src; }).catch(() => toast('Could not load the image'));
+  };
+  const go = (d) => { idx = (idx + d + arr.length) % arr.length; show(); };
+  const bar = el('div', { className: 'lb-bar', onclick: (e) => e.stopPropagation() }, dlBtn, el('button', { className: 'btn sm', onclick: close }, 'Close'));
+  const prev = multi ? el('button', { className: 'lb-nav prev', title: 'Previous (←)', onclick: (e) => { e.stopPropagation(); go(-1); } }, '‹') : null;
+  const next = multi ? el('button', { className: 'lb-nav next', title: 'Next (→)', onclick: (e) => { e.stopPropagation(); go(1); } }, '›') : null;
+  const wrap = el('div', { className: 'lightbox', onclick: close }, bar, prev, img, next, cap);
   document.body.append(wrap);
   document.addEventListener('keydown', onKey, true);
+  show();
 }
 
 function download(body, filename, mime) {
@@ -3062,7 +3106,7 @@ function gradeDialog(f, onDone) {
       if ((f.attachments || []).length) {
         b.append(el('label', {}, `Screenshots (${f.attachments.length})`));
         const g = el('div', { className: 'fd-shots' });
-        for (const im of f.attachments) { const img = attachmentImg(im.id, { title: im.filename, loading: 'lazy' }); img.onclick = () => openLightbox(im); g.append(img); }
+        for (const im of f.attachments) { const img = attachmentImg(im.id, { title: im.filename, loading: 'lazy' }); img.onclick = () => openLightbox(im, f.attachments); g.append(img); }
         b.append(g);
       }
       if (f.needs_improvement && f.review_note) b.append(el('div', { className: 'improve-note' },

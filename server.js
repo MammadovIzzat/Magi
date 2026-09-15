@@ -424,6 +424,16 @@ const requireManage = (req, res, next) =>
   canManage(req).then(ok => ok ? next() : res.status(403).json({ error: 'admins only' })).catch(next);
 const requireEdit = (req, res, next) =>
   canEdit(req).then(ok => ok ? next() : res.status(403).json({ error: 'read-only — adding or removing engagements and targets is for editors and admins' })).catch(next);
+// A target's assignees may WORK it — record notes/creds/findings and edit/flag its checklist —
+// alongside editors and admins (collaboration on a target you own, not team structure). Username
+// based; a standalone owner or a linked editor/admin always passes.
+const assigneesOf = (assetId) => String((q(`SELECT assignee FROM assets WHERE id=?`).get(assetId) || {}).assignee || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+async function canWorkTarget(req, assetId) {
+  if (await canEdit(req)) return true;
+  const u = currentUser(req)?.username;
+  return !!u && assigneesOf(assetId).includes(u);
+}
 
 app.get('/api/me', (req, res) => {
   const u = currentUser(req);
@@ -1397,9 +1407,10 @@ app.patch('/api/items/:id', async (req, res) => {
   const cur = q(`SELECT * FROM items WHERE id=?`).get(req.params.id);
   if (!cur) return res.status(404).json({ error: 'not found' });
   const b = req.body || {};
-  // Ticking a box (status/answer) is worker work; editing the checklist item itself is admin.
-  if (['title', 'detail', 'kind', 'group_title', 'payloads'].some(k => k in b) && !(await canEdit(req)))
-    return res.status(403).json({ error: 'read-only — editing checklist structure is for editors and admins' });
+  // Ticking a box (status/answer) is anyone's; editing the checklist item itself is for the target's
+  // assignees and leads.
+  if (['title', 'detail', 'kind', 'group_title', 'payloads'].some(k => k in b) && !(await canWorkTarget(req, cur.asset_id)))
+    return res.status(403).json({ error: 'editing checklist items is for this target’s assignees and leads' });
   const status = b.status ?? cur.status;
   const answer = b.answer ?? cur.answer;
   const title = b.title ?? cur.title;
@@ -1417,7 +1428,8 @@ app.patch('/api/items/:id', async (req, res) => {
   res.json(q(`SELECT * FROM items WHERE id=?`).get(req.params.id));
 });
 
-app.post('/api/targets/:id/items', requireEdit, (req, res) => {
+app.post('/api/targets/:id/items', async (req, res) => {
+  if (!(await canWorkTarget(req, req.params.id))) return res.status(403).json({ error: 'adding checklist items is for this target’s assignees and leads' });
   const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'asset not found' });
   const { title, detail, group_title, payloads, kind, parent_id } = req.body || {};
@@ -1520,7 +1532,10 @@ app.post('/api/items/:id/select', (req, res) => {
   res.status(201).json({ ok: true, selected: true, added: cat.items.length });
 });
 
-app.delete('/api/items/:id', requireEdit, (req, res) => {
+app.delete('/api/items/:id', async (req, res) => {
+  const it = q(`SELECT asset_id FROM items WHERE id=?`).get(req.params.id);
+  if (!it) return res.json({ ok: true }); // already gone
+  if (!(await canWorkTarget(req, it.asset_id))) return res.status(403).json({ error: 'deleting checklist items is for this target’s assignees and leads' });
   deleteItemTree(req.params.id);
   res.json({ ok: true });
 });
@@ -1562,13 +1577,24 @@ function creditFinding(uid) {
 }
 
 app.post('/api/targets/:id/findings', async (req, res) => {
-  const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
+  const a = q(`SELECT id, assignee FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'asset not found' });
   const { title, kind, body, refs, fix_status, flagged_to } = req.body || {};
   if (!title) return res.status(400).json({ error: 'title required' });
   // Attribute the finding to whoever recorded it — the team identity (username) so it stays
   // stable as the row syncs between a client and the server. Powers the admin ranking.
   const author = currentUser(req)?.username || null;
+  // Task ownership governs workers, not leads: an editor/admin records anywhere and never claims a
+  // target. A worker records only on their OWN target — an unassigned one auto-claims the first
+  // worker who works it, and one that already belongs to someone else is off-limits.
+  if (!(await canEdit(req))) {
+    const roster = assigneesOf(req.params.id);
+    if (!roster.length) {
+      if (author) { q(`UPDATE assets SET assignee=? WHERE id=?`).run(author, req.params.id); a.assignee = author; }
+    } else if (!author || !roster.includes(author)) {
+      return res.status(403).json({ error: 'this target is assigned to someone else — ask a lead to add you' });
+    }
+  }
   const { severity, cvss: vector } = gradeFields(req.body || {}, await canEdit(req)); // workers can't grade
   const info = q(`INSERT INTO findings (asset_id, title, kind, severity, body, refs, fix_status, author, cvss, flagged_to) VALUES (?,?,?,?,?,?,?,?,?,?)`)
     .run(req.params.id, title, kind || 'note', severity, body || null, cleanRefs(refs), cleanFix(fix_status), author, vector, flagged_to ? String(flagged_to).slice(0, 120) : null);

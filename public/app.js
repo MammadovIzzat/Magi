@@ -1394,18 +1394,33 @@ function taReplace(ta, start, end, text, selStart, selEnd) {
   if (!ok) { ta.setRangeText(text, start, end, 'end'); ta.dispatchEvent(new Event('input', { bubbles: true })); }
   if (selStart != null) ta.setSelectionRange(selStart, selEnd == null ? selStart : selEnd);
 }
-// TOGGLE the selection's wrap with before/after — bold, italic, strike, code, link. Pressing the
-// button again (when already wrapped, inside or just outside the selection) removes it, like SysReptor.
+const NB_MARKS = ['**', '~~', '`', '*', '_']; // longest-first so ** is matched before *
+// TOGGLE an inline mark around the selection — bold/italic/strike/code (before===after) — robust to
+// being combined with OTHER marks: e.g. on **~~x~~** pressing strike removes just the ~~, keeping the
+// bold, instead of stacking another pair. Peels every mark layer around the text (inside AND just
+// outside the selection), drops one occurrence of the pressed mark if present, else adds it.
 function taWrap(ta, before, after) {
-  const s = ta.selectionStart, e = ta.selectionEnd, v = ta.value, sel = v.slice(s, e);
-  if (sel.length >= before.length + after.length && sel.startsWith(before) && sel.endsWith(after)) {
-    const inner = sel.slice(before.length, sel.length - after.length);
-    return taReplace(ta, s, e, inner, s, s + inner.length);        // was wrapped → unwrap
+  const v = ta.value, s = ta.selectionStart, e = ta.selectionEnd, sel = v.slice(s, e);
+  // Asymmetric marks (the link button): plain edge toggle.
+  if (before !== after) {
+    if (sel.length >= before.length + after.length && sel.startsWith(before) && sel.endsWith(after)) {
+      const inner = sel.slice(before.length, sel.length - after.length);
+      return taReplace(ta, s, e, inner, s, s + inner.length);
+    }
+    return taReplace(ta, s, e, before + sel + after, s + before.length, e + before.length);
   }
-  if (v.slice(s - before.length, s) === before && v.slice(e, e + after.length) === after) {
-    return taReplace(ta, s - before.length, e + after.length, sel, s - before.length, s - before.length + sel.length);
-  }
-  taReplace(ta, s, e, before + sel + after, s + before.length, e + before.length);
+  const m = before;
+  if (s === e) return taReplace(ta, s, s, m + m, s + m.length); // no selection → drop an empty pair, caret inside
+  // Grow the span outward across any marks hugging the selection, then peel all marks off both ends.
+  let L = s, R = e;
+  for (let go = true; go;) { go = false; for (const k of NB_MARKS) if (L >= k.length && v.slice(L - k.length, L) === k && v.slice(R, R + k.length) === k) { L -= k.length; R += k.length; go = true; break; } }
+  let core = v.slice(L, R); const layers = [];
+  for (let go = true; go;) { go = false; for (const k of NB_MARKS) if (core.length >= 2 * k.length && core.startsWith(k) && core.endsWith(k)) { layers.push(k); core = core.slice(k.length, core.length - k.length); go = true; break; } }
+  const i = layers.indexOf(m);
+  if (i >= 0) layers.splice(i, 1); else layers.push(m); // toggle the mark within the stack
+  let out = core; for (const k of layers) out = k + out + k;
+  const inner = layers.length ? layers[layers.length - 1].length : 0; // reselect the text just inside the outermost mark
+  taReplace(ta, L, R, out, L + inner, L + out.length - inner);
 }
 // Block-level formatting on every line the selection touches, with SysReptor-style toggle/switch: the
 // existing block token is stripped first, so pressing H1 on an H1 line clears it, pressing H2 on an

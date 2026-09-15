@@ -802,7 +802,7 @@ label {
   color: var(--label); text-transform: uppercase; margin: 16px 0 7px;
 }
 label:first-child { margin-top: 0; }
-input, textarea, select {
+input:not([type="checkbox"]):not([type="radio"]), textarea, select {
   width: 100%; background: var(--bg); border: 1px solid var(--line-3); border-radius: 3px;
   padding: 9px 11px; font-size: 13px; color: var(--text); outline: none;
   transition: border-color .12s;
@@ -1196,7 +1196,8 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 .markdown li { margin: 3px 0; }
 .markdown ul.md-tasks { list-style: none; padding-left: 2px; }
 .markdown .md-taskitem { display: flex; align-items: flex-start; gap: 8px; }
-.markdown .md-task { margin-top: 3px; accent-color: var(--gold); cursor: pointer; }
+.markdown .md-task { flex: none; width: 15px; height: 15px; margin: 2px 0 0; padding: 0; border: 0; accent-color: var(--gold); cursor: pointer; }
+.markdown .md-taskitem > span { flex: 1 1 auto; min-width: 0; }
 .markdown .md-done { color: var(--muted); text-decoration: line-through; }
 .markdown code { font-family: var(--mono); font-size: 12px; background: var(--void); border: 1px solid var(--line); border-radius: 3px; padding: 1px 5px; }
 .markdown pre.nb-code { background: var(--void); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; overflow-x: auto; }

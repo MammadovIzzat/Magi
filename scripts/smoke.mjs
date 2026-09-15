@@ -147,7 +147,14 @@ checks.push(['notebook toolbar toggles/switches formatting', await ev(`
   const h2 = ta.value === "## hello";
   sel(0, ta.value.length); press(btn("Heading 2")); await new Promise(r => setTimeout(r, 40));
   const h2off = ta.value === "hello";
-  return boldOn && boldOff && h1 && h2 && h2off`)]);
+  // combined marks: strike on top of bold, then strike again removes ONLY the strike (keeps bold)
+  ta.value = "word"; ta.dispatchEvent(new Event("input", { bubbles: true }));
+  sel(0, 4); press(btn("Bold")); await new Promise(r => setTimeout(r, 40));
+  sel(0, ta.value.length); press(btn("Strikethrough")); await new Promise(r => setTimeout(r, 40));
+  const combined = ta.value.includes("~~") && /\\*\\*word\\*\\*/.test(ta.value);
+  sel(0, ta.value.length); press(btn("Strikethrough")); await new Promise(r => setTimeout(r, 40));
+  const strikeGone = ta.value === "**word**";
+  return boldOn && boldOff && h1 && h2 && h2off && combined && strikeGone`)]);
 checks.push(['checklist popup paints', await ev(`
   const p = (await (await fetch("/api/projects")).json())[0];
   const d = await (await fetch("/api/projects/" + p.id)).json();

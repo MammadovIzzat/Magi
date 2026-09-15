@@ -249,6 +249,11 @@ function modal(opts) {
   document.addEventListener('keydown', onKey, true);
   form.querySelector('input:not([type=hidden]),textarea,.sel-trigger')?.focus();
 }
+// A themed confirm dialog for destructive actions — replaces the native confirm() so delete prompts
+// match the app. `onYes` runs when the red button is pressed; Cancel / ✕ / Esc just close.
+function confirmDanger(title, onYes, { cta = 'Delete', note } = {}) {
+  modal({ kicker: 'Confirm', title, note, danger: true, cta, build: () => {}, onSubmit: async () => { await onYes(); } });
+}
 // A fully app-styled dropdown replacing the native <select> — its option popup is OS chrome that
 // CSS can't theme reliably. Returns an element that behaves like a <select>: a `value` get/set
 // property, a 'change' event, and a hidden <input name> so FormData still serialises it. The menu
@@ -876,35 +881,30 @@ async function renderProjectFindings(projectId) {
     { label: 'Findings' }]);
   topActions();
 
+  // Confirmed vulnerabilities only — notes and credentials are per-target working evidence (the
+  // target chat), never listed here.
+  const vulns = all.filter(f => f.kind === 'vuln');
   const list = el('div', { className: 'pf-list' });
   const repaint = () => {
-    [...tabs.children].forEach(b => b.classList.toggle('on', b.dataset.k === PFV.kind));
-    let out = PFV.kind === 'all' ? all.slice() : all.filter(f => f.kind === PFV.kind);
+    let out = vulns.slice();
     const q = PFV.q.trim().toLowerCase();
     if (q) out = out.filter(f => (f.title || '').toLowerCase().includes(q) || (f.body || '').toLowerCase().includes(q) || (f.target || '').toLowerCase().includes(q));
     if (PFV.sort === 'sev') out.sort((a, b) => (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9) || (a.created_at < b.created_at ? 1 : -1));
     else if (PFV.sort === 'title') out.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
     else out.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
     list.replaceChildren();
-    if (!out.length) { list.append(el('div', { className: 'empty', style: 'border:0;margin-top:16px' }, 'Nothing here yet.')); return; }
+    if (!out.length) { list.append(el('div', { className: 'empty', style: 'border:0;margin-top:16px' }, vulns.length ? 'Nothing matches.' : 'No vulnerabilities yet.')); return; }
     for (const f of out) list.append(el('div', { className: 'pf-item' },
       el('button', { className: 'pf-target', title: 'Open ' + f.target, onclick: () => location.hash = `/target/${f.target_id}` },
         codeBadge(f.target_type), el('span', { className: 'pf-tname' }, f.target)),
       findingCard(f, f.target_id, () => renderProjectFindings(projectId))));
   };
-  const count = (k) => all.filter(f => f.kind === k).length;
-  const tabs = el('div', { className: 'evtabs' });
-  for (const [k, l] of [['vuln', `Vulns ${count('vuln')}`], ['note', `Notes ${count('note')}`], ['credential', `Creds ${count('credential')}`], ['all', `All ${all.length}`]]) {
-    const b = el('button', { className: 'evtab', onclick: () => { PFV.kind = k; repaint(); } }, l);
-    b.dataset.k = k; tabs.append(b);
-  }
-  const search = el('input', { className: 'evsearch', type: 'search', placeholder: 'Search findings…', value: PFV.q });
+  const search = el('input', { className: 'evsearch', type: 'search', placeholder: 'Search vulnerabilities…', value: PFV.q });
   search.oninput = () => { PFV.q = search.value; repaint(); };
   const sortSel = customSelect({ className: 'evsort', value: PFV.sort, options: [
     { value: 'sev', label: 'Severity' }, { value: 'new', label: 'Newest' }, { value: 'title', label: 'Title' }] });
   sortSel.addEventListener('change', () => { PFV.sort = sortSel.value; repaint(); });
 
-  const vulns = all.filter(f => f.kind === 'vuln');
   const written = vulns.filter(f => f.in_report).length;
   const wpct = vulns.length ? Math.round(written / vulns.length * 100) : 0;
   $('#view').replaceChildren(el('div', { className: 'page narrow' },
@@ -912,9 +912,9 @@ async function renderProjectFindings(projectId) {
     el('div', { className: 'pf-head' },
       el('h1', {}, 'Findings'),
       vulns.length ? el('div', { className: 'pf-progress' },
-        el('span', {}, `${written} of ${vulns.length} written up`),
+        el('span', {}, `${vulns.length} vuln${vulns.length === 1 ? '' : 's'} · ${written} written up`),
         el('span', { className: 'stat-bar', style: 'width:88px;margin:0' }, el('span', { style: `width:${wpct}%;background:var(--ok)` }))) : null),
-    el('div', { className: 'evfilter pf-filter' }, tabs, el('div', { className: 'evrow' }, search, sortSel)),
+    el('div', { className: 'evfilter pf-filter' }, el('div', { className: 'evrow' }, search, sortSel)),
     list));
   repaint();
 }
@@ -1374,7 +1374,7 @@ function chatNote(f, id, mayContribute = true) {
     el('button', { className: 'ibtn', title: 'Add image', onclick: () => uploadToFinding(f.id, id, () => renderTarget(id)) }, icon('image', 11)),
     flagToControl(f, id),
     el('button', { className: 'ibtn', title: 'Edit', onclick: () => editFinding(f, id, () => renderTarget(id)) }, icon('edit', 11)),
-    el('button', { className: 'ibtn del', title: 'Delete', onclick: async () => { if (confirm('Delete this note?')) { await api('/findings/' + f.id, { method: 'DELETE' }); renderTarget(id); } } }, icon('x', 11))));
+    el('button', { className: 'ibtn del', title: 'Delete', onclick: () => confirmDanger('Delete this note?', async () => { await api('/findings/' + f.id, { method: 'DELETE' }); renderTarget(id); }) }, icon('x', 11))));
   wrap.append(foot);
   return wrap;
 }
@@ -1654,7 +1654,7 @@ function renderItem(it, assetId, num, depth, childrenBy = {}, spawnedByItem = {}
     el('button', { className: 'ibtn', title: 'Edit', onclick: () => itemModal(assetId, it, null, rerender) }, icon('edit', 12)),
     el('button', {
       className: 'ibtn del', title: 'Delete',
-      onclick: async () => { if (confirm(kids.length ? 'Delete this item and everything under it?' : 'Delete this item?')) { await api('/items/' + it.id, { method: 'DELETE' }); rerender(); } },
+      onclick: () => confirmDanger(kids.length ? 'Delete this item and everything under it?' : 'Delete this item?', async () => { await api('/items/' + it.id, { method: 'DELETE' }); rerender(); }),
     }, icon('x', 12))));
 
   node.append(el('span', { className: 'inum' }, pad(num)), body, actions);
@@ -1806,7 +1806,7 @@ function findingCard(f, id, after) {
   const tools = el('div', { className: 'f-tools', onclick: stop },
     el('button', { className: 'ibtn', title: 'Add image', onclick: () => uploadToFinding(f.id, id, after) }, icon('image', 11)),
     el('button', { className: 'ibtn', title: 'Edit', onclick: () => editFinding(f, id, after) }, icon('edit', 11)),
-    el('button', { className: 'ibtn del', title: 'Delete', onclick: async () => { if (confirm('Delete this finding and its images?')) { await api('/findings/' + f.id, { method: 'DELETE' }); after(); } } }, icon('x', 11)));
+    el('button', { className: 'ibtn del', title: 'Delete', onclick: () => confirmDanger('Delete this finding and its images?', async () => { await api('/findings/' + f.id, { method: 'DELETE' }); after(); }) }, icon('x', 11)));
   const shots = el('div', { className: 'f-shots', onclick: stop });
   for (const im of (f.attachments || [])) {
     const thumb = attachmentImg(im.id, { title: im.filename, loading: 'lazy' });
@@ -1821,7 +1821,12 @@ function findingCard(f, id, after) {
   const card = el('div', { className: 'finding sev-' + (f.severity || 'info') + (f.in_report ? ' in-report' : '')
       + (f.needs_improvement ? ' needs-improve' : '') + (mineToFix ? ' mine-improve' : ''), title: 'Click to open' },
     el('div', { className: 'f-top' },
-      f.severity ? el('span', { className: 'f-sev' }, f.severity) : null,
+      // For a vulnerability a grader (admin/editor) can set/change its severity right here — the chip
+      // is the button, so it works in a standalone install too, with no admin page needed.
+      (f.kind === 'vuln' && isEditor())
+        ? el('button', { className: 'f-sev grade' + (f.severity ? ' sev-' + f.severity : ' none'), title: 'Set severity / CVSS',
+            onclick: (e) => { e.stopPropagation(); gradeDialog(f, after); } }, f.severity || 'set severity')
+        : (f.severity ? el('span', { className: 'f-sev' }, f.severity) : null),
       f.fix_status ? el('span', { className: 'f-fix ' + f.fix_status }, fixLabel(f.fix_status)) : el('span', { className: 'f-kind' }, f.kind),
       f.needs_improvement ? el('span', { className: 'f-improve' }, 'needs improvement') : null,
       f.kind === 'vuln' ? reportTick(f, after) : null,   // "written into the report" is a vuln thing; notes/creds don't get it
@@ -1855,7 +1860,7 @@ function findingDetail(f, id, after) {
         f.created_at ? el('span', { className: 'fd-by', title: f.created_at }, fmtWhen(f.created_at)) : null,
         // An admin can (re)grade a vuln from here — even one already graded, which the grading queue
         // no longer lists. Reuses the grade dialog (severity + CVSS).
-        (isAdmin() && f.kind === 'vuln') ? el('button', { className: 'btn line sm', onclick: () => gradeDialog(f, after) }, icon('edit', 12), (f.severity || f.cvss) ? 'Change severity' : 'Set severity') : null,
+        (isEditor() && f.kind === 'vuln') ? el('button', { className: 'btn line sm', onclick: () => gradeDialog(f, after) }, icon('edit', 12), (f.severity || f.cvss) ? 'Change severity' : 'Set severity') : null,
         f.kind === 'vuln' ? el('span', { className: 'fd-report' }, reportTick(f, after)) : null));
       if (f.needs_improvement) b.append(el('div', { className: 'improve-note' },
         el('span', { className: 'kicker' }, 'Needs improvement'),
@@ -2279,7 +2284,7 @@ async function renderEditor(type) {
             el('button', { className: 'ibtn', title: 'Edit', onclick: () => tplItemModal(t.type, it) }, icon('edit', 12)),
             el('button', {
               className: 'ibtn del', title: 'Delete',
-              onclick: async () => { if (confirm('Delete this default item?')) { await api('/tpl-items/' + it.id, { method: 'DELETE' }); renderEditor(t.type); } },
+              onclick: () => confirmDanger('Delete this default item?', async () => { await api('/tpl-items/' + it.id, { method: 'DELETE' }); renderEditor(t.type); }),
             }, icon('x', 12)))));
       }
     });
@@ -2469,7 +2474,7 @@ async function renderGroup(id) {
         el('button', { className: 'ibtn', title: 'Edit', onclick: () => groupItemModal(g.id, it) }, icon('edit', 12)),
         el('button', {
           className: 'ibtn del', title: 'Delete',
-          onclick: async () => { if (confirm('Delete this item?')) { await api('/tpl-group-items/' + it.id, { method: 'DELETE' }); renderGroup(id); } },
+          onclick: () => confirmDanger('Delete this item?', async () => { await api('/tpl-group-items/' + it.id, { method: 'DELETE' }); renderGroup(id); }),
         }, icon('x', 12)))));
   }
   if (!g.items.length) panel.append(el('div', { className: 'empty', style: 'border:0' }, 'No items yet.'));

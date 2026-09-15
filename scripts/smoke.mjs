@@ -153,6 +153,20 @@ checks.push(['CVSS grade dialog: calculator opens, scores, applies a vector', aw
   const sev = document.querySelector(".modal [data-sel=severity]")?.value;
   const cvssVal = document.querySelector(".modal input[name=cvss]")?.value || "";
   return hasSev && opts.length >= 20 && scored && oneSelected && gone && !!sev && cvssVal.includes("AV:")`)]);
+// A grader can set severity straight from the vuln card — no admin page needed (works standalone).
+// (Call renderTarget directly: the hash is already on this target, so setting it fires no re-render.)
+checks.push(['a vuln card exposes a grade control', await ev(`
+  document.querySelector('.modal-x')?.click(); await new Promise(r => setTimeout(r, 120));
+  const p = (await (await fetch("/api/projects")).json())[0];
+  const d = await (await fetch("/api/projects/" + p.id)).json();
+  const fold = await (await fetch("/api/assets/" + d.assets[0].id)).json();
+  await renderTarget(fold.targets[0].id); await new Promise(r => setTimeout(r, 600));
+  return !!document.querySelector(".dock .finding .f-sev.grade")`)]);
+// The engagement-wide findings page lists vulnerabilities only — notes/creds live in the target chat.
+checks.push(['the findings page is vulns-only (no note/cred tabs)', await ev(`
+  const p = (await (await fetch("/api/projects")).json())[0];
+  location.hash = "#/findings/" + p.id; await new Promise(r => setTimeout(r, 1200));
+  return document.querySelectorAll(".pf-filter .evtab").length === 0 && !!document.querySelector(".pf-head")`)]);
 checks.push(['template library paints', await ev(`
   location.hash = "#/editor"; await new Promise(r => setTimeout(r, 1400));
   return document.querySelectorAll(".tpl-type").length > 0`)]);

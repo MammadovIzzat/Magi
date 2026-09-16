@@ -136,7 +136,23 @@ check('the cached verifier now matches the new password', link.offlineLogin('ana
 const afterRelog = await link.remoteFetch('/api/me', {});
 check('sync works again after re-authentication', afterRelog.status === 200 && afterRelog.json?.username === 'ana');
 
-// 6) the code was consumed on accept — connecting again with it is refused
+// 6) a LINKED WORKER is gated by the role the SERVER signed into its token, and by target ownership
+// — the same assignee rule the server enforces, driven here through the link as a real worker.
+const P = (await req('POST', '/api/projects', { token: adminTok, body: { name: 'RBAC' } })).json;
+const F = (await req('POST', `/api/projects/${P.id}/assets`, { token: adminTok, body: { grp: 'external', label: 'Ext' } })).json;
+const T = (await req('POST', `/api/assets/${F.id}/targets`, { token: adminTok, body: { type: 'web', label: 'https://rbac.test' } })).json;
+const anItem = (await req('GET', `/api/targets/${T.id}`, { token: adminTok })).json.items.find(i => i.kind === 'check');
+await req('POST', '/api/admin/users', { token: adminTok, body: { username: 'cara', password: 'cara-secret-8', role: 'worker' } });
+const clogin = await link.login({ username: 'cara', password: 'cara-secret-8' });
+link.stopSyncLoop();
+check('a linked worker gets the worker role from the signed token', clogin.ok === true && link.status().link?.role === 'worker');
+check('a linked worker cannot create an engagement (editor-only)', (await link.remoteFetch('/api/projects', { method: 'POST', body: { name: 'nope' } })).status === 403);
+check('a linked worker cannot edit an unassigned target’s checklist', (await link.remoteFetch(`/api/items/${anItem.id}`, { method: 'PATCH', body: { title: 'nope' } })).status === 403);
+check('a linked worker can record on an unassigned target (auto-claims it)', (await link.remoteFetch(`/api/targets/${T.id}/findings`, { method: 'POST', body: { title: 'seen', kind: 'note' } })).status === 201);
+const wEditOwned = await link.remoteFetch(`/api/items/${anItem.id}`, { method: 'PATCH', body: { title: 'cara edit' } });
+check('a linked worker CAN edit the checklist once the target is theirs', wEditOwned.status === 200 && wEditOwned.json?.title === 'cara edit');
+
+// 7) the code was consumed on accept — connecting again with it is refused
 const reuse = await link.connect({ server_url: serverUrl, code: code1, device_name: 'z' });
 check('the code was single-use (reuse refused)', reuse.ok === false);
 

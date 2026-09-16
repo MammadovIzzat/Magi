@@ -1716,7 +1716,13 @@ app.get('/api/attachments/:id', (req, res) => {
   if (!a) return res.status(404).json({ error: 'not found' });
   res.setHeader('Content-Type', a.mime);
   res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
-  res.setHeader('Content-Disposition', `inline; filename="${a.filename.replace(/"/g, '')}"`);
+  // Only known raster images render inline; anything else (notably image/svg+xml, which can carry
+  // scripts) is forced to download so it never executes as a document on our origin. nosniff + the
+  // global CSP already block script execution, but this closes the vector fully. CR/LF are stripped
+  // from the filename so it can't inject response headers.
+  const inlineOk = /^image\/(png|jpe?g|gif|webp|avif|bmp|x-icon)$/i.test(a.mime);
+  const fn = String(a.filename || 'file').replace(/[\r\n"]/g, '');
+  res.setHeader('Content-Disposition', `${inlineOk ? 'inline' : 'attachment'}; filename="${fn}"`);
   res.end(Buffer.from(a.data));
 });
 app.delete('/api/attachments/:id', (req, res) => {

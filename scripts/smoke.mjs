@@ -125,7 +125,13 @@ checks.push(['target notebook + findings dock render', await ev(`
   await new Promise(r => setTimeout(r, 200));
   const split = !!document.querySelector(".nb-body.split") && !document.querySelector(".nb-body.split .nb-input").hidden && !document.querySelector(".nb-body.split .nb-preview").hidden;
   const rendered = !!document.querySelector(".nb-preview h2") && !!document.querySelector(".nb-preview table.md-table") && !!document.querySelector(".nb-preview input.md-task");
-  return hasNotebook && hasTools && hasDock && persisted && split && rendered`)]);
+  // Ticking the preview checkbox writes back to the source line (- [ ] -> - [x]) and autosaves.
+  const box = document.querySelector(".nb-preview input.md-task");
+  box.checked = true; box.dispatchEvent(new Event("change", { bubbles: true }));
+  await new Promise(r => setTimeout(r, 800));
+  const src2 = await (await fetch("/api/targets/" + f.targets[0].id)).json();
+  const toggled = /- \\[x\\] revisit login/.test(src2.notebook || "");
+  return hasNotebook && hasTools && hasDock && persisted && split && rendered && toggled`)]);
 // Toolbar formatting toggles: Bold adds then removes; a heading switches level (H1 -> H2).
 checks.push(['notebook toolbar toggles/switches formatting', await ev(`
   const p = (await (await fetch("/api/projects")).json())[0];

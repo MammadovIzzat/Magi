@@ -1378,11 +1378,20 @@ function mdToHtml(src) {
   flushPara(); closeLists(); if (inCode) html += '</code></pre>';
   return html || '<p class="nb-hint">Nothing written yet.</p>';
 }
-// Flip the n-th task box in the source text (used when a preview checkbox is toggled). Matches
-// "- [ ]", "- [x]" and the empty "- []".
+// Flip the n-th task box in the source (used when a preview checkbox is toggled). Counts tasks the
+// SAME way mdToHtml renders them — line by line, SKIPPING fenced code blocks — so the index always
+// lines up with the clicked box (a "- [ ]" inside a ``` fence is not a task and must not be touched).
 function toggleTask(src, i, checked) {
-  let n = 0;
-  return String(src).replace(/^(\s*[-*]\s+\[)([ xX]?)(\])/gm, (m, pre, mark, post) => (n++ === i ? pre + (checked ? 'x' : ' ') + post : m));
+  const lines = String(src).replace(/\r\n?/g, '\n').split('\n');
+  let n = 0, inCode = false;
+  for (let li = 0; li < lines.length; li++) {
+    if (/^```/.test(lines[li])) { inCode = !inCode; continue; }
+    if (inCode) continue;
+    const m = /^(\s*[-*]\s+\[)([ xX]?)(\].*)$/.exec(lines[li]);
+    if (!m) continue;
+    if (n++ === i) { lines[li] = m[1] + (checked ? 'x' : ' ') + m[3]; break; }
+  }
+  return lines.join('\n');
 }
 // Textarea edit primitive that goes THROUGH the browser's edit history, so Ctrl+Z / Ctrl+Y undo and
 // redo toolbar actions just like typing. Selects [start,end], replaces it via execCommand('insertText'),

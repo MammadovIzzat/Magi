@@ -17,6 +17,7 @@ const BASE = `
   CREATE TABLE items    (id INTEGER PRIMARY KEY, asset_id INTEGER, parent_id INTEGER, group_key TEXT, group_title TEXT, title TEXT, detail TEXT, payloads TEXT, kind TEXT, spawns TEXT, catalog TEXT, options TEXT, opt_key TEXT, spawn_type TEXT, status TEXT, answer TEXT, sort INTEGER, is_custom INTEGER, created_at TEXT);
   CREATE TABLE findings (id INTEGER PRIMARY KEY, asset_id INTEGER, title TEXT, kind TEXT, severity TEXT, body TEXT, refs TEXT, fix_status TEXT, in_report INTEGER, author TEXT, cvss TEXT, needs_improvement INTEGER, review_note TEXT, flagged_to TEXT, created_at TEXT);
   CREATE TABLE attachments (id INTEGER PRIMARY KEY, finding_id INTEGER, filename TEXT, mime TEXT, size INTEGER, created_at TEXT, data BLOB);
+  CREATE TABLE notebook_images (id INTEGER PRIMARY KEY, asset_id INTEGER, filename TEXT, mime TEXT, size INTEGER, created_at TEXT, data BLOB);
 `;
 const mkdb = () => { const d = new DatabaseSync(':memory:'); d.exec(BASE); setupSchema(d); return d; };
 const payloadMax = (p) => { let m = ''; for (const r of p.rows || []) if (r.hlc > m) m = r.hlc; for (const t of p.tombstones || []) if (t.hlc > m) m = t.hlc; return m; };

@@ -87,6 +87,15 @@ function attachmentImg(id, attrs = {}) {
   attachmentSrc(id).then(u => { img.src = u; }).catch(() => { /* leave broken-image; a reload retries */ });
   return img;
 }
+// Notebook images are auth-gated and referenced by sync uid; fetch the bytes with auth and show them
+// via an object URL (an <img src> can't carry the Bearer header). Cached by uid.
+const NB_IMG_CACHE = new Map(); // notebook-image uid -> object URL
+function nbImgSrc(uid) {
+  if (NB_IMG_CACHE.has(uid)) return Promise.resolve(NB_IMG_CACHE.get(uid));
+  return fetch('/api/notebook-images/' + uid, { headers: authHeaders() })
+    .then(r => r.ok ? r.blob() : Promise.reject(new Error(r.statusText)))
+    .then(b => { const u = URL.createObjectURL(b); NB_IMG_CACHE.set(uid, u); return u; });
+}
 // Open the image `im`; when `list` (the finding's attachments) has more than one, the lightbox
 // gets prev/next arrows and ←/→ keys to step through them.
 function openLightbox(im, list) {
@@ -1336,6 +1345,12 @@ function mdInline(s) {
   s = s.replace(/__([^_]+)__/g, '<strong>$1</strong>');                  // __bold__
   s = s.replace(/(^|[^*])\*([^*\s][^*]*?)\*/g, '$1<em>$2</em>');          // *italic*
   s = s.replace(/(^|[^_\w])_([^_\s][^_]*?)_/g, '$1<em>$2</em>');          // _italic_ (not mid-word)
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt, u) => {           // ![alt](url) image
+    const uid = /^nbimg:([a-f0-9]{8,64})$/i.exec(u);                     // an uploaded notebook image (loaded by uid, with auth)
+    if (uid) return `<img class="nb-img" data-nbimg="${uid[1]}" alt="${alt}" title="${alt}">`;
+    if (/^data:image\//i.test(u)) return `<img class="nb-img" src="${u}" alt="${alt}">`;
+    return alt ? `<span class="nb-imgmiss">🖼 ${alt}</span>` : '';       // external URLs are blocked by CSP — show the caption, not a broken image
+  });
   s = s.replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, (m, t, u) => {              // [text](url), empty text ok
     const safe = /^https?:|^mailto:/.test(u) ? u : '#';
     return `<a href="${safe}" target="_blank" rel="noreferrer noopener">${t || escHtml(u)}</a>`;
@@ -1508,6 +1523,11 @@ function notebookEditor(id, initialMd, editable) {
   };
   const paintPreview = () => {
     preview.innerHTML = mdToHtml(md);
+    // load auth-gated notebook images (referenced by uid) as object URLs, and open full-size on click
+    preview.querySelectorAll('img.nb-img[data-nbimg]').forEach((img) => {
+      nbImgSrc(img.dataset.nbimg).then(u => { img.src = u; }).catch(() => {});
+      img.onclick = () => { if (img.src) lightbox([{ id: img.dataset.nbimg, filename: img.alt || 'image', _nb: true }], 0); };
+    });
     if (editable) preview.querySelectorAll('input.md-task').forEach((cb) => {
       cb.onchange = () => { md = toggleTask(md, Number(cb.dataset.i), cb.checked); ta.value = md; save(); paintPreview(); scheduleGutter(); };
     });
@@ -1515,6 +1535,25 @@ function notebookEditor(id, initialMd, editable) {
   };
   let pTmr; const livePreview = () => { if (preview.hidden) return; clearTimeout(pTmr); pTmr = setTimeout(paintPreview, 180); };
   ta.oninput = () => { md = ta.value; save(); grow(); scheduleGutter(); livePreview(); };
+  // Images: upload the file, then drop a ![name](nbimg:<uid>) reference at the caret (uid is stable
+  // across devices). Triggered by the toolbar button, paste, or drop — like SysReptor.
+  const uploadImage = async (file) => {
+    if (!editable || !file || !/^image\//.test(file.type || '')) return;
+    status.textContent = 'Uploading image…';
+    try {
+      const r = await fetch('/api/targets/' + id + '/notebook-images', {
+        method: 'POST', headers: authHeaders({ 'content-type': file.type, 'x-filename': encodeURIComponent(file.name || 'image') }),
+        body: await file.arrayBuffer(),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+      const row = await r.json();
+      const name = (row.filename || 'image').replace(/[\[\]()\n]/g, ' ').trim() || 'image';
+      taInsert(ta, `![${name}](nbimg:${row.uid})`);
+      md = ta.value; save(); grow(); scheduleGutter(); livePreview();
+    } catch (e) { status.textContent = 'Image not added — ' + e.message; toast(e.message); }
+  };
+  const imgInput = el('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true,
+    onchange: (e) => { for (const f of e.target.files) uploadImage(f); e.target.value = ''; } });
   // Toolbar actions run through taReplace (execCommand), so each is a single undoable edit.
   const tbtn = (label, title, fn) => el('button', { type: 'button', className: 'nb-tb', title, onmousedown: (e) => { e.preventDefault(); fn(); } }, label);
   const TABLE = '| Column1 | Column2 | Column3 |\n| --- | --- | --- |\n| Text | Text | Text |\n';
@@ -1524,9 +1563,22 @@ function notebookEditor(id, initialMd, editable) {
     tbtn('B', 'Bold', () => taWrap(ta, '**', '**')), tbtn('I', 'Italic', () => taWrap(ta, '*', '*')), tbtn('S', 'Strikethrough', () => taWrap(ta, '~~', '~~')), tbtn('</>', 'Code', () => taWrap(ta, '`', '`')),
     el('span', { className: 'nb-sep' }),
     tbtn('•', 'Bullet list', () => taBlock(ta, 'ul')), tbtn('1.', 'Numbered list', () => taBlock(ta, 'ol')), tbtn('☐', 'Task', () => taBlock(ta, 'task')),
-    tbtn('❝', 'Quote', () => taBlock(ta, 'quote')), tbtn('⊞', 'Table', () => taInsert(ta, TABLE)), tbtn('🔗', 'Link', () => taWrap(ta, '[', '](https://)')));
+    tbtn('❝', 'Quote', () => taBlock(ta, 'quote')), tbtn('⊞', 'Table', () => taInsert(ta, TABLE)), tbtn('🔗', 'Link', () => taWrap(ta, '[', '](https://)')),
+    el('button', { type: 'button', className: 'nb-tb', title: 'Image — click, or paste / drop into the editor', onclick: () => imgInput.click() }, '🖼'), imgInput);
 
+  // Paste an image straight from the clipboard; drop one onto the editor.
+  ta.addEventListener('paste', (e) => {
+    const items = [...(e.clipboardData?.items || [])].filter(it => (it.type || '').startsWith('image/'));
+    if (!items.length) return; // let normal text paste through
+    e.preventDefault(); for (const it of items) { const f = it.getAsFile(); if (f) uploadImage(f); }
+  });
   const editor = el('div', { className: 'nb-editor' }, gutter, ta, mirror);
+  editor.addEventListener('dragover', (e) => { if ([...(e.dataTransfer?.types || [])].includes('Files')) e.preventDefault(); });
+  editor.addEventListener('drop', (e) => {
+    const files = [...(e.dataTransfer?.files || [])].filter(f => (f.type || '').startsWith('image/'));
+    if (!files.length) return;
+    e.preventDefault(); for (const f of files) uploadImage(f);
+  });
   const body = el('div', { className: 'nb-body' }, editor, preview);
   const tab = (label, m) => el('button', { type: 'button', className: 'nb-tab', onclick: () => setMode(m) }, label);
   const writeBtn = tab('Write', 'write'), splitBtn = tab('Split', 'split'), prevBtn = tab('Preview', 'preview');
@@ -1542,7 +1594,8 @@ function notebookEditor(id, initialMd, editable) {
   const bar = el('div', { className: 'nb-bar' },
     editable ? el('div', { className: 'nb-tabs' }, writeBtn, splitBtn, prevBtn) : el('span', { className: 'kicker' }, 'Notebook'),
     status);
-  const box = el('div', { className: 'nb-wrap' }, bar, toolbar, body);
+  const hint = editable ? el('div', { className: 'nb-uploadhint' }, 'Paste, drop, or 🖼 to add an image') : null;
+  const box = el('div', { className: 'nb-wrap' }, bar, toolbar, body, hint);
   if (!editable) { editor.remove(); toolbar.remove(); }
   else { try { new ResizeObserver(scheduleGutter).observe(ta); } catch { window.addEventListener('resize', scheduleGutter); } } // re-number on width change (mode switch, resize)
   setMode(editable ? (md ? 'split' : 'write') : 'preview');
@@ -2286,7 +2339,7 @@ function uploadToFinding(findingId, assetId, after) {
 // browser/Electron download, forcing a save even though the server serves it inline.
 async function downloadAttachment(im) {
   try {
-    const r = await fetch('/api/attachments/' + im.id, { headers: authHeaders() });
+    const r = await fetch((im._nb ? '/api/notebook-images/' : '/api/attachments/') + im.id, { headers: authHeaders() });
     if (!r.ok) throw new Error(r.statusText);
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
@@ -2313,7 +2366,7 @@ function lightbox(arr, idx) {
     const im = arr[idx];
     cap.textContent = (multi ? `${idx + 1} / ${arr.length}  ·  ` : '') + (im.filename || '');
     img.removeAttribute('src');
-    attachmentSrc(im.id).then(src => { img.src = src; }).catch(() => toast('Could not load the image'));
+    (im._nb ? nbImgSrc(im.id) : attachmentSrc(im.id)).then(src => { img.src = src; }).catch(() => toast('Could not load the image'));
   };
   const go = (d) => { idx = (idx + d + arr.length) % arr.length; show(); };
   const bar = el('div', { className: 'lb-bar', onclick: (e) => e.stopPropagation() }, dlBtn, el('button', { className: 'btn sm', onclick: close }, 'Close'));

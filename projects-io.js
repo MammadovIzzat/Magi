@@ -26,6 +26,10 @@ function serializeTarget(a) {
   const idx = new Map(rows.map((r, i) => [r.id, i]));
   return {
     type: a.type, label: a.label, metadata: JSON.parse(a.metadata || '{}'), assignee: a.assignee || null, notebook: a.notebook || null, created_at: a.created_at,
+    // Notebook images keep their uid — the notebook Markdown references them by it, so the refs must
+    // still resolve after import.
+    notebook_images: db.prepare(`SELECT uid,filename,mime,size,data,created_at FROM notebook_images WHERE asset_id=? ORDER BY id`).all(a.id)
+      .map(im => ({ uid: im.uid, filename: im.filename, mime: im.mime, size: im.size, created_at: im.created_at, data: Buffer.from(im.data).toString('base64') })),
     items: rows.map((r, i) => ({
       i, parent: r.parent_id == null ? null : (idx.has(r.parent_id) ? idx.get(r.parent_id) : null),
       group_key: r.group_key, group_title: r.group_title, title: r.title, detail: r.detail,
@@ -100,6 +104,9 @@ export function importProject(bundle, nameOverride) {
     const setParent = db.prepare(`UPDATE items SET parent_id=? WHERE id=?`);
     const insFinding = db.prepare(`INSERT INTO findings (asset_id,title,kind,severity,body,fix_status,in_report,author,cvss,flagged_to,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
     const insAttach = db.prepare(`INSERT INTO attachments (finding_id,filename,mime,size,data,created_at) VALUES (?,?,?,?,?,?)`);
+    // Notebook images keep their exported uid (the INSERT trigger's COALESCE preserves a supplied one)
+    // so the notebook Markdown's nbimg:<uid> references still resolve after import.
+    const insNbImg = db.prepare(`INSERT INTO notebook_images (asset_id,uid,filename,mime,size,data,created_at) VALUES (?,?,?,?,?,?,?)`);
 
     // Attack-chain links reference other findings by uid; imported findings get fresh uids, so
     // remember old->new and rewrite the refs in a second pass once every finding exists.
@@ -149,6 +156,11 @@ export function importProject(bundle, nameOverride) {
             const buf = Buffer.from(at.data, 'base64');
             insAttach.run(fnd, at.filename || 'image', at.mime, at.size || buf.length, buf, at.created_at || new Date().toISOString());
           }
+        }
+        for (const im of (tgt.notebook_images || [])) {
+          if (!im.data || !im.mime) continue;
+          const buf = Buffer.from(im.data, 'base64');
+          insNbImg.run(aid, im.uid || null, im.filename || 'image', im.mime, im.size || buf.length, buf, im.created_at || new Date().toISOString());
         }
       }
     }

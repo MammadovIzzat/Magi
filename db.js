@@ -243,6 +243,20 @@ CREATE TABLE IF NOT EXISTS attachments (
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_finding ON attachments(finding_id);
 
+-- Images embedded in a target's Markdown notebook (paste/drop/upload). Same BLOB-in-DB approach as
+-- attachments, but keyed to the target; the notebook Markdown references each by its sync uid (stable
+-- across devices, unlike the local autoincrement id).
+CREATE TABLE IF NOT EXISTS notebook_images (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_id    INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  filename    TEXT NOT NULL,
+  mime        TEXT NOT NULL,
+  size        INTEGER NOT NULL,
+  data        BLOB NOT NULL,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_nbimg_asset ON notebook_images(asset_id);
+
 -- Three-level model: a project holds "Asset" folders (engagement types: internal,
 -- external, mobile, otiot, additional, wireless); each folder holds "Target" rows.
 -- Internally the existing assets table IS the Target (it owns items and findings);

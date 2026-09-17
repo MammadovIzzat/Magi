@@ -1730,6 +1730,40 @@ app.delete('/api/attachments/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- images embedded in a target's notebook (paste / drop / upload) ----
+// Stored per target and referenced from the Markdown by their sync uid (stable across devices).
+app.post('/api/targets/:id/notebook-images', (req, res) => rawUpload(req, res, async (err) => {
+  if (err) {
+    const tooBig = err.type === 'entity.too.large' || err.status === 413 || err.statusCode === 413;
+    return res.status(tooBig ? 413 : 400).json({ error: tooBig ? 'image too large (40 MB max)' : 'could not read the upload' });
+  }
+  const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
+  if (!a) return res.status(404).json({ error: 'target not found' });
+  if (!(await canWorkTarget(req, a.id))) return res.status(403).json({ error: 'adding notebook images is for this target’s assignees and leads' });
+  const mime = (req.headers['content-type'] || '').split(';')[0].trim();
+  if (!mime.startsWith('image/')) return res.status(400).json({ error: 'only image files are accepted' });
+  const buf = req.body;
+  if (!Buffer.isBuffer(buf) || !buf.length) return res.status(400).json({ error: 'empty upload' });
+  if (buf.length > MAX_UPLOAD) return res.status(413).json({ error: 'image too large (40 MB max)' });
+  let raw = 'image';
+  if (req.headers['x-filename']) { try { raw = decodeURIComponent(req.headers['x-filename']); } catch { raw = req.headers['x-filename']; } }
+  const filename = raw.replace(/[\\/\x00-\x1f]+/g, '_').slice(0, 120) || 'image';
+  const info = q(`INSERT INTO notebook_images (asset_id, filename, mime, size, data) VALUES (?,?,?,?,?)`)
+    .run(a.id, filename, mime, buf.length, buf);
+  const row = q(`SELECT uid, filename, mime, size, created_at FROM notebook_images WHERE id=?`).get(info.lastInsertRowid);
+  res.status(201).json(row); // the Markdown references row.uid
+}));
+app.get('/api/notebook-images/:uid', (req, res) => {
+  const a = q(`SELECT filename, mime, data FROM notebook_images WHERE uid=?`).get(req.params.uid);
+  if (!a) return res.status(404).json({ error: 'not found' });
+  res.setHeader('Content-Type', a.mime);
+  res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+  const inlineOk = /^image\/(png|jpe?g|gif|webp|avif|bmp|x-icon)$/i.test(a.mime);
+  const fn = String(a.filename || 'file').replace(/[\r\n"]/g, '');
+  res.setHeader('Content-Disposition', `${inlineOk ? 'inline' : 'attachment'}; filename="${fn}"`);
+  res.end(Buffer.from(a.data));
+});
+
 // ---- export ----
 // Standalone HTML findings report with screenshots embedded as data: URIs.
 app.get('/api/projects/:id/report.html', (req, res) => {

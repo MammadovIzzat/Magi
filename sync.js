@@ -27,6 +27,7 @@ export const SPEC = {
   },
   findings: { parents: { asset_id: 'assets' }, cols: ['title', 'kind', 'severity', 'body', 'refs', 'fix_status', 'in_report', 'author', 'cvss', 'needs_improvement', 'review_note', 'flagged_to', 'created_at'] },
   attachments: { parents: { finding_id: 'findings' }, cols: ['filename', 'mime', 'size', 'created_at'], blobs: ['data'] },
+  notebook_images: { parents: { asset_id: 'assets' }, cols: ['filename', 'mime', 'size', 'created_at'], blobs: ['data'] },
 };
 const TABLES = Object.keys(SPEC);
 

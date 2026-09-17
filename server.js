@@ -1699,6 +1699,10 @@ function imageDisposition(mime, filename) {
   const ascii = clean.replace(/[^\x20-\x7e]/g, '_') || 'file';
   return `${inlineOk ? 'inline' : 'attachment'}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(clean)}`;
 }
+// Every uploaded image is stored under a fresh random name (extension from its content type). This
+// keeps stored names uniform and ASCII-safe and never leaks the operator's original filenames.
+const MIME_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/avif': 'avif', 'image/bmp': 'bmp', 'image/x-icon': 'ico', 'image/svg+xml': 'svg' };
+const randomImageName = (mime) => `image-${randomBytes(6).toString('hex')}.${MIME_EXT[String(mime || '').toLowerCase()] || 'img'}`;
 app.post('/api/findings/:id/attachments', (req, res) => rawUpload(req, res, (err) => {
   // A body over the parser's limit makes express.raw throw BEFORE the handler — turn that into
   // the same friendly 413 (otherwise it surfaces as an opaque 500 and the image just vanishes).
@@ -1712,11 +1716,7 @@ app.post('/api/findings/:id/attachments', (req, res) => rawUpload(req, res, (err
   const buf = req.body;
   if (!Buffer.isBuffer(buf) || !buf.length) return res.status(400).json({ error: 'empty upload' });
   if (buf.length > MAX_UPLOAD) return res.status(413).json({ error: 'image too large (40 MB max)' });
-  // filename comes in a header so the raw body stays the file itself; malformed %-encoding
-  // must not 500 the upload.
-  let raw = 'image';
-  if (req.headers['x-filename']) { try { raw = decodeURIComponent(req.headers['x-filename']); } catch { raw = req.headers['x-filename']; } }
-  const filename = raw.replace(/[\\/\x00-\x1f]+/g, '_').slice(0, 120) || 'image';
+  const filename = randomImageName(mime); // stored under a fresh random name, not the client's
   const info = q(`INSERT INTO attachments (finding_id, filename, mime, size, data) VALUES (?,?,?,?,?)`)
     .run(req.params.id, filename, mime, buf.length, buf);
   res.status(201).json(q(`SELECT id, finding_id, filename, mime, size, created_at FROM attachments WHERE id=?`).get(info.lastInsertRowid));
@@ -1749,9 +1749,7 @@ app.post('/api/targets/:id/notebook-images', (req, res) => rawUpload(req, res, a
   const buf = req.body;
   if (!Buffer.isBuffer(buf) || !buf.length) return res.status(400).json({ error: 'empty upload' });
   if (buf.length > MAX_UPLOAD) return res.status(413).json({ error: 'image too large (40 MB max)' });
-  let raw = 'image';
-  if (req.headers['x-filename']) { try { raw = decodeURIComponent(req.headers['x-filename']); } catch { raw = req.headers['x-filename']; } }
-  const filename = raw.replace(/[\\/\x00-\x1f]+/g, '_').slice(0, 120) || 'image';
+  const filename = randomImageName(mime); // stored under a fresh random name, not the client's
   const info = q(`INSERT INTO notebook_images (asset_id, filename, mime, size, data) VALUES (?,?,?,?,?)`)
     .run(a.id, filename, mime, buf.length, buf);
   const row = q(`SELECT uid, filename, mime, size, created_at FROM notebook_images WHERE id=?`).get(info.lastInsertRowid);

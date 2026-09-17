@@ -1283,9 +1283,48 @@ async function renderTarget(id) {
       el('button', { className: 'btn line sm', title: 'Credentials for this target', onclick: () => openCreds(id) },
         icon('key', 12), 'Creds', credCount ? el('span', { className: 'tt-count' }, String(credCount)) : null)));
 
+  // ── old notes: findings recorded as kind 'note'/'request' in the previous layout. The notebook
+  // replaced that stream, so they'd otherwise be invisible — surface them here (nothing was deleted)
+  // and offer a one-click move into the notebook, images and all.
+  const oldNotes = a.findings.filter(f => f.kind !== 'vuln' && f.kind !== 'credential');
+  let oldBanner = null;
+  if (oldNotes.length) {
+    const moveAll = async () => {
+      try {
+        let out = (a.notebook || '').trim(); out += (out ? '\n\n' : '') + '## Imported notes';
+        for (const n of oldNotes) {
+          out += `\n\n**${(n.title || 'Note').replace(/\s+/g, ' ').trim()}**`;
+          if (n.body) out += '\n\n' + n.body.trim();
+          for (const at of (n.attachments || [])) {
+            try {
+              const blob = await (await fetch('/api/attachments/' + at.id, { headers: authHeaders() })).blob();
+              const up = await fetch('/api/targets/' + id + '/notebook-images', { method: 'POST', headers: authHeaders({ 'content-type': at.mime || blob.type || 'image/png' }), body: await blob.arrayBuffer() });
+              if (up.ok) out += `\n\n![${(at.filename || 'image').replace(/[\[\]()\n]/g, ' ')}](nbimg:${(await up.json()).uid})`;
+            } catch { /* skip an image that won't copy; the note text still moves */ }
+          }
+        }
+        await api('/targets/' + id + '/notebook', { method: 'PATCH', body: { notebook: out + '\n' } });
+        for (const n of oldNotes) await api('/findings/' + n.id, { method: 'DELETE' });
+        toast(`Moved ${oldNotes.length} note${oldNotes.length === 1 ? '' : 's'} into the notebook`);
+        renderTarget(id);
+      } catch (e) { toast(e.message); }
+    };
+    oldBanner = el('div', { className: 'oldnotes' },
+      el('div', { className: 'oldnotes-hd' },
+        el('span', { className: 'oldnotes-t' }, icon('lines', 12), ` ${oldNotes.length} note${oldNotes.length === 1 ? '' : 's'} from the old layout — not part of the notebook yet`),
+        mayContribute ? el('button', { className: 'btn line sm', onclick: () => confirmDanger(`Move ${oldNotes.length} old note${oldNotes.length === 1 ? '' : 's'} into the notebook?`, moveAll, { cta: 'Move into notebook', danger: false, note: 'They’re appended under an “Imported notes” heading (with their images) and removed from here.' }) }, icon('down', 12), 'Move into notebook') : null),
+      el('div', { className: 'oldnotes-list' }, ...oldNotes.map(n => {
+        const shots = (n.attachments || []).length ? el('div', { className: 'oldnote-shots' },
+          ...n.attachments.map(im => { const t = attachmentImg(im.id, { title: im.filename, loading: 'lazy' }); t.onclick = () => openLightbox(im, n.attachments); return t; })) : null;
+        return el('div', { className: 'oldnote' },
+          el('div', { className: 'oldnote-t' }, n.title || 'Note', n.author ? el('span', { className: 'oldnote-by' }, ' · ' + n.author) : null),
+          n.body ? el('pre', { className: 'oldnote-b' }, n.body) : null, shots);
+      })));
+  }
+
   // ── middle: the target's own Markdown workspace (Obsidian-style). One page the assignee writes —
   // headers, key points, task lists — autosaved. Read-only for non-contributors.
-  const midCol = el('div', { className: 'target-col notes-col' }, head, notebookEditor(id, a.notebook || '', mayContribute));
+  const midCol = el('div', { className: 'target-col notes-col' }, head, oldBanner, notebookEditor(id, a.notebook || '', mayContribute));
 
   // ── right: findings (confirmed vulnerabilities only), with search + sort. Vulns are recorded from
   // the middle composer's "Evidence" button (Type → Vulnerability), so there's no add button here.

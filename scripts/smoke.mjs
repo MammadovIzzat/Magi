@@ -154,6 +154,23 @@ checks.push(['notebook image uploads, renders inline, and serves', await ev(`
   const g = await fetch("/api/notebook-images/" + uid);
   const served = g.status === 200 && (g.headers.get("content-type") || "").startsWith("image/");
   return up.status === 201 && !!uid && randomName && rendered && loaded && served`)]);
+// Old kind:note findings (from the pre-notebook layout) surface in a banner and move into the notebook.
+checks.push(['old notes surface and move into the notebook', await ev(`
+  const p = (await (await fetch("/api/projects")).json())[0];
+  const d = await (await fetch("/api/projects/" + p.id)).json();
+  const f = await (await fetch("/api/assets/" + d.assets[0].id)).json();
+  const tid = f.targets[0].id;
+  await fetch("/api/targets/" + tid + "/findings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Recon jottings", kind: "note", body: "checked the login and /admin" }) });
+  await renderTarget(tid); await new Promise(r => setTimeout(r, 500));
+  const banner = document.querySelector(".oldnotes");
+  const shown = !!banner && /Recon jottings/.test(banner.textContent) && /checked the login/.test(banner.textContent);
+  [...document.querySelectorAll(".oldnotes-hd button")].find(b => /Move into notebook/.test(b.textContent))?.click();
+  await new Promise(r => setTimeout(r, 200));
+  [...document.querySelectorAll(".modal .actions button")].find(b => /Move into notebook/.test(b.textContent))?.click();
+  await new Promise(r => setTimeout(r, 900));
+  const t2 = await (await fetch("/api/targets/" + tid)).json();
+  const moved = /checked the login/.test(t2.notebook || "") && !(t2.findings || []).some(x => x.kind === "note");
+  return shown && moved`)]);
 // Toolbar formatting toggles: Bold adds then removes; a heading switches level (H1 -> H2).
 checks.push(['notebook toolbar toggles/switches formatting', await ev(`
   const p = (await (await fetch("/api/projects")).json())[0];

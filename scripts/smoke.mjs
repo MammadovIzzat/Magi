@@ -140,7 +140,7 @@ checks.push(['notebook image uploads, renders inline, and serves', await ev(`
   const tid = f.targets[0].id;
   const b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
   const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-  const up = await fetch("/api/targets/" + tid + "/notebook-images", { method: "POST", headers: { "content-type": "image/png", "x-filename": "shot.png" }, body: bytes });
+  const up = await fetch("/api/targets/" + tid + "/notebook-images", { method: "POST", headers: { "content-type": "image/png", "x-filename": encodeURIComponent("şəkil 7 .png") }, body: bytes });
   const uid = (await up.json()).uid;
   await fetch("/api/targets/" + tid + "/notebook", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ notebook: "# S\\n\\n![shot](nbimg:" + uid + ")" }) });
   await renderTarget(tid); await new Promise(r => setTimeout(r, 500));

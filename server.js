@@ -1689,6 +1689,16 @@ app.delete('/api/findings/:id', (req, res) => {
 const MAX_UPLOAD = 40 * 1024 * 1024;
 // Raw body, any content-type, so screenshots upload without base64 bloat or a multipart parser.
 const rawUpload = express.raw({ type: () => true, limit: MAX_UPLOAD });
+// Content-Disposition for a stored image. Known raster types render inline; anything else (notably
+// image/svg+xml, which can carry scripts) is forced to download. The filename must be header-safe:
+// HTTP header values are latin-1, so a non-ASCII name (e.g. "şəkil.png") would make res.setHeader
+// THROW — send an ASCII fallback plus the real UTF-8 name via RFC 5987 filename*.
+function imageDisposition(mime, filename) {
+  const inlineOk = /^image\/(png|jpe?g|gif|webp|avif|bmp|x-icon)$/i.test(mime || '');
+  const clean = String(filename || 'file').replace(/[\r\n"]/g, '');
+  const ascii = clean.replace(/[^\x20-\x7e]/g, '_') || 'file';
+  return `${inlineOk ? 'inline' : 'attachment'}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(clean)}`;
+}
 app.post('/api/findings/:id/attachments', (req, res) => rawUpload(req, res, (err) => {
   // A body over the parser's limit makes express.raw throw BEFORE the handler — turn that into
   // the same friendly 413 (otherwise it surfaces as an opaque 500 and the image just vanishes).
@@ -1716,13 +1726,7 @@ app.get('/api/attachments/:id', (req, res) => {
   if (!a) return res.status(404).json({ error: 'not found' });
   res.setHeader('Content-Type', a.mime);
   res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
-  // Only known raster images render inline; anything else (notably image/svg+xml, which can carry
-  // scripts) is forced to download so it never executes as a document on our origin. nosniff + the
-  // global CSP already block script execution, but this closes the vector fully. CR/LF are stripped
-  // from the filename so it can't inject response headers.
-  const inlineOk = /^image\/(png|jpe?g|gif|webp|avif|bmp|x-icon)$/i.test(a.mime);
-  const fn = String(a.filename || 'file').replace(/[\r\n"]/g, '');
-  res.setHeader('Content-Disposition', `${inlineOk ? 'inline' : 'attachment'}; filename="${fn}"`);
+  res.setHeader('Content-Disposition', imageDisposition(a.mime, a.filename));
   res.end(Buffer.from(a.data));
 });
 app.delete('/api/attachments/:id', (req, res) => {
@@ -1758,9 +1762,7 @@ app.get('/api/notebook-images/:uid', (req, res) => {
   if (!a) return res.status(404).json({ error: 'not found' });
   res.setHeader('Content-Type', a.mime);
   res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
-  const inlineOk = /^image\/(png|jpe?g|gif|webp|avif|bmp|x-icon)$/i.test(a.mime);
-  const fn = String(a.filename || 'file').replace(/[\r\n"]/g, '');
-  res.setHeader('Content-Disposition', `${inlineOk ? 'inline' : 'attachment'}; filename="${fn}"`);
+  res.setHeader('Content-Disposition', imageDisposition(a.mime, a.filename));
   res.end(Buffer.from(a.data));
 });
 

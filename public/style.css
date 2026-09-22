@@ -1241,6 +1241,20 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 .cred-v:hover { border-color: var(--gold); color: var(--gold); }
 .cred-by { margin-top: 8px; display: flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 10px; color: var(--muted-2); }
 
+/* subdomains roll-up popup */
+.subdom-pop { overflow-y: auto; }
+.subdom-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.subdom-actions { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+.subdom-search { margin-bottom: 10px; font-family: var(--mono); }
+.subdom-list { display: flex; flex-direction: column; gap: 3px; max-height: 52vh; overflow-y: auto; }
+.subdom-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 5px; border: 1px solid transparent; }
+.subdom-row:hover { border-color: var(--line-2); background: var(--panel); }
+.subdom-host { font-family: var(--mono); font-size: 12.5px; color: var(--text); cursor: pointer; overflow-wrap: anywhere; flex: 1; }
+.subdom-host:hover { color: var(--gold); }
+.subdom-f { font-family: var(--mono); font-size: 10px; color: var(--red); flex: none; }
+.subdom-type { font-family: var(--mono); font-size: 9px; letter-spacing: .1em; color: var(--label); background: var(--void); border: 1px solid var(--line); border-radius: 3px; padding: 2px 5px; flex: none; }
+.subdom-row .ibtn { flex: none; }
+
 /* checklist popup */
 .modal.checklist-modal { width: min(920px, 94vw); max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; }
 .checklist-pop { flex: 1; min-height: 0; overflow-y: auto; padding: 0; }

@@ -38,6 +38,9 @@ const ICON = {
   key: ['M10.5 2.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7zM8 8l-5.5 5.5V15h2l4-4', 1.3],
   server: ['M2.5 4h11v3.4h-11zM2.5 8.6h11V12h-11zM4.6 5.7h.01M4.6 10.3h.01', 1.3],
   user: ['M8 8.2a2.4 2.4 0 100-4.8 2.4 2.4 0 000 4.8zM3.5 13.3c0-2.4 2-3.9 4.5-3.9s4.5 1.5 4.5 3.9', 1.3],
+  globe: ['M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13M1.8 8h12.4M8 1.5c2.4 2.5 2.4 10.5 0 13M8 1.5c-2.4 2.5-2.4 10.5 0 13', 1.2],
+  copy: ['M5.5 5.5h7v8h-7zM3.5 10.5V2.5h7v2', 1.4],
+  right: ['M6 3.5L10.5 8 6 12.5', 1.6],
 };
 function icon(name, size = 13) {
   const [d, w] = ICON[name];
@@ -770,6 +773,7 @@ async function renderProject(id) {
   const allTargets = p.assets.flatMap(f => (f.items || []).map(t => ({ ...t, grp: f.grp })));
   topActions(
     el('button', { className: 'btn', onclick: () => exportProjectMenu(id, p.name) }, icon('down', 12), 'Export'),
+    el('button', { className: 'btn', title: 'Every web domain & subdomain across this engagement', onclick: () => subdomainsModal(allTargets, p.name) }, icon('globe', 12), 'Subdomains'),
     isEditor() ? el('button', { className: 'btn', onclick: () => editProject(p, () => renderProject(id)) }, icon('edit', 12), 'Edit') : null,
     isEditor()
       ? (finished
@@ -875,6 +879,88 @@ async function renderProject(id) {
       el('span', { className: 'kicker' }, 'Targets'), el('span', { className: 'rule' }),
       isEditor() ? el('button', { className: 'btn line sm', onclick: () => addTargetToProject(id) }, '+ Add target') : null),
     body));
+}
+
+// A read-only roll-up of every web domain & subdomain in the engagement — the hostnames of all
+// web/API/domain targets and sub-targets, IPs excluded, deduped and grouped so subdomains sit under
+// their parent. Meant for a quick eyeball of the domain surface and for feeding other tools: copy
+// all, or download the list as a .txt (one host per line) or .json (host + target metadata).
+function subdomainsModal(targets, projectName) {
+  // A web/API/domain target whose label resolves to a hostname with letters is a domain, not a bare
+  // IP — that's exactly the "web (no IP)" surface. Dedupe by host, keeping the first target seen.
+  const seen = new Map();
+  for (const t of targets || []) {
+    if (!HOST_TYPES.has(t.type)) continue;
+    const h = assetHost(t.label);
+    if (!h || !/[a-z]/.test(h)) continue;
+    if (!seen.has(h)) seen.set(h, { host: h, target: t.label, type: t.type, id: t.id, findings: t.findings || 0 });
+  }
+  // Sort by reversed host so subdomains of the same domain cluster together (…example.com.www).
+  const revKey = (h) => h.split('.').reverse().join('.');
+  const all = [...seen.values()].sort((a, b) => revKey(a.host).localeCompare(revKey(b.host)));
+  // How many listed hosts this one is a subdomain of — used only to indent for a light tree feel.
+  const depthOf = (h) => Math.min(4, all.reduce((n, o) => n + (o.host !== h && h.endsWith('.' + o.host) ? 1 : 0), 0));
+
+  const safe = (projectName || 'engagement').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'engagement';
+  const asText = () => all.map(x => x.host).join('\n') + (all.length ? '\n' : '');
+  const asJson = () => JSON.stringify(all.map(({ host, target, type, findings }) => ({ host, target, type, findings })), null, 2);
+
+  const root = $('#modalRoot');
+  const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('.lightbox')) { e.preventDefault(); close(); } };
+  const close = () => { document.removeEventListener('keydown', onKey, true); root.replaceChildren(); };
+
+  const countEl = el('span', { className: 'muted small' });
+  const listWrap = el('div', { className: 'subdom-list' });
+  const search = el('input', { className: 'subdom-search', placeholder: 'Filter domains…', autocomplete: 'off', spellcheck: false });
+
+  const paint = () => {
+    const q = search.value.trim().toLowerCase();
+    const rows = q ? all.filter(x => x.host.includes(q) || x.target.toLowerCase().includes(q)) : all;
+    countEl.textContent = all.length
+      ? `${rows.length}${q ? ' of ' + all.length : ''} domain${all.length === 1 ? '' : 's'}`
+      : 'no domains';
+    if (!all.length) {
+      listWrap.replaceChildren(el('div', { className: 'pmeta', style: 'padding:18px 2px' },
+        'No web domains yet — only web / API / domain targets appear here (IP targets are excluded).'));
+      return;
+    }
+    if (!rows.length) {
+      listWrap.replaceChildren(el('div', { className: 'pmeta', style: 'padding:18px 2px' }, 'No domains match that filter.'));
+      return;
+    }
+    listWrap.replaceChildren(...rows.map(x => {
+      const d = q ? 0 : depthOf(x.host);
+      return el('div', { className: 'subdom-row', style: d ? `padding-left:${8 + d * 16}px` : '' },
+        el('code', { className: 'subdom-host', title: x.target !== x.host ? x.target + ' — click to copy' : 'Click to copy',
+          onclick: () => { navigator.clipboard?.writeText(x.host); toast('Copied'); } }, x.host),
+        x.findings ? el('span', { className: 'subdom-f', title: x.findings + ' finding' + (x.findings === 1 ? '' : 's') }, '⚑ ' + x.findings) : null,
+        el('span', { className: 'subdom-type' }, x.type.toUpperCase()),
+        el('button', { className: 'ibtn', title: 'Open target', onclick: () => { close(); location.hash = '/target/' + x.id; } }, icon('right', 12)));
+    }));
+  };
+  search.oninput = paint;
+
+  const bodyEl = el('div', { className: 'modal-body subdom-pop' },
+    el('div', { className: 'subdom-bar' },
+      countEl,
+      el('div', { className: 'subdom-actions' },
+        el('button', { type: 'button', className: 'btn line sm', title: 'Copy every domain (newline-separated)',
+          onclick: () => { if (!all.length) return; navigator.clipboard?.writeText(asText()); toast(all.length + ' domain' + (all.length === 1 ? '' : 's') + ' copied'); } }, icon('copy', 12), 'Copy all'),
+        el('button', { type: 'button', className: 'btn line sm', title: 'Download as a plain text list',
+          onclick: () => { if (all.length) download(asText(), `subdomains-${safe}.txt`, 'text/plain'); } }, icon('down', 12), '.txt'),
+        el('button', { type: 'button', className: 'btn line sm', title: 'Download as JSON (host + target metadata)',
+          onclick: () => { if (all.length) download(asJson(), `subdomains-${safe}.json`, 'application/json'); } }, icon('down', 12), '.json'))),
+    all.length ? search : null,
+    listWrap);
+
+  const panel = el('div', { className: 'modal wide' },
+    el('div', { className: 'modal-head' }, el('span', { className: 'modal-kicker' }, 'Subdomains'),
+      el('button', { type: 'button', className: 'modal-x', title: 'Close', onclick: close }, icon('x'))),
+    bodyEl);
+  root.replaceChildren(el('div', { className: 'overlay' }, panel));
+  document.addEventListener('keydown', onKey, true);
+  paint();
+  search.focus();
 }
 
 // Every finding across the engagement — the whole team's evidence log for the project, the same

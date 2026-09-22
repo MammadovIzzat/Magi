@@ -248,6 +248,26 @@ checks.push(['the findings page is vulns-only (no note/cred tabs)', await ev(`
   const p = (await (await fetch("/api/projects")).json())[0];
   location.hash = "#/findings/" + p.id; await new Promise(r => setTimeout(r, 1200));
   return document.querySelectorAll(".pf-filter .evtab").length === 0 && !!document.querySelector(".pf-head")`)]);
+// The engagement's Subdomains roll-up lists every web/API/domain host (IP targets excluded), deduped,
+// with copy / .txt / .json export controls.
+checks.push(['subdomains roll-up lists web domains and excludes IPs', await ev(`
+  try {
+    const p = (await (await fetch("/api/projects")).json())[0];
+    const d = await (await fetch("/api/projects/" + p.id)).json();
+    const fid = d.assets[0].id;
+    const mk = (label, type) => fetch("/api/assets/" + fid + "/targets", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type, label }) });
+    await mk("https://api.smoke.test/v1", "web");   // a subdomain host -> included
+    await mk("http://10.1.1.9:8080", "web");        // a web target whose label is a bare IP -> excluded
+    location.hash = "#/project/" + p.id; await new Promise(r => setTimeout(r, 1200));
+    [...document.querySelectorAll("#topActions .btn")].find(b => /Subdomains/.test(b.textContent))?.click();
+    await new Promise(r => setTimeout(r, 400));
+    const hosts = [...document.querySelectorAll(".subdom-host")].map(e => e.textContent);
+    const hasBoth = hosts.includes("smoke.test") && hosts.includes("api.smoke.test");
+    const noIp = !hosts.some(h => h.includes("10.1.1.9"));
+    const exports = document.querySelectorAll(".subdom-actions button").length === 3;
+    document.querySelector(".modal-x")?.click();
+    return hasBoth && noIp && exports;
+  } catch (e) { return false; }`)]);
 checks.push(['template library paints', await ev(`
   location.hash = "#/editor"; await new Promise(r => setTimeout(r, 1400));
   return document.querySelectorAll(".tpl-type").length > 0`)]);

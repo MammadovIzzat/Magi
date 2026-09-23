@@ -209,6 +209,50 @@ checks.push(['checklist popup paints', await ev(`
   document.querySelector(".checklist-open")?.click(); await new Promise(r => setTimeout(r, 1000));
   document.querySelectorAll(".checklist-pop .ghdr")[0]?.click(); await new Promise(r => setTimeout(r, 900));
   return document.querySelectorAll(".checklist-pop .item").length > 0`)]);
+// A retest target (no checklist) can still be assigned — the assignee control renders on its page and
+// the assignment persists (regression: the retest/PoC branches returned before building the control).
+checks.push(['retest targets expose an assignee control', await ev(`
+  try {
+    const p = (await (await fetch("/api/projects")).json())[0];
+    const j = async (u, o) => (await fetch(u, { headers: { "content-type": "application/json" }, ...o })).json();
+    const rf = await j("/api/projects/" + p.id + "/assets", { method: "POST", body: JSON.stringify({ grp: "retest", label: "retest folder" }) });
+    const rt = await j("/api/assets/" + rf.id + "/targets", { method: "POST", body: JSON.stringify({ type: "retest", label: "retest-me" }) });
+    location.hash = "#/target/" + rt.id; await new Promise(r => setTimeout(r, 1200));
+    const isRetest = /Retest/i.test(document.querySelector(".page .kicker")?.textContent || "");
+    const hasCtl = !!document.querySelector(".assign .assign-sel .sel-trigger");
+    if (!isRetest || !hasCtl) return false;
+    await fetch("/api/targets/" + rt.id + "/assignee", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ assignee: "admin" }) });
+    const saved = await (await fetch("/api/targets/" + rt.id)).json();
+    return (saved.assignee || "").includes("admin");
+  } catch (e) { return false; }`)]);
+// Pasting a multi-line / comma list of subdomains into a spawn box creates one sub-target per host.
+checks.push(['paste a list of subdomains spawns a sub-target each', await ev(`
+  try {
+    const p = (await (await fetch("/api/projects")).json())[0];
+    const d = await (await fetch("/api/projects/" + p.id)).json();
+    const f = await (await fetch("/api/assets/" + d.assets[0].id)).json();
+    const web = f.targets.find(t => t.type === "web" && /smoke\\.test/.test(t.label));
+    location.hash = "#/target/" + web.id; await new Promise(r => setTimeout(r, 1200));
+    document.querySelector(".checklist-open")?.click(); await new Promise(r => setTimeout(r, 900));
+    let inp = null;
+    for (let i = 0; i < 25; i++) {
+      inp = document.querySelector(".subspawn .sub-input");
+      if (inp) break;
+      const h = [...document.querySelectorAll(".checklist-pop .ghdr")].find(x => !x.classList.contains("open"));
+      if (!h) break; h.click(); await new Promise(r => setTimeout(r, 220));
+    }
+    if (!inp) return false;
+    const dt = new DataTransfer(); dt.setData("text", "aa.smoke.test\\nbb.smoke.test, cc.smoke.test");
+    inp.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    await new Promise(r => setTimeout(r, 60));
+    const normalized = inp.value.split(",").map(s => s.trim()).filter(Boolean).length === 3;
+    const btn = inp.closest(".sub-add").querySelector("button");
+    const label3 = /Add 3 sub-targets/.test(btn.textContent);
+    btn.click(); await new Promise(r => setTimeout(r, 1800));
+    const f2 = await (await fetch("/api/assets/" + d.assets[0].id)).json();
+    const made = ["aa.smoke.test", "bb.smoke.test", "cc.smoke.test"].every(hn => f2.targets.some(t => t.label === hn && t.type === "web"));
+    return normalized && label3 && made;
+  } catch (e) { return false; }`)]);
 // Grading a vuln happens in the grade dialog (admins/editors), which carries a full CVSS 3.1 editor
 // (segmented controls, live score) whose applied vector sets the severity. This local admin grades.
 checks.push(['CVSS grade dialog: calculator opens, scores, applies a vector', await ev(`

@@ -1283,6 +1283,23 @@ async function renderTarget(id) {
     { label: 'engagements', go: () => location.hash = '' },
     { label: a.project?.name || 'engagement', go: () => location.hash = `/project/${pid}` },
     { label: a.label }]);
+
+  // "Who's on this target" — a display-only assignment anyone can set; it doesn't gate editing.
+  // Built up here (before the retest/PoC branches) so every target kind can be assigned, not just
+  // the ones that carry a checklist.
+  const assignCtl = multiAssign({
+    selected: assigneeList(a.assignee),
+    loadPeople: () => loadAssignees(),
+    onChange: async (list) => {
+      try { const r = await api('/targets/' + id + '/assignee', { method: 'PATCH', body: { assignee: list } }); a.assignee = r?.assignee || null; }
+      catch (e) { toast(e.message); }
+    },
+  });
+  // One reusable "Assignees: …" block. assignCtl is a single node, so only the branch that actually
+  // renders may mount it — safe because exactly one target-kind branch runs per render.
+  const assignBlock = (style) => el('div', { className: 'assign', style: style || '' },
+    el('span', { className: 'assign-lbl' }, icon('user', 12), 'Assignees'), assignCtl);
+
   // Retest targets carry no checklist — just remediation items (a finding per re-checked issue).
   if (a.type === 'retest') {
     topActions(
@@ -1299,6 +1316,7 @@ async function renderTarget(id) {
       el('div', { className: 'kicker' }, 'Retest'),
       el('h1', {}, a.label),
       el('div', { className: 'lede' }, `${a.findings.length} item${a.findings.length === 1 ? '' : 's'} · ${counts.fixed} fixed · ${counts.half_fixed} partial · ${counts.not_fixed} not fixed`),
+      assignBlock('margin:8px 0 2px'),
       el('div', { className: 'srule' }, el('span', { className: 'kicker' }, 'Remediation items'), el('span', { className: 'rule' }),
         el('button', { className: 'btn line sm', onclick: () => addFinding(id, true) }, '+ Add')),
       list));
@@ -1320,6 +1338,7 @@ async function renderTarget(id) {
       el('div', { className: 'kicker' }, 'Proof of concept'),
       el('h1', {}, a.label),
       el('div', { className: 'lede' }, `${a.findings.length} finding${a.findings.length === 1 ? '' : 's'}`),
+      assignBlock('margin:8px 0 2px'),
       el('div', { className: 'srule' }, el('span', { className: 'kicker' }, 'Findings'), el('span', { className: 'rule' }),
         el('button', { className: 'btn line sm', onclick: () => addFinding(id, false) }, '+ Add')),
       list));
@@ -1337,15 +1356,6 @@ async function renderTarget(id) {
   const mayContribute = isEditor() || meAssigned || !roster.length;   // add notes/creds/findings (#10)
   const mayEditChecklist = isEditor() || meAssigned;                  // add/edit/delete checklist items (#7)
 
-  // "Who's on this target" — a display-only assignment anyone can set; it doesn't gate editing.
-  const assignCtl = multiAssign({
-    selected: assigneeList(a.assignee),
-    loadPeople: () => loadAssignees(),
-    onChange: async (list) => {
-      try { const r = await api('/targets/' + id + '/assignee', { method: 'PATCH', body: { assignee: list } }); a.assignee = r?.assignee || null; }
-      catch (e) { toast(e.message); }
-    },
-  });
   const checklistBtn = el('button', { className: 'checklist-open', title: 'Open the checklist', onclick: () => openChecklist(id) },
     icon('check', 14), el('span', { className: 'clk-lbl' }, 'Checklist'),
     actionable.length ? el('span', { className: 'clk-count' }, `${handled}/${actionable.length}`) : null,
@@ -1950,16 +1960,42 @@ function renderItem(it, assetId, num, depth, childrenBy = {}, spawnedByItem = {}
       }
       wrap.append(lst);
     }
-    const inp = el('input', { className: 'sub-input', placeholder: `add a ${it.spawn_type === 'web' ? 'subdomain' : it.spawn_type} — opens its own full checklist` });
+    // Add one sub-target — or many at once: paste a list (newline / comma / space separated) and
+    // each host spins up its own sub-target. Dupes within the paste are collapsed.
+    const splitHosts = (s) => [...new Set(String(s || '').split(/[\s,;]+/).map(x => x.trim()).filter(Boolean))];
+    const noun = it.spawn_type === 'web' ? 'subdomain' : it.spawn_type;
+    const inp = el('input', { className: 'sub-input', autocomplete: 'off', spellcheck: false,
+      placeholder: `add a ${noun} — or paste a list (one per line / comma-separated) to add many` });
+    const lbl = el('span', { className: 'sub-add-lbl' }, 'Add sub-target');
+    const addBtn = el('button', { className: 'btn line sm' }, icon('plus', 12), lbl);
+    const syncLabel = () => { const n = splitHosts(inp.value).length; lbl.textContent = n > 1 ? `Add ${n} sub-targets` : 'Add sub-target'; };
     const add = async () => {
-      const label = inp.value.trim(); if (!label) return;
-      try { await api('/items/' + it.id + '/spawn-target', { method: 'POST', body: { label } });
-        inp.value = ''; toast(`Added ${it.spawn_type} target · ${label}`); rerender();
-      } catch (e) { toast(e.message); }
+      const labels = splitHosts(inp.value);
+      if (!labels.length) return;
+      addBtn.disabled = true; inp.disabled = true;
+      let ok = 0; const failed = [];
+      for (const label of labels) {
+        try { await api('/items/' + it.id + '/spawn-target', { method: 'POST', body: { label } }); ok++; }
+        catch { failed.push(label); }
+      }
+      addBtn.disabled = false; inp.disabled = false; inp.value = ''; syncLabel();
+      if (ok) toast(`Added ${ok} ${it.spawn_type} target${ok === 1 ? '' : 's'}` + (failed.length ? ` · ${failed.length} skipped` : ''));
+      else toast(failed.length ? `Couldn’t add: ${failed.slice(0, 3).join(', ')}${failed.length > 3 ? '…' : ''}` : 'Nothing to add');
+      rerender();
+    };
+    inp.oninput = syncLabel;
+    // A single-line <input> flattens pasted newlines, so intercept a multi-value paste and normalise
+    // it into a comma list in the field (the count updates); a lone value pastes normally.
+    inp.onpaste = (e) => {
+      const text = (e.clipboardData || window.clipboardData)?.getData('text') || '';
+      if (!/[\n\r,;]/.test(text)) return;
+      e.preventDefault();
+      inp.value = [...new Set([...splitHosts(inp.value), ...splitHosts(text)])].join(', ');
+      syncLabel();
     };
     inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } };
-    wrap.append(el('div', { className: 'sub-add' }, inp,
-      el('button', { className: 'btn line sm', onclick: add }, icon('plus', 12), 'Add sub-target')));
+    addBtn.onclick = add;
+    wrap.append(el('div', { className: 'sub-add' }, inp, addBtn));
     body.append(wrap);
   }
 

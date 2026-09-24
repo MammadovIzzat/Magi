@@ -292,6 +292,22 @@ checks.push(['the findings page is vulns-only (no note/cred tabs)', await ev(`
   const p = (await (await fetch("/api/projects")).json())[0];
   location.hash = "#/findings/" + p.id; await new Promise(r => setTimeout(r, 1200));
   return document.querySelectorAll(".pf-filter .evtab").length === 0 && !!document.querySelector(".pf-head")`)]);
+// Marking a finding done re-renders the list in place: it must stay on the findings page (not jump
+// away) and the scroll-preservation path must be active (view is tagged for the same-page check).
+checks.push(['marking a finding done keeps you on the findings page', await ev(`
+  try {
+    const p = (await (await fetch("/api/projects")).json())[0];
+    location.hash = "#/findings/" + p.id; await new Promise(r => setTimeout(r, 1000));
+    const tick = document.querySelector(".pf-item .reptick");
+    if (!tick) return false;
+    const wasOn = tick.classList.contains("on");
+    tick.click(); await new Promise(r => setTimeout(r, 500));
+    const stillFindings = location.hash.includes("/findings/") && !!document.querySelector(".pf-list");
+    const scrollTracked = document.querySelector("#view")?.dataset.view === "findings-" + p.id;
+    const now = document.querySelector(".pf-item .reptick");
+    const toggled = !!now && now.classList.contains("on") !== wasOn;
+    return stillFindings && scrollTracked && toggled;
+  } catch (e) { return false; }`)]);
 // The engagement's Subdomains roll-up lists every web/API/domain host (IP targets excluded), deduped,
 // with copy / .txt / .json export controls.
 checks.push(['subdomains roll-up lists web domains and excludes IPs', await ev(`
@@ -362,7 +378,11 @@ checks.push(['admin tabs + ranking page paint', await ev(`
       { author: "ana", role: "worker", findings: 7, poc: 3, projects: 2, score: 41, types: { web: 4, poc: 3 }, topType: "web", sev: { critical: 2, high: 3, medium: 2, low: 0, info: 0, none: 0 } },
       { author: "bob", role: "editor", findings: 2, poc: 0, projects: 1, score: 4, types: { ad: 2 }, topType: "ad", sev: { critical: 0, high: 0, medium: 1, low: 1, info: 0, none: 0 } }],
       totals: { operators: 2, findings: 9, unattributed: 1 } },
-    "/api/admin/requests": [], "/api/admin/users": [], "/api/admin/enroll-codes": [],
+    "/api/admin/requests": [], "/api/admin/enroll-codes": [],
+    "/api/admin/users": [{ id: 1, username: "ana", role: "worker", created_at: "2026-01-01", mfa_enabled: 1 }],
+    "/api/admin/users/1/tasks": { user: { id: 1, username: "ana", role: "worker", created_at: "2026-01-01", mfa_enabled: 1 },
+      projects: [{ id: 9, name: "Acme Q3", status: "active" }],
+      targets: [{ id: 5, type: "web", label: "https://app.x", project: "Acme Q3", total: 10, handled: 10, flags: 0, findings: 2, done: true }], authored: 3 },
     "/api/admin/devices": [], "/api/admin/audit": [], "/api/admin/backup": { config: {}, backups: [] },
   };
   window.fetch = (u, o) => {
@@ -381,11 +401,18 @@ checks.push(['admin tabs + ranking page paint', await ev(`
   const usersActive = /users/i.test(document.querySelector(".admtab.on")?.textContent || "");
   // Users page has "New operator"; the connection requests + codes moved to the Devices page.
   const usersHasCreate = [...document.querySelectorAll(".admbody button")].some(b => /new operator/i.test(b.textContent));
+  // the per-operator Details dialog shows their workload (summary tiles + engagements + targets)
+  [...document.querySelectorAll(".admbody button")].find(b => /details/i.test(b.textContent))?.click();
+  await new Promise(r => setTimeout(r, 400));
+  const udOk = document.querySelectorAll(".ud-summary .ud-tile").length >= 3
+    && /Acme Q3/.test(document.querySelector(".ud-list")?.textContent || "")
+    && !!document.querySelector(".ud-status.done");
+  document.querySelector(".modal-x")?.click(); await new Promise(r => setTimeout(r, 150));
   location.hash = "#/admin/devices"; await new Promise(r => setTimeout(r, 700));
   const devicesText = document.querySelector(".admbody")?.textContent || "";
   const devicesHasCodesAndRequests = /connection requests/i.test(devicesText) && /one-time codes/i.test(devicesText);
   window.fetch = real;
-  return rankRows === 2 && tabs === 6 && activeIsRanking && usersActive && hasSev && hasScore && usersHasCreate && devicesHasCodesAndRequests`)]);
+  return rankRows === 2 && tabs === 6 && activeIsRanking && usersActive && hasSev && hasScore && usersHasCreate && udOk && devicesHasCodesAndRequests`)]);
 // Regression: an MFA-enabled account returns 401 {mfa:'required'} on password-only login. The
 // login flow must READ that challenge and show the code screen — not treat the 401 as a hard error.
 // (This standalone server never enforces MFA, so stub fetch to return the challenge just for the login.)

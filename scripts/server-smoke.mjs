@@ -563,6 +563,34 @@ check('grading removes it from the queue', !queue2.json.some(f => f.id === ung.j
 const ungWorker = await req('GET', '/api/ungraded', { token: workerToken, device: dev1 });
 check('a worker cannot read the grading queue', ungWorker.status === 403);
 
+// ---- engagement assignment grants a worker TARGET rights (add/edit/delete), not engagement-detail
+//      rights. Uses a fresh engagement so it doesn't disturb the target-ownership tests above. ----
+const eng = (await req('POST', '/api/projects', { token: adminTok, body: { name: 'Assigned Eng', priority: 5 } })).json;
+const engFolder = (await req('POST', `/api/projects/${eng.id}/assets`, { token: adminTok, body: { grp: 'external', label: 'Ext' } })).json;
+const beforeAssign = await req('POST', `/api/assets/${engFolder.id}/targets`, { token: workerToken, device: dev1, body: { type: 'web', label: 'https://before.test' } });
+check('a worker NOT on an engagement cannot add a target to it', beforeAssign.status === 403);
+const engAssign = await req('PATCH', `/api/projects/${eng.id}/assignee`, { token: adminTok, body: { assignee: 'ana' } });
+check('admin assigns an engagement to a worker', engAssign.status === 200 && (engAssign.json?.assignee || '').includes('ana'));
+const engAddT = await req('POST', `/api/assets/${engFolder.id}/targets`, { token: workerToken, device: dev1, body: { type: 'web', label: 'https://after.test' } });
+check('an engagement assignee (worker) CAN add a target', engAddT.status === 201 && !!engAddT.json?.id);
+const engDelT = await req('DELETE', `/api/targets/${engAddT.json.id}`, { token: workerToken, device: dev1 });
+check('an engagement assignee (worker) CAN delete a target', engDelT.status === 200);
+const engAddF = await req('POST', `/api/projects/${eng.id}/assets`, { token: workerToken, device: dev1, body: { grp: 'internal', label: 'Int' } });
+check('an engagement assignee (worker) CAN add a target folder', engAddF.status === 201);
+const engDet = await req('PATCH', `/api/projects/${eng.id}`, { token: workerToken, device: dev1, body: { client: 'Nope' } });
+check('an assigned worker still cannot edit engagement details', engDet.status === 403);
+const engOv = await req('PATCH', `/api/projects/${eng.id}/overview`, { token: workerToken, device: dev1, body: { overview: 'nope' } });
+check('an assigned worker still cannot edit the engagement overview', engOv.status === 403);
+
+// ---- admin: one operator's workload (their engagements, targets and recorded vulns) ----
+const anaId = (await req('GET', '/api/admin/users', { token: adminTok })).json.find(u => u.username === 'ana')?.id;
+const anaTasks = await req('GET', `/api/admin/users/${anaId}/tasks`, { token: adminTok });
+check('admin can read an operator’s tasks', anaTasks.status === 200 && Array.isArray(anaTasks.json?.targets) && Array.isArray(anaTasks.json?.projects));
+check('the tasks view lists the engagement assigned to the operator', (anaTasks.json.projects || []).some(p => p.id === eng.id));
+check('the tasks view lists a target assigned to the operator', (anaTasks.json.targets || []).some(t => t.id === webT.id));
+check('the tasks view counts the operator’s recorded vulnerabilities', (anaTasks.json.authored || 0) >= 2);
+check('a worker cannot read another operator’s tasks', (await req('GET', `/api/admin/users/${anaId}/tasks`, { token: workerToken, device: dev1 })).status === 403);
+
 // ---- report ----
 let bad = 0;
 for (const [name, ok] of checks) { console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${name}`); if (!ok) bad++; }

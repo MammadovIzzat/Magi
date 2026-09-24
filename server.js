@@ -433,11 +433,27 @@ const requireEdit = (req, res, next) =>
 // based; a standalone owner or a linked editor/admin always passes.
 const assigneesOf = (assetId) => String((q(`SELECT assignee FROM assets WHERE id=?`).get(assetId) || {}).assignee || '')
   .split(',').map(s => s.trim()).filter(Boolean);
+// An engagement's assignees may WORK the whole engagement — add / edit / remove its targets and
+// work any of them — alongside editors and admins. They may NOT change engagement-level details or
+// the overview (that stays with editors/admins). Username based.
+const projectAssigneesOf = (projectId) => String((q(`SELECT assignee FROM projects WHERE id=?`).get(projectId) || {}).assignee || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+async function canWorkProject(req, projectId) {
+  if (await canEdit(req)) return true;
+  const u = currentUser(req)?.username;
+  return !!u && !!projectId && projectAssigneesOf(projectId).includes(u);
+}
 async function canWorkTarget(req, assetId) {
   if (await canEdit(req)) return true;
   const u = currentUser(req)?.username;
-  return !!u && assigneesOf(assetId).includes(u);
+  if (!u) return false;
+  if (assigneesOf(assetId).includes(u)) return true;
+  // an engagement assignee may work every target in that engagement
+  const pid = (q(`SELECT project_id FROM assets WHERE id=?`).get(assetId) || {}).project_id;
+  return !!pid && projectAssigneesOf(pid).includes(u);
 }
+// 403 body for a structural change (add/edit/remove targets) attempted without rights.
+const NO_WORK_PROJECT = { error: 'you must be an editor, admin, or assigned to this engagement to change its targets' };
 
 app.get('/api/me', (req, res) => {
   const u = currentUser(req);
@@ -643,6 +659,30 @@ app.delete('/api/admin/enroll-codes/:id', requireAdmin, (req, res) => {
 });
 app.get('/api/admin/users', requireAdmin, (req, res) => {
   res.json(q(`SELECT id, username, role, created_at, mfa_enabled FROM users ORDER BY id`).all());
+});
+// One operator's workload: the engagements and targets assigned to them (with per-target progress
+// and a finished flag), plus how many vulnerabilities they've recorded. Assignee columns hold a
+// comma-joined list, so narrow with LIKE then match membership exactly.
+app.get('/api/admin/users/:id/tasks', requireAdmin, (req, res) => {
+  const u = q(`SELECT id, username, role, created_at, mfa_enabled FROM users WHERE id=?`).get(req.params.id);
+  if (!u) return res.status(404).json({ error: 'no such user' });
+  const uname = u.username;
+  const isMember = (csv) => String(csv || '').split(',').map(s => s.trim()).includes(uname);
+  const like = '%' + uname + '%';
+  const projects = q(`SELECT id, name, assignee, status FROM projects WHERE assignee LIKE ? ORDER BY name`).all(like)
+    .filter(p => isMember(p.assignee)).map(p => ({ id: p.id, name: p.name, status: p.status || 'active' }));
+  const targets = q(`SELECT a.id, a.type, a.label, a.assignee, a.project_id, p.name AS project,
+      (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group')) AS total,
+      (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group') AND i.status IN ('done','na','yes','no')) AS handled,
+      (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.status='flag') AS flags,
+      (SELECT COUNT(*) FROM findings f WHERE f.asset_id=a.id AND f.kind='vuln') AS findings
+      FROM assets a JOIN projects p ON p.id=a.project_id WHERE a.assignee LIKE ? ORDER BY p.name, a.label`).all(like)
+    .filter(t => isMember(t.assignee))
+    .map(t => ({ id: t.id, type: t.type, label: t.label, project: t.project, project_id: t.project_id,
+      total: t.total, handled: t.handled, flags: t.flags, findings: t.findings,
+      done: t.total > 0 && t.handled >= t.total }));
+  const authored = q(`SELECT COUNT(*) c FROM findings WHERE author=? AND kind='vuln'`).get(uname).c;
+  res.json({ user: u, projects, targets, authored });
 });
 // Admin creates an operator account (username + initial password + role). Accounts exist
 // independently of devices — an operator then signs in on any connected device. Share the
@@ -1282,9 +1322,10 @@ app.get('/api/projects/:id', (req, res) => {
 });
 // Add a target straight to an engagement — the type's engagement-group folder is created or
 // reused automatically, so users never deal with the folder layer.
-app.post('/api/projects/:id/targets', requireEdit, (req, res) => {
+app.post('/api/projects/:id/targets', async (req, res) => {
   const p = q(`SELECT id FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'project not found' });
+  if (!(await canWorkProject(req, p.id))) return res.status(403).json(NO_WORK_PROJECT);
   const { type, label, metadata } = req.body || {};
   const t = q(`SELECT type, soon, grp FROM tpl_types WHERE type=?`).get(type || '');
   if (!t) return res.status(400).json({ error: 'unknown target type' });
@@ -1323,9 +1364,10 @@ function resolveLinks(refsJson) {
   return refUids(refsJson).map(uid => q(`SELECT f.uid, f.title, f.severity, a.label AS target
     FROM findings f JOIN assets a ON a.id=f.asset_id WHERE f.uid=?`).get(uid)).filter(Boolean);
 }
-app.post('/api/projects/:id/assets', requireEdit, (req, res) => {
+app.post('/api/projects/:id/assets', async (req, res) => {
   const p = q(`SELECT id FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'project not found' });
+  if (!(await canWorkProject(req, p.id))) return res.status(403).json(NO_WORK_PROJECT);
   const { grp, label } = req.body || {};
   if (!GRP_KEYS.has(grp)) return res.status(400).json({ error: 'unknown engagement type' });
   if (!selectableGroups().has(grp)) return res.status(400).json({ error: 'that engagement type is coming soon' });
@@ -1349,18 +1391,20 @@ app.get('/api/assets/:id', (req, res) => {
   res.json({ ...f, project, targets: targets.map(assetSummary) });
 });
 
-app.delete('/api/assets/:id', requireEdit, (req, res) => {
-  const f = q(`SELECT id FROM folders WHERE id=?`).get(req.params.id);
+app.delete('/api/assets/:id', async (req, res) => {
+  const f = q(`SELECT id, project_id FROM folders WHERE id=?`).get(req.params.id);
   if (!f) return res.status(404).json({ error: 'not found' });
+  if (!(await canWorkProject(req, f.project_id))) return res.status(403).json(NO_WORK_PROJECT);
   const targets = q(`SELECT COUNT(*) c FROM assets WHERE folder_id=?`).get(f.id).c;
   q(`DELETE FROM folders WHERE id=?`).run(f.id);   // cascades targets -> items/findings
   res.json({ ok: true, targets });
 });
 
 // ---- targets (the checklist-bearing things inside an asset) ----
-app.post('/api/assets/:id/targets', requireEdit, (req, res) => {
+app.post('/api/assets/:id/targets', async (req, res) => {
   const f = q(`SELECT * FROM folders WHERE id=?`).get(req.params.id);
   if (!f) return res.status(404).json({ error: 'asset not found' });
+  if (!(await canWorkProject(req, f.project_id))) return res.status(403).json(NO_WORK_PROJECT);
   const { type, label, metadata } = req.body || {};
   const t = q(`SELECT type, soon, grp FROM tpl_types WHERE type=?`).get(type || '');
   if (!t) return res.status(400).json({ error: 'unknown target type' });
@@ -1438,9 +1482,10 @@ app.get('/api/assignees', async (req, res) => {
   res.json(rows);
 });
 
-app.delete('/api/targets/:id', requireEdit, (req, res) => {
+app.delete('/api/targets/:id', async (req, res) => {
   const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'not found' });
+  if (!(await canWorkTarget(req, a.id))) return res.status(403).json(NO_WORK_PROJECT);
   const items = q(`SELECT COUNT(*) c FROM items WHERE asset_id=?`).get(a.id).c;
   const findings = q(`SELECT COUNT(*) c FROM findings WHERE asset_id=?`).get(a.id).c;
   q(`DELETE FROM assets WHERE id=?`).run(a.id);

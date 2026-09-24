@@ -226,6 +226,9 @@ function isAdmin() { return (LINK?.linked ? LINK.link?.role : ME?.role) === 'adm
 // Editors (and admins) may create/edit/delete engagements, targets and checklist structure.
 // Admin-only actions (templates, the Admin panel, encryption) stay on isAdmin().
 function isEditor() { const r = LINK?.linked ? LINK.link?.role : ME?.role; return r === 'admin' || r === 'editor'; }
+// A worker assigned to an engagement may add / edit / remove its targets (and assign them), but not
+// touch engagement-level details or the overview — those stay with editors and admins.
+function canWorkProjectC(p) { return isEditor() || (!!CURRENT_USER && assigneeList(p?.assignee).includes(CURRENT_USER)); }
 
 // ---------- modal ----------
 // kicker + title + optional note, fields, optional danger box, gold/red CTA
@@ -814,15 +817,21 @@ async function renderProjectOverview(id) {
   const bigv = (v, cls) => el('span', { className: 'stat-value ' + (cls || '') }, String(v));
   const srow = (v, sub, cls) => el('div', { className: 'stat-row' }, bigv(v, cls), sub ? el('span', { className: 'stat-sub' }, sub) : null);
 
-  // Engagement assignees — display only, anyone may set them (mirrors a target's control).
-  const assignCtl = multiAssign({
-    selected: assigneeList(p.assignee),
-    loadPeople: () => loadAssignees(),
-    onChange: async (list) => {
-      try { const r = await api('/projects/' + id + '/assignee', { method: 'PATCH', body: { assignee: list } }); p.assignee = r?.assignee || null; }
-      catch (e) { toast(e.message); }
-    },
-  });
+  // Engagement assignees — set by editors/admins (assigning WHO owns an engagement is an
+  // engagement-level decision). A worker sees who's on it, read-only, and works its targets.
+  const roster = assigneeList(p.assignee);
+  const assignCtl = isEditor()
+    ? multiAssign({
+      selected: roster,
+      loadPeople: () => loadAssignees(),
+      onChange: async (list) => {
+        try { const r = await api('/projects/' + id + '/assignee', { method: 'PATCH', body: { assignee: list } }); p.assignee = r?.assignee || null; }
+        catch (e) { toast(e.message); }
+      },
+    })
+    : el('span', { className: 'tassign' + (roster.length ? ' on' : '') }, ...(roster.length
+      ? roster.slice(0, 5).map(avatarSm).concat(roster.length > 5 ? [el('span', { className: 'tassign-more' }, '+' + (roster.length - 5))] : [])
+      : [el('span', { className: 'assign-none' }, 'Unassigned')]));
 
   const dateRange = fmtDateRange(p.start_date, p.end_date);
   const overviewEditor = notebookEditor(id, p.overview || '', isEditor(),
@@ -863,15 +872,16 @@ async function renderProject(id) {
     { label: p.name, go: () => location.hash = `/project/${id}` }, { label: 'Targets' }]);
   // Every target across the engagement (the folders are just kind-groups under the hood now).
   const allTargets = p.assets.flatMap(f => (f.items || []).map(t => ({ ...t, grp: f.grp })));
+  const mayWork = canWorkProjectC(p); // editors/admins, or a worker assigned to this engagement
   topActions(
     el('button', { className: 'btn', onclick: () => location.hash = `/project/${id}` }, '‹ Overview'),
     el('button', { className: 'btn', title: 'Every web domain & subdomain across this engagement', onclick: () => subdomainsModal(allTargets, p.name) }, icon('globe', 12), 'Subdomains'),
-    isEditor() ? el('button', { className: 'btn gold', onclick: () => addTargetToProject(id) }, icon('plus', 12), 'Add target') : null);
+    mayWork ? el('button', { className: 'btn gold', onclick: () => addTargetToProject(id) }, icon('plus', 12), 'Add target') : null);
 
   const targetRow = (a, depth = 0, kids = 0) => {
     const t = TYPES.find(x => x.type === a.type) || {};
     const cov = pct(a.handled, a.total);
-    const del = isEditor() ? el('button', { className: 'ibtn del', title: 'Delete target' }, icon('trash')) : null;
+    const del = mayWork ? el('button', { className: 'ibtn del', title: 'Delete target' }, icon('trash')) : null;
     if (del) del.onclick = (e) => { e.stopPropagation(); delTarget(a, () => renderProject(id)); };
     const expanded = expandedTargets.has(a.id);
     // A big, easy-to-hit caret to fold/unfold a target's sub-targets (its click never navigates —
@@ -911,8 +921,8 @@ async function renderProject(id) {
   const groups = p.assets.filter(f => (f.items || []).length); // only kind-groups that hold targets
   if (!groups.length) {
     body.append(el('div', { className: 'empty', style: 'border:0;margin-top:20px' },
-      el('div', {}, isEditor() ? 'No targets yet. Add a web app, host, API, AD domain… to start testing.' : 'No targets yet. An admin adds these.'),
-      isEditor() ? el('button', { className: 'btn gold', onclick: () => addTargetToProject(id) }, icon('plus', 12), 'Add target') : null));
+      el('div', {}, mayWork ? 'No targets yet. Add a web app, host, API, AD domain… to start testing.' : 'No targets yet. An admin or the engagement’s team adds these.'),
+      mayWork ? el('button', { className: 'btn gold', onclick: () => addTargetToProject(id) }, icon('plus', 12), 'Add target') : null));
   } else {
     for (const f of groups) {
       body.append(el('div', { className: 'srule', style: 'margin-top:22px' },
@@ -934,7 +944,7 @@ async function renderProject(id) {
     el('h1', {}, p.name),
     el('div', { className: 'srule' },
       el('span', { className: 'kicker' }, 'Targets'), el('span', { className: 'rule' }),
-      isEditor() ? el('button', { className: 'btn line sm', onclick: () => addTargetToProject(id) }, '+ Add target') : null),
+      mayWork ? el('button', { className: 'btn line sm', onclick: () => addTargetToProject(id) }, '+ Add target') : null),
     body));
 }
 
@@ -1025,6 +1035,12 @@ function subdomainsModal(targets, projectName) {
 // Each card shows its target and links to it.
 let PFV = { kind: 'vuln', q: '', sort: 'sev' };
 async function renderProjectFindings(projectId) {
+  // Marking a finding done (or grading/deleting it) re-renders this list; without this the page
+  // would snap back to the top mid-scroll. Remember the scroll offset when this is a live re-render
+  // of the same page (a '.pf-list' is already on screen), and restore it after the rebuild.
+  const view = $('#view');
+  const same = view.dataset.view === 'findings-' + projectId && !!view.querySelector('.pf-list');
+  const savedY = same ? view.scrollTop : 0;
   const p = await api('/projects/' + projectId);
   const all = await api('/projects/' + projectId + '/findings').catch(() => []);
   setRail(null);
@@ -1059,7 +1075,7 @@ async function renderProjectFindings(projectId) {
 
   const written = vulns.filter(f => f.in_report).length;
   const wpct = vulns.length ? Math.round(written / vulns.length * 100) : 0;
-  $('#view').replaceChildren(el('div', { className: 'page narrow' },
+  view.replaceChildren(el('div', { className: 'page narrow' },
     el('div', { className: 'kicker' }, 'Engagement · ' + p.name),
     el('div', { className: 'pf-head' },
       el('h1', {}, 'Findings'),
@@ -1068,7 +1084,9 @@ async function renderProjectFindings(projectId) {
         el('span', { className: 'stat-bar', style: 'width:88px;margin:0' }, el('span', { style: `width:${wpct}%;background:var(--ok)` }))) : null),
     el('div', { className: 'evfilter pf-filter' }, el('div', { className: 'evrow' }, search, sortSel)),
     list));
+  view.dataset.view = 'findings-' + projectId;
   repaint();
+  view.scrollTop = savedY; // stay where the reader was on a live re-render (e.g. after "Mark done")
 }
 
 // The asset-folder layer is now implicit — any /asset link jumps straight to its engagement.
@@ -1318,6 +1336,9 @@ async function renderTarget(id) {
   const pid = a.project?.id ?? a.folder?.project_id;
   const project = pid ? await api('/projects/' + pid) : null;   // engagement → all targets for the rail
   setRail(project ? railForProject(project, id) : null);
+  // A worker assigned to the ENGAGEMENT may work any of its targets (edit/delete, checklist, notes,
+  // findings), not just ones assigned to them directly — mirrors the server's canWorkProject.
+  const meOnProject = !!CURRENT_USER && assigneeList(project?.assignee).includes(CURRENT_USER);
   // Sub-targets spun up from a spawn_type item (e.g. a web target per subdomain), grouped by the
   // item uid that created them, so each such item can list its subs with live coverage.
   const spawnedByItem = {};
@@ -1361,7 +1382,7 @@ async function renderTarget(id) {
   if (a.type === 'retest') {
     topActions(
       el('button', { className: 'btn gold', onclick: () => addFinding(id, true) }, icon('plus', 12), 'Add retest item'),
-      isEditor() ? el('button', { className: 'btn danger', onclick: () => delTarget(a) }, 'Delete target') : null);
+      (isEditor() || meOnProject) ? el('button', { className: 'btn danger', onclick: () => delTarget(a) }, 'Delete target') : null);
     const list = el('div', { className: 'tlist' });
     if (!a.findings.length) list.append(el('div', { className: 'empty', style: 'border:0' },
       el('div', {}, 'No retest items yet. Add one for each finding from the previous engagement you re-checked.'),
@@ -1385,7 +1406,7 @@ async function renderTarget(id) {
   if (a.type === 'poc') {
     topActions(
       el('button', { className: 'btn gold', onclick: () => addFinding(id, false) }, icon('plus', 12), 'Add finding'),
-      isEditor() ? el('button', { className: 'btn danger', onclick: () => delTarget(a) }, 'Delete target') : null);
+      (isEditor() || meOnProject) ? el('button', { className: 'btn danger', onclick: () => delTarget(a) }, 'Delete target') : null);
     const list = el('div', { className: 'tlist' });
     if (!a.findings.length) list.append(el('div', { className: 'empty', style: 'border:0' },
       el('div', {}, 'No findings yet. Record the exploit — notes, requests, credentials and screenshots — as your proof of concept.'),
@@ -1410,8 +1431,8 @@ async function renderTarget(id) {
   // target is still unassigned (the first note/finding auto-claims it). Otherwise it's read-only.
   const roster = assigneeList(a.assignee);
   const meAssigned = !!CURRENT_USER && roster.includes(CURRENT_USER);
-  const mayContribute = isEditor() || meAssigned || !roster.length;   // add notes/creds/findings (#10)
-  const mayEditChecklist = isEditor() || meAssigned;                  // add/edit/delete checklist items (#7)
+  const mayContribute = isEditor() || meAssigned || meOnProject || !roster.length;   // add notes/creds/findings (#10)
+  const mayEditChecklist = isEditor() || meAssigned || meOnProject;                  // add/edit/delete checklist items (#7)
 
   const checklistBtn = el('button', { className: 'checklist-open', title: 'Open the checklist', onclick: () => openChecklist(id) },
     icon('check', 14), el('span', { className: 'clk-lbl' }, 'Checklist'),
@@ -3370,8 +3391,53 @@ async function adminUsers(ctx, A) {
   for (const m of users) memCard.append(admRow(
     [el('strong', {}, m.username), el('span', { className: 'muted' }, ' · '), el('span', { className: 'pill' }, m.role),
       el('div', { className: 'muted small' }, m.mfa_enabled ? 'two-factor on' : 'two-factor not set up yet')],
+    el('button', { className: 'btn', onclick: () => userDetailsDialog(ctx, m) }, icon('user', 12), 'Details'),
     el('button', { className: 'btn', onclick: () => manageUserDialog(ctx, m) }, icon('edit', 12), 'Manage')));
   return [memCard];
+}
+
+// A read-only look at one operator's workload: the engagements and targets assigned to them, each
+// target's progress and finished state, plus how many vulnerabilities they've recorded.
+const udTile = (v, label) => el('div', { className: 'ud-tile' }, el('span', { className: 'ud-tile-v' }, String(v)), el('span', { className: 'ud-tile-l' }, label));
+async function userDetailsDialog(ctx, m) {
+  let d;
+  try { d = await api(ctx.base + '/users/' + m.id + '/tasks', { timeout: 8000 }); }
+  catch (e) { toast(e.message); return; }
+  const projects = d.projects || [], targets = d.targets || [];
+  const done = targets.filter(t => t.done).length;
+  const wip = targets.filter(t => !t.done && t.handled > 0).length;
+  const idle = targets.filter(t => (t.handled || 0) === 0).length;
+  modal({
+    kicker: 'Operator', title: m.username, cta: 'Close', wide: true,
+    build: (b) => {
+      b.append(el('div', { className: 'muted small', style: 'margin:-6px 0 12px' },
+        `${m.role} · ${m.mfa_enabled ? 'two-factor on' : 'no two-factor'} · joined ${new Date(m.created_at).toLocaleDateString()}`));
+      b.append(el('div', { className: 'ud-summary' },
+        udTile(targets.length, 'targets'), udTile(done, 'finished'), udTile(wip, 'in progress'),
+        udTile(idle, 'not started'), udTile(d.authored || 0, 'vulns recorded')));
+      b.append(el('div', { className: 'srule', style: 'margin-top:16px' }, el('span', { className: 'kicker' }, `Engagements (${projects.length})`), el('span', { className: 'rule' })));
+      b.append(projects.length
+        ? el('div', { className: 'ud-list' }, ...projects.map(p => el('div', { className: 'ud-row' },
+            el('span', { className: 'ud-name' }, p.name), el('span', { className: 'pill' + (p.status === 'finished' ? ' done' : '') }, p.status))))
+        : el('div', { className: 'pmeta', style: 'padding:6px 2px' }, 'Not assigned to any engagement.'));
+      b.append(el('div', { className: 'srule', style: 'margin-top:16px' }, el('span', { className: 'kicker' }, `Targets (${targets.length})`), el('span', { className: 'rule' })));
+      b.append(targets.length
+        ? el('div', { className: 'ud-list' }, ...targets.map(t => {
+            const cov = pct(t.handled, t.total);
+            return el('div', { className: 'ud-row' },
+              codeBadge(t.type),
+              el('span', { className: 'ud-tname' }, el('span', { className: 'ud-name' }, t.label), el('span', { className: 'muted small' }, t.project)),
+              t.findings ? el('span', { className: 'ud-f' }, t.findings + ' finding' + (t.findings === 1 ? '' : 's')) : null,
+              t.flags ? el('span', { className: 'ud-flag' }, '⚑ ' + t.flags) : null,
+              el('span', { className: 'ud-prog' },
+                el('span', { className: 'bar' + (cov > 70 ? ' good' : !cov ? ' idle' : '') }, el('span', { style: `width:${cov}%` })),
+                el('span', { className: 'muted small' }, `${t.handled}/${t.total}`)),
+              el('span', { className: 'ud-status ' + (t.done ? 'done' : t.handled ? 'wip' : 'idle') }, t.done ? 'finished' : t.handled ? 'in progress' : 'not started'));
+          }))
+        : el('div', { className: 'pmeta', style: 'padding:6px 2px' }, 'No targets assigned.'));
+    },
+    onSubmit: async () => {},
+  });
 }
 function createUserDialog(ctx) {
   modal({

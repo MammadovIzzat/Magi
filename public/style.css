@@ -1273,6 +1273,24 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 .subdom-type { font-family: var(--mono); font-size: 9px; letter-spacing: .1em; color: var(--label); background: var(--void); border: 1px solid var(--line); border-radius: 3px; padding: 2px 5px; flex: none; }
 .subdom-row .ibtn { flex: none; }
 
+/* admin: one operator's workload (tasks) dialog */
+.ud-summary { display: flex; gap: 10px; flex-wrap: wrap; }
+.ud-tile { flex: 1 1 auto; min-width: 82px; border: 1px solid var(--line-2); border-radius: 6px; padding: 9px 12px; background: var(--panel); display: flex; flex-direction: column; gap: 2px; }
+.ud-tile-v { font-size: 20px; font-weight: 600; color: var(--fg); }
+.ud-tile-l { font-family: var(--mono); font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--label); }
+.ud-list { display: flex; flex-direction: column; gap: 2px; max-height: 40vh; overflow-y: auto; }
+.ud-row { display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-bottom: 1px solid var(--line); }
+.ud-tname { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ud-name { font-size: 13px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ud-f { font-family: var(--mono); font-size: 10.5px; color: var(--red); flex: none; }
+.ud-flag { font-family: var(--mono); font-size: 10.5px; color: var(--gold); flex: none; }
+.ud-prog { display: flex; align-items: center; gap: 6px; flex: none; width: 116px; }
+.ud-prog .bar { flex: 1; }
+.ud-status { font-family: var(--mono); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; flex: none; width: 78px; text-align: right; }
+.ud-status.done { color: var(--jade); }
+.ud-status.wip { color: var(--gold); }
+.ud-status.idle { color: var(--muted-2); }
+
 /* checklist popup */
 .modal.checklist-modal { width: min(920px, 94vw); max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; }
 .checklist-pop { flex: 1; min-height: 0; overflow-y: auto; padding: 0; }

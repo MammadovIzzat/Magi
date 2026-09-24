@@ -1520,23 +1520,56 @@ async function renderTarget(id) {
 
   // ── right: findings (confirmed vulnerabilities only), with search + sort. Vulns are recorded from
   // the middle composer's "Evidence" button (Type → Vulnerability), so there's no add button here.
+  // Selecting findings and moving them to another target in this engagement — for one recorded on
+  // the wrong target, so it doesn't have to be retyped. Only this target's OWN vulns are movable
+  // (the dock also lists sub-targets' findings, which already live elsewhere).
+  let selectMode = false;
+  const selected = new Set();
+  const moveTargets = (project?.assets || []).flatMap(f => (f.items || [])).filter(t => String(t.id) !== String(id));
+  const canMove = mayContribute && a.findings.some(f => f.kind === 'vuln') && moveTargets.length > 0;
+  const moveToggle = canMove ? el('button', { className: 'btn line sm', title: 'Move findings to another target', onclick: () => { selectMode = !selectMode; selected.clear(); repaint(); } }, icon('right', 12), 'Move') : null;
+
   const dock = el('aside', { className: 'dock' },
     el('div', { className: 'dock-head' },
-      el('span', { className: 'kicker' }, 'Findings')));
+      el('span', { className: 'kicker' }, 'Findings'), moveToggle));
   const dbody = el('div', { className: 'dock-body' });
   let dockFindings = a.findings.filter(f => f.kind === 'vuln').map(f => ({ ...f }));
   const findList = el('div', { className: 'find-list' });
   const search = el('input', { className: 'evsearch', type: 'search', placeholder: 'Search findings…', value: EVID.q });
   const sortSel = customSelect({ className: 'evsort', value: EVID.sort,
     options: [{ value: 'new', label: 'Newest' }, { value: 'sev', label: 'Severity' }, { value: 'title', label: 'Name' }] });
+
+  // The move bar is built once (so the destination picker keeps its choice); repaint toggles it.
+  const moveCount = el('span', { className: 'move-count' });
+  const movePicker = customSelect({ className: 'move-target', value: '',
+    options: [{ value: '', label: 'Move to target…' }, ...moveTargets.map(t => ({ value: String(t.id), label: `${(TYPES.find(x => x.type === t.type) || {}).label || t.type} · ${t.label}` }))] });
+  const doMove = async () => {
+    if (!movePicker.value) return toast('Pick a destination target');
+    if (!selected.size) return toast('Select one or more findings first');
+    try {
+      const r = await api('/findings/move', { method: 'POST', body: { ids: [...selected], target_id: Number(movePicker.value) } });
+      toast(`Moved ${r.moved} finding${r.moved === 1 ? '' : 's'}`);
+      renderTarget(id);
+    } catch (e) { toast(e.message); }
+  };
+  const moveBar = el('div', { className: 'move-bar', hidden: true },
+    moveCount, movePicker,
+    el('button', { className: 'btn gold sm', onclick: doMove }, 'Move'),
+    el('button', { className: 'btn line sm', onclick: () => { selectMode = false; selected.clear(); repaint(); } }, 'Done'));
+
   const cardOf = (f) => {
-    if (!f._target) return findingCard(f, id);
-    return el('div', { className: 'dock-sub' },
+    if (f._target) return el('div', { className: 'dock-sub' },
       el('button', { className: 'dock-sub-t', title: 'Open ' + f._target.label, onclick: () => location.hash = `/target/${f._target.id}` },
         codeBadge(f._target.type), el('span', {}, f._target.label)),
       findingCard(f, f._target.id, () => renderTarget(id)));
+    if (selectMode) return findingCard(f, id, () => renderTarget(id),
+      { selectable: true, selected: selected.has(f.id), onToggle: () => { selected.has(f.id) ? selected.delete(f.id) : selected.add(f.id); repaint(); } });
+    return findingCard(f, id);
   };
   const repaint = () => {
+    if (moveToggle) moveToggle.classList.toggle('on', selectMode);
+    moveBar.hidden = !selectMode;
+    moveCount.textContent = `${selected.size} selected`;
     let shown = dockFindings.filter(f => f.kind === 'vuln');
     const q = search.value.trim().toLowerCase();
     if (q) shown = shown.filter(f => `${f.title || ''} ${f.body || ''}`.toLowerCase().includes(q));
@@ -1549,7 +1582,7 @@ async function renderTarget(id) {
   };
   search.oninput = () => { EVID.q = search.value; repaint(); };
   sortSel.onchange = () => { EVID.sort = sortSel.value; repaint(); };
-  dbody.append(el('div', { className: 'evfilter' }, el('div', { className: 'evrow' }, search, sortSel)), findList);
+  dbody.append(el('div', { className: 'evfilter' }, el('div', { className: 'evrow' }, search, sortSel)), moveBar, findList);
   repaint();
   if (descendantIds.length && pid) {
     const gen = curAssetId; // if the user navigates away before this resolves, don't touch the DOM
@@ -2307,7 +2340,9 @@ function reportTick(f, afterToggle) {
 // screenshots, and any attack-chain links to other findings).
 // `after` re-renders the surrounding view after a change (defaults to the target page; the
 // project-wide findings list passes its own re-render so it stays put instead of jumping to a target).
-function findingCard(f, id, after) {
+// `opts.selectable` turns the card into a checkbox row (used by the dock's "move findings" mode):
+// clicking it toggles selection (via opts.onToggle) instead of opening the detail popup.
+function findingCard(f, id, after, opts = {}) {
   after = after || (() => renderTarget(id));
   const stop = (e) => e.stopPropagation(); // interactive bits shouldn't open the detail popup
   const tools = el('div', { className: 'f-tools', onclick: stop },
@@ -2326,8 +2361,11 @@ function findingCard(f, id, after) {
     ...f.links.flatMap((l, i) => [i ? el('span', { className: 'muted' }, ', ') : null, el('span', { className: 'chainlink', title: l.target }, l.title)].filter(Boolean))) : null;
   const mineToFix = f.needs_improvement && CURRENT_USER && CURRENT_USER === f.author; // glows for the finder
   const card = el('div', { className: 'finding sev-' + (f.severity || 'info') + (f.in_report ? ' in-report' : '')
-      + (f.needs_improvement ? ' needs-improve' : '') + (mineToFix ? ' mine-improve' : ''), title: 'Click to open' },
+      + (f.needs_improvement ? ' needs-improve' : '') + (mineToFix ? ' mine-improve' : '')
+      + (opts.selectable ? ' pickable' : '') + (opts.selected ? ' picked' : ''),
+    title: opts.selectable ? 'Click to select / deselect' : 'Click to open' },
     el('div', { className: 'f-top' },
+      opts.selectable ? el('span', { className: 'f-pick', 'aria-hidden': 'true' }, opts.selected ? '☑' : '☐') : null,
       // For a vulnerability a grader (admin/editor) can set/change its severity right here — the chip
       // is the button, so it works in a standalone install too, with no admin page needed.
       (f.kind === 'vuln' && isEditor())
@@ -2347,7 +2385,9 @@ function findingCard(f, id, after) {
     f.body ? el('pre', {}, f.body) : null,
     links,
     (f.attachments || []).length ? shots : null);
-  card.onclick = () => findingDetail(f, id, after);
+  card.onclick = opts.selectable
+    ? (e) => { if (!e.target.closest('.f-tools')) opts.onToggle && opts.onToggle(); }
+    : () => findingDetail(f, id, after);
   return card;
 }
 // Full, readable view of one finding (opened by clicking its card). Read-only, with an Edit CTA.

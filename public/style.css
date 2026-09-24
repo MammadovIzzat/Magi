@@ -614,6 +614,16 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
   border: 0; padding: 0; cursor: pointer; font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
 .dock-sub-t:hover { color: var(--gold); }
 .dock-sub .finding { border-left-style: dashed; }
+/* move findings to another target */
+.dock-head .btn { margin-left: auto; }
+.dock-head .btn.on { border-color: var(--gold); color: var(--gold); }
+.move-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 9px 10px; border: 1px solid var(--gold); border-radius: 6px; background: var(--gold-wash); }
+.move-count { font-family: var(--mono); font-size: 11px; color: var(--gold); flex: none; }
+.move-bar .move-target { flex: 1 1 120px; min-width: 0; }
+.finding.pickable { cursor: pointer; }
+.finding.pickable:hover { box-shadow: 0 0 0 1px var(--gold-wash); }
+.finding.picked { box-shadow: 0 0 0 1.5px var(--gold); }
+.f-pick { font-size: 13px; line-height: 1; color: var(--gold); flex: none; }
 .find-list { display: flex; flex-direction: column; gap: 10px; }
 .finding {
   background: var(--panel-hi); border: 1px solid var(--line);

@@ -591,6 +591,16 @@ check('the tasks view lists a target assigned to the operator', (anaTasks.json.t
 check('the tasks view counts the operator’s recorded vulnerabilities', (anaTasks.json.authored || 0) >= 2);
 check('a worker cannot read another operator’s tasks', (await req('GET', `/api/admin/users/${anaId}/tasks`, { token: workerToken, device: dev1 })).status === 403);
 
+// ---- re-parent a finding: move it to another target in the same engagement ----
+const misfiled = (await req('POST', `/api/targets/${webT.id}/findings`, { token: adminTok, body: { title: 'Misfiled', kind: 'vuln', severity: 'low' } })).json;
+const mv = await req('POST', '/api/findings/move', { token: adminTok, body: { ids: [misfiled.id], target_id: webT2.id } });
+check('a finding moves to another target in the engagement', mv.status === 200 && mv.json?.moved === 1);
+check('the moved finding now lives on the destination target', (await req('GET', `/api/targets/${webT2.id}`, { token: adminTok })).json.findings.some(f => f.id === misfiled.id));
+check('the moved finding left the source target', !(await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.findings.some(f => f.id === misfiled.id));
+const engTarget = (await req('POST', `/api/assets/${engFolder.id}/targets`, { token: adminTok, body: { type: 'web', label: 'https://eng.test' } })).json;
+const mvCross = await req('POST', '/api/findings/move', { token: adminTok, body: { ids: [misfiled.id], target_id: engTarget.id } });
+check('a finding cannot move to a target in another engagement', mvCross.status === 400);
+
 // ---- report ----
 let bad = 0;
 for (const [name, ok] of checks) { console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${name}`); if (!ok) bad++; }

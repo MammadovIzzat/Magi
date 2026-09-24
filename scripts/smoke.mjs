@@ -308,6 +308,33 @@ checks.push(['marking a finding done keeps you on the findings page', await ev(`
     const toggled = !!now && now.classList.contains("on") !== wasOn;
     return stillFindings && scrollTracked && toggled;
   } catch (e) { return false; }`)]);
+// A finding recorded on the wrong target can be re-parented from the dock: enter "Move", select it,
+// pick a destination target in the same engagement, and it moves (source loses it, destination gains).
+checks.push(['move a finding to another target from the dock', await ev(`
+  try {
+    const p = (await (await fetch("/api/projects")).json())[0];
+    const items = (await (await fetch("/api/projects/" + p.id)).json()).assets.flatMap(f => f.items || []);
+    const src = items.find(t => (t.findings || 0) > 0);
+    const dest = items.find(t => src && t.id !== src.id);
+    if (!src || !dest) return false;
+    const srcN = src.findings, destN = dest.findings || 0;
+    location.hash = "#/target/" + src.id; await new Promise(r => setTimeout(r, 1300));
+    const toggle = [...document.querySelectorAll(".dock-head button")].find(b => /move/i.test(b.textContent));
+    if (!toggle) return false;
+    toggle.click(); await new Promise(r => setTimeout(r, 250));
+    const card = document.querySelector(".find-list .finding.pickable");
+    if (!card) return false;
+    card.click(); await new Promise(r => setTimeout(r, 150));
+    const picked = document.querySelectorAll(".find-list .finding.picked").length === 1;
+    const bar = document.querySelector(".move-bar");
+    bar.querySelector(".move-target").value = String(dest.id);
+    [...bar.querySelectorAll("button")].find(b => b.textContent.trim() === "Move").click();
+    await new Promise(r => setTimeout(r, 1000));
+    const items2 = (await (await fetch("/api/projects/" + p.id)).json()).assets.flatMap(f => f.items || []);
+    const s2 = items2.find(t => t.id === src.id)?.findings ?? 0;
+    const d2 = items2.find(t => t.id === dest.id)?.findings ?? 0;
+    return picked && s2 === srcN - 1 && d2 === destN + 1;
+  } catch (e) { return false; }`)]);
 // The engagement's Subdomains roll-up lists every web/API/domain host (IP targets excluded), deduped,
 // with copy / .txt / .json export controls.
 checks.push(['subdomains roll-up lists web domains and excludes IPs', await ev(`

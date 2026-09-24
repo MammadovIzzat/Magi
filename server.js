@@ -1760,6 +1760,27 @@ app.delete('/api/findings/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// Re-parent one or more findings to another target in the SAME engagement — for a finding recorded
+// on the wrong target, so it need not be retyped. The mover must be able to work both ends (editor/
+// admin, or assigned to the engagement / the target). Attachments follow the finding automatically.
+app.post('/api/findings/move', async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids : (req.body?.id != null ? [req.body.id] : []);
+  const dest = q(`SELECT id, project_id FROM assets WHERE id=?`).get(req.body?.target_id);
+  if (!dest) return res.status(404).json({ error: 'destination target not found' });
+  if (!(await canWorkTarget(req, dest.id))) return res.status(403).json({ error: 'you cannot record on the destination target' });
+  const rows = ids.map(id => q(`SELECT id, asset_id FROM findings WHERE id=?`).get(id)).filter(Boolean);
+  if (!rows.length) return res.status(400).json({ error: 'no findings to move' });
+  for (const f of rows) {
+    const src = q(`SELECT project_id FROM assets WHERE id=?`).get(f.asset_id);
+    if (!src || src.project_id !== dest.project_id) return res.status(400).json({ error: 'a finding can only move within its engagement' });
+    if (!(await canWorkTarget(req, f.asset_id))) return res.status(403).json({ error: 'you cannot move a finding off that target' });
+  }
+  const upd = q(`UPDATE findings SET asset_id=? WHERE id=?`);
+  let moved = 0;
+  for (const f of rows) if (f.asset_id !== dest.id) { upd.run(dest.id, f.id); moved++; }
+  res.json({ ok: true, moved });
+});
+
 // ---- image attachments on a finding ----
 const MAX_UPLOAD = 40 * 1024 * 1024;
 // Raw body, any content-type, so screenshots upload without base64 bloat or a multipart parser.

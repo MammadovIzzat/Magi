@@ -414,6 +414,14 @@ function setRail(node) {
   const r = $('#rail');
   if (!node) { r.hidden = true; r.replaceChildren(); return; }
   r.hidden = false; r.replaceChildren(...node);
+  // Open the target list scrolled TO the target you're on (with its sub-targets just below), rather
+  // than snapping back to the first target — so opening one deep in a long list doesn't bury it.
+  const scroller = r.querySelector('.rail-list');
+  const active = scroller && scroller.querySelector('.railtarget.on');
+  if (active) requestAnimationFrame(() => {
+    try { const ar = active.getBoundingClientRect(), sr = scroller.getBoundingClientRect(); scroller.scrollTop += (ar.top - sr.top) - 10; }
+    catch { /* layout not ready — leave it at the top */ }
+  });
 }
 
 // ---------- router ----------

@@ -41,6 +41,7 @@ for (let i = 0; i < 60; i++) {
 
 rmSync(PROFILE, { recursive: true, force: true });
 chrome = spawn(browser, ['--headless=new', '--remote-debugging-port=9402', '--no-first-run',
+  '--window-size=1400,900', // desktop width so the left rail + evidence dock render (hidden <1100px)
   `--user-data-dir=${PROFILE}`, 'about:blank'], { stdio: 'ignore' });
 
 let targets;
@@ -334,6 +335,29 @@ checks.push(['move a finding to another target from the dock', await ev(`
     const s2 = items2.find(t => t.id === src.id)?.findings ?? 0;
     const d2 = items2.find(t => t.id === dest.id)?.findings ?? 0;
     return picked && s2 === srcN - 1 && d2 === destN + 1;
+  } catch (e) { return false; }`)]);
+// Opening a target scrolls the left rail TO that target (so a target deep in a long list isn't
+// buried at the top). Force the rail to overflow, open the last entry, and check it's on screen.
+checks.push(['opening a target scrolls the rail to it, not back to the top', await ev(`
+  try {
+    const st = document.createElement("style");
+    st.textContent = ".rail-list{max-height:80px !important}";
+    document.head.append(st);
+    const p = (await (await fetch("/api/projects")).json())[0];
+    const items = (await (await fetch("/api/projects/" + p.id)).json()).assets.flatMap(f => f.items || []);
+    if (items.length < 3) { st.remove(); return false; }
+    location.hash = "#/target/" + items[0].id; await new Promise(r => setTimeout(r, 1300));
+    const rails = [...document.querySelectorAll(".rail-list .railtarget")];
+    if (rails.length < 3) { st.remove(); return false; }
+    rails[rails.length - 1].click(); await new Promise(r => setTimeout(r, 1400));
+    const list = document.querySelector(".rail-list");
+    const active = list && list.querySelector(".railtarget.on");
+    if (!list || !active) { st.remove(); return false; }
+    const lr = list.getBoundingClientRect(), ar = active.getBoundingClientRect();
+    const visible = ar.bottom > lr.top + 1 && ar.top < lr.bottom + 1;
+    const scrolled = list.scrollTop > 0;
+    st.remove();
+    return visible && scrolled;
   } catch (e) { return false; }`)]);
 // The engagement's Subdomains roll-up lists every web/API/domain host (IP targets excluded), deduped,
 // with copy / .txt / .json export controls.

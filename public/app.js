@@ -521,10 +521,9 @@ async function renderHome() {
     const cov = pct(p.handled, p.total);
     const del = el('button', { className: 'ibtn del', title: 'Delete engagement' }, icon('trash'));
     del.onclick = (e) => { e.stopPropagation(); delProject(p, p.asset_count, renderHome); };
-    const dot = el('span', { className: 'pdot' + (!p.total ? ' idle' : cov > 70 ? '' : ' part') });
     const asg = assigneeList(p.assignee);
     return el('button', { className: 'prow', onclick: () => location.hash = `/project/${p.id}` },
-      el('span', { style: 'display:flex;align-items:center;gap:12px;min-width:0' }, dot, priorityMeter(p.priority),
+      el('span', { style: 'display:flex;align-items:center;gap:12px;min-width:0' }, priorityMeter(p.priority),
         el('span', { style: 'display:flex;flex-direction:column;gap:3px;min-width:0' },
           el('span', { className: 'pname' }, p.name),
           el('span', { className: 'pmeta' }, `${p.asset_count} targets · ${p.finding_count} findings`,

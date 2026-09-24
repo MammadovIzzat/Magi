@@ -175,7 +175,16 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 }
 .crumbs button:hover { color: var(--text); }
 .crumbs .cur { color: var(--gold); }
-.spacer { flex: 1; }
+.spacer { flex: 1; min-width: 0; }
+
+/* Page actions must never spill out of the fixed-height bar: let the cluster shrink and scroll
+   horizontally within itself (buttons keep their size) so the account badge stays put at any width. */
+#topActions { min-width: 0; flex-shrink: 1; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; -ms-overflow-style: none; }
+#topActions::-webkit-scrollbar { width: 0; height: 0; }
+#topActions > * { flex: none; }
+.topbar { flex-wrap: nowrap; overflow: hidden; }
+.brand, .backbtn, #account { flex: none; }
+.crumbs { flex-shrink: 1; }
 
 .acct { display: flex; align-items: center; gap: 7px; padding-left: 10px; margin-left: 4px; border-left: 1px solid var(--line); }
 .avatar {
@@ -1330,4 +1339,8 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
   .linkbadge { padding: 4px 7px; }
   #topActions { gap: 5px; }
   .btn.admin .count { min-width: 14px; height: 14px; }
+  /* trim the account cluster so it can't force the bar to overflow on a narrow window */
+  .acct { gap: 4px; padding-left: 6px; }
+  .acct .avatar { display: none; }                         /* the initial is redundant with sign-out */
+  .acct > .iconbtn:not(.theme):not(.danger) { display: none; }  /* the rename pencil */
 }

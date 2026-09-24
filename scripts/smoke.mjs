@@ -464,6 +464,23 @@ checks.push(['admin tabs + ranking page paint', await ev(`
   const devicesHasCodesAndRequests = /connection requests/i.test(devicesText) && /one-time codes/i.test(devicesText);
   window.fetch = real;
   return rankRows === 2 && tabs === 6 && activeIsRanking && usersActive && hasSev && hasScore && usersHasCreate && udOk && devicesHasCodesAndRequests`)]);
+// Responsive top bar: at a narrow (phone-ish) width the page actions must not spill out of the bar —
+// the bar stays inside the window and the account badge remains on screen (actions scroll within).
+await cdp('Emulation.setDeviceMetricsOverride', { width: 480, height: 800, deviceScaleFactor: 1, mobile: false });
+const narrowTopbar = await ev(`
+  const p = (await (await fetch("/api/projects")).json())[0];
+  location.hash = "#/project/" + p.id; await new Promise(r => setTimeout(r, 900));
+  const bar = document.querySelector(".topbar");
+  const acct = document.querySelector("#account");
+  const ta = document.querySelector("#topActions");
+  if (!bar || !acct || !ta) return false;
+  const barFits = bar.scrollWidth <= bar.clientWidth + 1;               // the bar itself doesn't overflow
+  const acctRight = acct.getBoundingClientRect().right;
+  const acctVisible = acctRight <= window.innerWidth + 1 && acctRight > 0; // account stays on screen
+  const taScrolls = getComputedStyle(ta).overflowX === "auto";          // actions scroll instead of spilling
+  return barFits && acctVisible && taScrolls`);
+await cdp('Emulation.clearDeviceMetricsOverride', {});
+checks.push(['the top bar stays inside a narrow window (actions scroll, account visible)', narrowTopbar]);
 // Regression: an MFA-enabled account returns 401 {mfa:'required'} on password-only login. The
 // login flow must READ that challenge and show the code screen — not treat the 401 as a hard error.
 // (This standalone server never enforces MFA, so stub fetch to return the challenge just for the login.)

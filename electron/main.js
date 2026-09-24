@@ -219,6 +219,16 @@ async function createWindow() {
     if (!url.startsWith('magi://')) { e.preventDefault(); if (/^https?:/.test(url)) shell.openExternal(url); }
   });
 
+  // No application menu is set (for a clean, chrome-free window), which also removes Electron's
+  // built-in zoom accelerators. Re-wire Ctrl/Cmd + / - / 0 so zoom works just like a browser tab.
+  win.webContents.on('before-input-event', (_e, input) => {
+    if (input.type !== 'keyDown' || !(input.control || input.meta)) return;
+    const wc = win.webContents;
+    if (input.key === '=' || input.key === '+' || input.key === 'Add') wc.setZoomLevel(Math.min(wc.getZoomLevel() + 0.5, 6));
+    else if (input.key === '-' || input.key === 'Subtract') wc.setZoomLevel(Math.max(wc.getZoomLevel() - 0.5, -4));
+    else if (input.key === '0') wc.setZoomLevel(0);
+  });
+
   await win.loadURL('magi://app/index.html');
 }
 

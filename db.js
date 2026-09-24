@@ -168,6 +168,9 @@ CREATE TABLE IF NOT EXISTS projects (
   status      TEXT DEFAULT 'active',   -- active | finished (null treated as active)
   start_date  TEXT,                             -- engagement window, ISO yyyy-mm-dd
   end_date    TEXT,
+  priority    INTEGER,                          -- 1..5 (5 = highest); null = unset. sorts the list
+  assignee    TEXT,                             -- comma-joined operators on this engagement (display only)
+  overview    TEXT,                             -- engagement overview / details (Markdown), synced
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -533,6 +536,13 @@ if (!findCols.has('flagged_to')) db.exec(`ALTER TABLE findings ADD COLUMN flagge
 if (!projCols.has('status')) db.exec(`ALTER TABLE projects ADD COLUMN status TEXT DEFAULT 'active'`);
 if (!projCols.has('start_date')) db.exec(`ALTER TABLE projects ADD COLUMN start_date TEXT`);
 if (!projCols.has('end_date')) db.exec(`ALTER TABLE projects ADD COLUMN end_date TEXT`);
+if (!projCols.has('priority')) db.exec(`ALTER TABLE projects ADD COLUMN priority INTEGER`);
+if (!projCols.has('assignee')) db.exec(`ALTER TABLE projects ADD COLUMN assignee TEXT`);
+if (!projCols.has('overview')) db.exec(`ALTER TABLE projects ADD COLUMN overview TEXT`);
+
+// A tiny key/value table for install-local metadata (not synced) — e.g. the built-in template
+// version this database has been seeded/refreshed to.
+db.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)`);
 
 // --- seed the first user ---
 // admin/admin by default. A generated password is lost the moment you launch from a
@@ -619,12 +629,20 @@ export function resetType(type) {
   return db.prepare(`SELECT COUNT(*) c FROM tpl_items WHERE type=?`).get(type).c;
 }
 
+// Built-in checklist version. Bump whenever the shipped defaults in seed/templates.js change so
+// existing installs refresh to the new defaults on their next boot (see the reset-on-upgrade block
+// below). A fresh install is stamped straight to the current version and skips that refresh.
+const TEMPLATE_VERSION = 2;
+const getMeta = db.prepare(`SELECT value FROM meta WHERE key=?`);
+const setMeta = db.prepare(`INSERT INTO meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`);
+
 // first run: install the shipped asset types and their checklists
 if (db.prepare(`SELECT COUNT(*) c FROM tpl_types`).get().c === 0) {
   ASSET_TYPES.forEach((t, i) => {
     insType.run(t.type, t.label, t.icon || null, t.hint || null, t.group || null, t.soon ? 1 : 0, i);
     seedTypeItems(t.type);
   });
+  setMeta.run('tpl_version', String(TEMPLATE_VERSION)); // fresh: already current, don't re-reset below
   console.error(`  [templates] seeded default checklists for ${ASSET_TYPES.length} asset types`);
 }
 
@@ -645,6 +663,22 @@ if (db.prepare(`SELECT COUNT(*) c FROM tpl_groups`).get().c === 0) {
     seedTypeGroups(t.type);
     console.error(`  [templates] added new asset type: ${t.type}`);
   });
+}
+
+// Built-in checklists only ever seeded once, so items added to the shipped templates in a newer
+// release never reached an existing install (its Web checklist could sit frozen at an old, smaller
+// version missing e.g. the "Subdomain enumeration" spawn item). On a TEMPLATE_VERSION bump, refresh
+// every shipped type to the current defaults. This discards local template edits by design; custom
+// asset types (no shipped defaults) are left untouched. A linked client re-mirrors the server's
+// templates afterward, so the server's refreshed defaults still win there.
+{
+  const stamped = Number(getMeta.get('tpl_version')?.value || 0);
+  if (stamped < TEMPLATE_VERSION) {
+    let n = 0;
+    for (const t of ASSET_TYPES) if (TEMPLATES[t.type] && resetType(t.type) !== false) n++;
+    setMeta.run('tpl_version', String(TEMPLATE_VERSION));
+    console.error(`  [templates] refreshed ${n} built-in checklists to v${TEMPLATE_VERSION}`);
+  }
 }
 
 // --- upgrade path for databases seeded before engagement groups existed ---

@@ -48,12 +48,12 @@ function serializeTarget(a) {
 
 /** Build a portable, fully re-importable object for one project, or null if missing. */
 export function exportProject(id, nowISO) {
-  const p = db.prepare(`SELECT name,client,scope,notes,created_at FROM projects WHERE id=?`).get(id);
+  const p = db.prepare(`SELECT name,client,scope,notes,priority,assignee,overview,created_at FROM projects WHERE id=?`).get(id);
   if (!p) return null;
   const folders = db.prepare(`SELECT id,grp,label,created_at FROM folders WHERE project_id=? ORDER BY created_at,id`).all(id);
   return {
     magi: FORMAT, version: VERSION, exported: nowISO || null,
-    project: { name: p.name, client: p.client, scope: p.scope, notes: p.notes, created_at: p.created_at },
+    project: { name: p.name, client: p.client, scope: p.scope, notes: p.notes, priority: p.priority ?? null, assignee: p.assignee || null, overview: p.overview || null, created_at: p.created_at },
     assets: folders.map(f => ({
       grp: f.grp, label: f.label, created_at: f.created_at,
       targets: db.prepare(`SELECT * FROM assets WHERE folder_id=? ORDER BY created_at,id`).all(f.id).map(serializeTarget),
@@ -92,8 +92,9 @@ export function importProject(bundle, nameOverride) {
   const P = bundle.project;
   db.prepare('BEGIN').run();
   try {
-    const pid = db.prepare(`INSERT INTO projects (name,client,scope,notes,created_at) VALUES (?,?,?,?,?)`)
+    const pid = db.prepare(`INSERT INTO projects (name,client,scope,notes,priority,assignee,overview,created_at) VALUES (?,?,?,?,?,?,?,?)`)
       .run(nameOverride || P.name, P.client ?? null, P.scope ?? null, P.notes ?? null,
+        P.priority ?? null, P.assignee ?? null, P.overview ?? null,
         P.created_at || new Date().toISOString()).lastInsertRowid;
 
     const insFolder = db.prepare(`INSERT INTO folders (project_id,grp,label,created_at) VALUES (?,?,?,?)`);

@@ -312,6 +312,35 @@ checks.push(['subdomains roll-up lists web domains and excludes IPs', await ev(`
     document.querySelector(".modal-x")?.click();
     return hasBoth && noIp && exports;
   } catch (e) { return false; }`)]);
+// Engagements gain a 1..5 priority (meter + sort), an Overview landing page, and engagement-level
+// assignees. Runs LAST of the project checks — it creates extra engagements, so no earlier
+// projects[0] check must follow it.
+checks.push(['engagement priority meter, overview + assignees', await ev(`
+  try {
+    document.querySelector(".modal-x")?.click();
+    const j = async (u, o) => (await fetch(u, { headers: { "content-type": "application/json" }, ...o })).json();
+    const hi = await j("/api/projects", { method: "POST", body: JSON.stringify({ name: "ZZ Priority Alpha", priority: 5, assignee: "admin" }) });
+    await j("/api/projects", { method: "POST", body: JSON.stringify({ name: "ZZ Priority Omega", priority: 1 }) });
+    const savedPrio = (await (await fetch("/api/projects/" + hi.id)).json()).priority === 5;
+    // home: priority meters render and the priority-5 engagement sorts above the priority-1 one
+    location.hash = "#/"; await route(); await new Promise(r => setTimeout(r, 500));
+    const meters = document.querySelectorAll(".prow .pmeter").length > 0;
+    const names = [...document.querySelectorAll(".prow .pname")].map(e => e.textContent);
+    const ai = names.indexOf("ZZ Priority Alpha"), oi = names.indexOf("ZZ Priority Omega");
+    const sorted = ai !== -1 && oi !== -1 && ai < oi;
+    // overview: a full priority meter + assignee control + an Open-targets action
+    location.hash = "#/project/" + hi.id; await new Promise(r => setTimeout(r, 800));
+    const ovPrio = document.querySelectorAll(".ov-prio .pmeter .pseg.on").length === 5;
+    const ovAssign = !!document.querySelector(".ov-meta .assign .assign-sel .sel-trigger");
+    const openBtn = [...document.querySelectorAll("#topActions .btn")].find(b => /Open targets/.test(b.textContent));
+    if (!openBtn) return false;
+    openBtn.click(); await new Promise(r => setTimeout(r, 700));
+    const onTargets = location.hash.includes("/targets") && !!document.querySelector(".srule");
+    // engagement assignee endpoint persists a change (display-only, any user may set it)
+    await fetch("/api/projects/" + hi.id + "/assignee", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ assignee: "admin,ana" }) });
+    const asg = (await (await fetch("/api/projects/" + hi.id)).json()).assignee || "";
+    return savedPrio && meters && sorted && ovPrio && ovAssign && onTargets && asg.includes("ana");
+  } catch (e) { return false; }`)]);
 checks.push(['template library paints', await ev(`
   location.hash = "#/editor"; await new Promise(r => setTimeout(r, 1400));
   return document.querySelectorAll(".tpl-type").length > 0`)]);

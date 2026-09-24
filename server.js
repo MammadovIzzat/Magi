@@ -1154,12 +1154,21 @@ app.get('/api/projects', (req, res) => {
 
 // Accepts yyyy-mm-dd or empty; anything else is stored as null rather than trusted verbatim.
 const cleanDate = (v) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
+// Engagement priority: an integer 1..5 (5 = highest), or null when unset/invalid.
+const cleanPriority = (v) => { const n = Number(v); return Number.isInteger(n) && n >= 1 && n <= 5 ? n : null; };
+// A normalised, comma-joined operator list (trimmed, de-duped, capped) — shared by project create,
+// edit and the assignee endpoint. Empty -> null.
+const cleanAssignee = (raw) => {
+  const parts = Array.isArray(raw) ? raw : (raw == null || raw === '' ? [] : String(raw).split(','));
+  const list = [...new Set(parts.map(s => String(s).trim().slice(0, 40)).filter(Boolean))].slice(0, 30);
+  return list.length ? list.join(',') : null;
+};
 
 app.post('/api/projects', requireEdit, (req, res) => {
-  const { name, client, scope, notes, start_date, end_date } = req.body || {};
+  const { name, client, scope, notes, start_date, end_date, priority, assignee } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name required' });
-  const info = q(`INSERT INTO projects (name, client, scope, notes, start_date, end_date) VALUES (?,?,?,?,?,?)`)
-    .run(name, client || null, scope || null, notes || null, cleanDate(start_date), cleanDate(end_date));
+  const info = q(`INSERT INTO projects (name, client, scope, notes, start_date, end_date, priority, assignee) VALUES (?,?,?,?,?,?,?,?)`)
+    .run(name, client || null, scope || null, notes || null, cleanDate(start_date), cleanDate(end_date), cleanPriority(priority), cleanAssignee(assignee));
   res.status(201).json(q(`SELECT * FROM projects WHERE id=?`).get(info.lastInsertRowid));
 });
 
@@ -1172,6 +1181,8 @@ app.patch('/api/projects/:id', requireEdit, (req, res) => {
   if ('name' in b) { if (!b.name) return res.status(400).json({ error: 'name cannot be empty' }); sets.name = b.name; }
   for (const k of ['client', 'scope', 'notes']) if (k in b) sets[k] = b[k] || null;
   for (const k of ['start_date', 'end_date']) if (k in b) sets[k] = cleanDate(b[k]);
+  if ('priority' in b) sets.priority = cleanPriority(b.priority);
+  if ('assignee' in b) sets.assignee = cleanAssignee(b.assignee);
   if ('status' in b) {
     if (b.status !== 'active' && b.status !== 'finished') return res.status(400).json({ error: 'status must be active or finished' });
     sets.status = b.status;
@@ -1182,6 +1193,25 @@ app.patch('/api/projects/:id', requireEdit, (req, res) => {
   if (!keys.length) return res.json(p);
   q(`UPDATE projects SET ${keys.map(k => `${k}=?`).join(', ')} WHERE id=?`).run(...keys.map(k => sets[k]), p.id);
   res.json(q(`SELECT * FROM projects WHERE id=?`).get(p.id));
+});
+
+// Assign operators to an engagement — display only, like a target's assignees, so any authenticated
+// user may set it (it grants no access). Stored as one normalised comma-joined list.
+app.patch('/api/projects/:id/assignee', (req, res) => {
+  const p = q(`SELECT id FROM projects WHERE id=?`).get(req.params.id);
+  if (!p) return res.status(404).json({ error: 'not found' });
+  q(`UPDATE projects SET assignee=? WHERE id=?`).run(cleanAssignee(req.body?.assignee), p.id);
+  res.json(q(`SELECT * FROM projects WHERE id=?`).get(p.id));
+});
+
+// The engagement's overview / details (Markdown). Editors set it; a cap keeps a runaway paste from
+// bloating the synced row (same limit as a target's notebook).
+app.patch('/api/projects/:id/overview', requireEdit, (req, res) => {
+  const p = q(`SELECT id FROM projects WHERE id=?`).get(req.params.id);
+  if (!p) return res.status(404).json({ error: 'not found' });
+  const md = req.body?.overview == null ? '' : String(req.body.overview).slice(0, 200000);
+  q(`UPDATE projects SET overview=? WHERE id=?`).run(md, p.id);
+  res.json({ ok: true });
 });
 
 // ---- move a whole engagement between installs (contains client-confidential data) ----

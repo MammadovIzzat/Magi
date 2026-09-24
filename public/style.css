@@ -315,6 +315,24 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .pcell { font-family: var(--mono); font-size: 11.5px; color: var(--muted-2); }
 .pct { font-family: var(--mono); font-size: 11px; color: var(--muted-2); width: 34px; text-align: right; flex: none; }
 .pct.good { color: var(--jade); }
+
+/* engagement priority meter (1..5, 5 = highest) — five equal bars; the number filled = priority */
+.pmeter { display: inline-flex; align-items: center; gap: 3px; height: 13px; flex: none; }
+.pmeter .pseg { width: 3px; height: 13px; background: var(--line-3); border-radius: 1px; }
+.pmeter .pseg.on { background: var(--muted-2); }
+.pmeter.lvl-crit .pseg.on { background: var(--red); }
+.pmeter.lvl-high .pseg.on { background: #E8894A; }
+.pmeter.lvl-med  .pseg.on { background: var(--gold); }
+.pmeter.lvl-low  .pseg.on { background: var(--blue); }
+.pmeter.lvl-min  .pseg.on { background: var(--muted-2); }
+.prow-asg { display: inline-flex; align-items: center; gap: 2px; margin-left: 8px; }
+.pmeta { display: inline-flex; align-items: center; flex-wrap: wrap; }
+
+/* engagement overview page */
+.ov-meta { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; margin: 14px 0 6px; }
+.ov-prio { display: flex; align-items: center; gap: 9px; }
+.ov-notes { margin-top: 18px; }
+.ov-notes .lede { margin-top: 4px; }
 .pct.some { color: var(--text-2); }
 
 /* ── stat tiles ────────────────────────────────────────── */

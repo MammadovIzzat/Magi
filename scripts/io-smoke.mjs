@@ -21,7 +21,7 @@ const check = (n, ok) => { checks.push([n, !!ok]); if (!ok) console.error('   ^ 
 process.on('exit', () => { try { rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {} });
 
 const rid = (r) => Number(r.lastInsertRowid);
-const pid = rid(db.prepare(`INSERT INTO projects (name) VALUES (?)`).run('Src'));
+const pid = rid(db.prepare(`INSERT INTO projects (name,priority,assignee,overview) VALUES (?,?,?,?)`).run('Src', 4, 'ana,bob', '# Overview\n\nengagement details here'));
 const fid = rid(db.prepare(`INSERT INTO folders (project_id,grp,label) VALUES (?,?,?)`).run(pid, 'external', 'Ext'));
 const aid = rid(db.prepare(`INSERT INTO assets (project_id,folder_id,type,label) VALUES (?,?,?,?)`).run(pid, fid, 'web', 'https://x'));
 const fA = rid(db.prepare(`INSERT INTO findings (asset_id,title,kind) VALUES (?,?,?)`).run(aid, 'Creds', 'credential'));
@@ -40,6 +40,9 @@ const imp = db.prepare(`SELECT f.title, f.refs, f.fix_status, f.in_report FROM f
 const newCredsUid = db.prepare(`SELECT f.uid FROM findings f JOIN assets a ON a.id=f.asset_id WHERE a.project_id=? AND f.title='Creds'`).get(res.projectId).uid;
 const rce = imp.find(f => f.title === 'RCE');
 
+const impProj = db.prepare(`SELECT priority,assignee,overview FROM projects WHERE id=?`).get(res.projectId);
+check('import preserves engagement priority / assignee / overview',
+  impProj.priority === 4 && impProj.assignee === 'ana,bob' && /engagement details here/.test(impProj.overview || ''));
 check('import preserves the retest fix status', imp.find(f => f.title === 'ACME-1')?.fix_status === 'half_fixed');
 check('import preserves the report tick', imp.find(f => f.title === 'ACME-1')?.in_report === 1);
 check('import keeps the attack-chain link', rce && JSON.parse(rce.refs || '[]').length === 1);

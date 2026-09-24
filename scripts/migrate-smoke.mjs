@@ -56,6 +56,28 @@ if (r.status === 0) {
   check('uids are distinct per row (not shared)', uids === 2);
 }
 
+// 4) Built-in checklist auto-refresh: an install frozen on an OLD template version (missing items a
+//    newer release added) must refresh to the current defaults on its next boot — the bug behind a
+//    web checklist that lost its subdomain-add. Simulate the old state, reboot db.js, and verify.
+if (r.status === 0) {
+  const db = new DatabaseSync(dbPath);
+  check('a fresh seed ships the web subdomain-spawn item',
+    db.prepare(`SELECT COUNT(*) c FROM tpl_items WHERE type='web' AND spawn_type='web'`).get().c > 0);
+  db.prepare(`DELETE FROM tpl_items WHERE type='web' AND spawn_type='web'`).run(); // pretend an older, smaller template
+  db.prepare(`UPDATE meta SET value='1' WHERE key='tpl_version'`).run();           // stamped behind the current version
+  db.close();
+  const r2 = spawnSync(process.execPath,
+    ['-e', 'import("./db.js").then(()=>process.exit(0)).catch(e=>{console.error(e.message);process.exit(1)})'],
+    { cwd: ROOT, env: { ...process.env, MAGI_DB: dbPath, MAGI_DATA_DIR: dir }, encoding: 'utf8' });
+  check('reboot on an outdated template version succeeds', r2.status === 0);
+  const db2 = new DatabaseSync(dbPath);
+  const spawnAfter = db2.prepare(`SELECT COUNT(*) c FROM tpl_items WHERE type='web' AND spawn_type='web'`).get().c;
+  const stamped = Number(db2.prepare(`SELECT value v FROM meta WHERE key='tpl_version'`).get()?.v || 0);
+  db2.close();
+  check('the upgrade refresh restored the web subdomain-spawn item', spawnAfter > 0);
+  check('the built-in template version stamp advanced', stamped > 1);
+}
+
 let failed = 0;
 for (const [n, ok] of checks) { console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${n}`); if (!ok) failed++; }
 rmSync(dir, { recursive: true, force: true });

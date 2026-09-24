@@ -435,7 +435,7 @@ async function route() {
     const em = h.match(/^\/editor\/([a-z0-9_]+)/); if (em) return await renderEditor(em[1]);
     const fm = h.match(/^\/findings\/(\d+)/); if (fm) return await renderProjectFindings(fm[1]);
     const [, kind, id] = h.match(/^\/(project|asset|target)\/(\d+)/) || [];
-    if (kind === 'project') return await renderProject(id);
+    if (kind === 'project') return /\/targets(\/|$)/.test(h) ? await renderProject(id) : await renderProjectOverview(id);
     if (kind === 'asset') return await renderAssetFolder(id);
     if (kind === 'target') return await renderTarget(id);
     return await renderHome();
@@ -456,6 +456,20 @@ $('#homeBtn').onclick = () => location.hash = '';
 $('#backBtn').onclick = () => { if (history.length > 1) history.back(); else location.hash = ''; };
 
 // ---------- engagements (home) ----------
+// Engagement priority: 1..5, 5 = highest. Rendered as a 5-segment "signal" meter and used to sort
+// the engagements list (highest first).
+const PRIORITY_LABEL = { 5: 'Highest', 4: 'High', 3: 'Medium', 2: 'Low', 1: 'Lowest' };
+const PRIORITY_OPTS = [5, 4, 3, 2, 1].map(v => ({ value: String(v), label: `${v} — ${PRIORITY_LABEL[v]}` }));
+function priorityMeter(pr) {
+  const n = Number(pr) || 0;
+  const lvl = n >= 5 ? 'crit' : n === 4 ? 'high' : n === 3 ? 'med' : n === 2 ? 'low' : n === 1 ? 'min' : 'none';
+  const m = el('span', { className: 'pmeter lvl-' + lvl, title: n ? `Priority ${n}/5 · ${PRIORITY_LABEL[n]}` : 'No priority set' });
+  for (let i = 1; i <= 5; i++) m.append(el('span', { className: 'pseg' + (i <= n ? ' on' : '') }));
+  return m;
+}
+// Highest priority first (unset sinks to the bottom), then newest.
+const byPriority = (a, b) => (Number(b.priority) || 0) - (Number(a.priority) || 0) || (new Date(b.created_at) - new Date(a.created_at));
+
 async function renderHome() {
   const projects = await api('/projects');
   setRail(null);
@@ -479,11 +493,13 @@ async function renderHome() {
     const del = el('button', { className: 'ibtn del', title: 'Delete engagement' }, icon('trash'));
     del.onclick = (e) => { e.stopPropagation(); delProject(p, p.asset_count, renderHome); };
     const dot = el('span', { className: 'pdot' + (!p.total ? ' idle' : cov > 70 ? '' : ' part') });
+    const asg = assigneeList(p.assignee);
     return el('button', { className: 'prow', onclick: () => location.hash = `/project/${p.id}` },
-      el('span', { style: 'display:flex;align-items:center;gap:12px;min-width:0' }, dot,
+      el('span', { style: 'display:flex;align-items:center;gap:12px;min-width:0' }, dot, priorityMeter(p.priority),
         el('span', { style: 'display:flex;flex-direction:column;gap:3px;min-width:0' },
           el('span', { className: 'pname' }, p.name),
-          el('span', { className: 'pmeta' }, `${p.asset_count} targets · ${p.finding_count} findings`))),
+          el('span', { className: 'pmeta' }, `${p.asset_count} targets · ${p.finding_count} findings`,
+            asg.length ? el('span', { className: 'prow-asg', title: 'Assigned to ' + asg.join(', ') }, ...asg.slice(0, 3).map(avatarSm)) : null))),
       el('span', { className: 'pcell hide-sm' }, p.client || '—'),
       el('span', { className: 'hide-sm', style: 'display:flex;align-items:center;gap:10px' },
         el('span', { className: 'bar' + (cov > 70 ? ' good' : !cov ? ' idle' : '') }, el('span', { style: `width:${cov}%` })),
@@ -492,7 +508,7 @@ async function renderHome() {
       del);
   };
 
-  const lists = { active: projects.filter(p => p.status !== 'finished'), finished: projects.filter(p => p.status === 'finished') };
+  const lists = { active: projects.filter(p => p.status !== 'finished').sort(byPriority), finished: projects.filter(p => p.status === 'finished').sort(byPriority) };
 
   // Active / Finished tabs (Sysreptor-style), with a search that filters the open tab.
   const tabs = el('div', { className: 'filters' });
@@ -536,6 +552,7 @@ function newProject() {
       field(c1, 'Start date', 'start_date', { type: 'date' });
       field(c2, 'End date', 'end_date', { type: 'date' });
       b.append(el('div', { className: 'field-row' }, c1, c2));
+      field(b, 'Priority', 'priority', { options: PRIORITY_OPTS, value: '3' });
       field(b, 'Notes', 'notes', { textarea: true });
     },
     onSubmit: async (fd) => {
@@ -555,6 +572,7 @@ function editProject(p, done) {
       field(c1, 'Start date', 'start_date', { type: 'date', value: p.start_date || '' });
       field(c2, 'End date', 'end_date', { type: 'date', value: p.end_date || '' });
       b.append(el('div', { className: 'field-row' }, c1, c2));
+      field(b, 'Priority', 'priority', { options: PRIORITY_OPTS, value: String(p.priority || 3) });
       field(b, 'Notes', 'notes', { textarea: true, value: p.notes || '' });
     },
     onSubmit: async (fd) => { await api('/projects/' + p.id, { method: 'PATCH', body: Object.fromEntries(fd) }); toast('Saved'); done?.(); },
@@ -626,7 +644,7 @@ function railForFolder(folder, activeTargetId) {
   }
   if (!targets.length) list.append(el('div', { className: 'pmeta', style: 'padding:10px' }, 'No targets yet'));
   return [head,
-    el('button', { className: 'railback', onclick: () => location.hash = `/project/${folder.project_id}` }, '‹ Back to engagement'),
+    el('button', { className: 'railback', onclick: () => location.hash = `/project/${folder.project_id}/targets` }, '‹ Back to targets'),
     el('div', { className: 'rail-label kicker' }, 'Targets'), list,
     isEditor() ? el('div', { className: 'rail-foot' },
       el('button', { className: 'dashbtn', onclick: () => addTarget(folder) }, icon('plus', 12), 'Add target')) : null];
@@ -659,7 +677,7 @@ function railForProject(project, activeTargetId) {
   }
   if (!targets.length) list.append(el('div', { className: 'pmeta', style: 'padding:10px' }, 'No targets yet'));
   return [head,
-    el('button', { className: 'railback', onclick: () => location.hash = `/project/${project.id}` }, '‹ Back to engagement'),
+    el('button', { className: 'railback', onclick: () => location.hash = `/project/${project.id}/targets` }, '‹ Back to targets'),
     list,
     isEditor() ? el('div', { className: 'rail-foot' },
       el('button', { className: 'dashbtn', onclick: () => addTargetToProject(project.id) }, icon('plus', 12), 'Add target')) : null];
@@ -763,22 +781,24 @@ function flattenTargetForest(items) {
   return out;
 }
 
-// ---------- engagement (project) — lists Asset folders ----------
-async function renderProject(id) {
+// ---------- engagement overview — the landing page for an engagement ----------
+// Details, priority, assignees and roll-up stats live here; a prominent "Open targets" leads to the
+// target list (renderProject). The overview itself is an editable Markdown workspace.
+async function renderProjectOverview(id) {
   const p = await api('/projects/' + id);
   setRail(null);
   setCrumbs([{ label: 'engagements', go: () => location.hash = '' }, { label: p.name }]);
   const finished = p.status === 'finished';
-  // Every target across the engagement (the folders are just kind-groups under the hood now).
   const allTargets = p.assets.flatMap(f => (f.items || []).map(t => ({ ...t, grp: f.grp })));
   topActions(
+    el('button', { className: 'btn gold', onclick: () => location.hash = `/project/${id}/targets` }, 'Open targets ›'),
     el('button', { className: 'btn', onclick: () => exportProjectMenu(id, p.name) }, icon('down', 12), 'Export'),
     el('button', { className: 'btn', title: 'Every web domain & subdomain across this engagement', onclick: () => subdomainsModal(allTargets, p.name) }, icon('globe', 12), 'Subdomains'),
-    isEditor() ? el('button', { className: 'btn', onclick: () => editProject(p, () => renderProject(id)) }, icon('edit', 12), 'Edit') : null,
+    isEditor() ? el('button', { className: 'btn', onclick: () => editProject(p, () => renderProjectOverview(id)) }, icon('edit', 12), 'Edit') : null,
     isEditor()
       ? (finished
-        ? el('button', { className: 'btn', onclick: () => setProjectStatus(p, 'active', () => renderProject(id)) }, 'Reopen')
-        : el('button', { className: 'btn', onclick: () => setProjectStatus(p, 'finished', () => renderProject(id)) }, icon('check', 12), 'Finish'))
+        ? el('button', { className: 'btn', onclick: () => setProjectStatus(p, 'active', () => renderProjectOverview(id)) }, 'Reopen')
+        : el('button', { className: 'btn', onclick: () => setProjectStatus(p, 'finished', () => renderProjectOverview(id)) }, icon('check', 12), 'Finish'))
       : null,
     isEditor() ? el('button', { className: 'btn danger', onclick: () => delProject(p, allTargets.length, () => location.hash = '') }, 'Delete') : null);
 
@@ -789,12 +809,64 @@ async function renderProject(id) {
   const fs = p.findingStats || { vulns: 0, written: 0, bySeverity: {} };
   const writtenPct = fs.vulns ? Math.round(fs.written / fs.vulns * 100) : 0;
   const sevMix = ['critical', 'high', 'medium', 'low'].map(s => [s, fs.bySeverity?.[s] || 0]).filter(([, n]) => n > 0);
-
-  // Four tiles: Coverage · Findings (with severity mix) · Written up (in the report) · Targets.
   const bar = (v, color) => el('span', { className: 'stat-bar' }, el('span', { style: `width:${v}%` + (color ? `;background:${color}` : '') }));
   const kick = (l) => el('div', { className: 'kicker' }, l);
   const bigv = (v, cls) => el('span', { className: 'stat-value ' + (cls || '') }, String(v));
-  const row = (v, sub, cls) => el('div', { className: 'stat-row' }, bigv(v, cls), sub ? el('span', { className: 'stat-sub' }, sub) : null);
+  const srow = (v, sub, cls) => el('div', { className: 'stat-row' }, bigv(v, cls), sub ? el('span', { className: 'stat-sub' }, sub) : null);
+
+  // Engagement assignees — display only, anyone may set them (mirrors a target's control).
+  const assignCtl = multiAssign({
+    selected: assigneeList(p.assignee),
+    loadPeople: () => loadAssignees(),
+    onChange: async (list) => {
+      try { const r = await api('/projects/' + id + '/assignee', { method: 'PATCH', body: { assignee: list } }); p.assignee = r?.assignee || null; }
+      catch (e) { toast(e.message); }
+    },
+  });
+
+  const dateRange = fmtDateRange(p.start_date, p.end_date);
+  const overviewEditor = notebookEditor(id, p.overview || '', isEditor(),
+    { savePath: '/projects/' + id + '/overview', saveKey: 'overview', label: 'Overview', images: false });
+
+  $('#view').replaceChildren(el('div', { className: 'page narrow' },
+    el('div', { style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap' },
+      el('div', { className: 'kicker' }, 'Engagement'),
+      finished ? el('span', { className: 'pill done' }, 'Finished') : null,
+      dateRange ? el('span', { className: 'muted small' }, '· ' + dateRange) : null),
+    el('h1', {}, p.name),
+    p.client || p.scope ? el('div', { className: 'lede' }, [p.client, p.scope].filter(Boolean).join(' · ')) : null,
+    el('div', { className: 'ov-meta' },
+      el('div', { className: 'ov-prio' }, el('span', { className: 'assign-lbl' }, 'Priority'), priorityMeter(p.priority),
+        el('span', { className: 'muted small' }, p.priority ? PRIORITY_LABEL[p.priority] : 'unset')),
+      el('div', { className: 'assign' }, el('span', { className: 'assign-lbl' }, icon('user', 12), 'Assignees'), assignCtl)),
+    el('div', { className: 'stats' },
+      el('div', { className: 'stat' }, kick('Coverage'), srow(cov + '%', `${handled} / ${total}`), bar(cov)),
+      el('button', { className: 'stat stat-link', onclick: () => location.hash = `/findings/${id}` }, kick('Findings'),
+        srow(fs.vulns, null, 'red'),
+        sevMix.length
+          ? el('div', { className: 'sevmix' }, ...sevMix.map(([s, n]) => el('span', { className: 'sevmix-chip sev-' + s }, `${n} ${s.slice(0, 4)}`)))
+          : el('div', { className: 'stat-note' }, 'none yet')),
+      el('div', { className: 'stat' }, kick('Written up'), srow(fs.written, 'of ' + fs.vulns, 'ok'), bar(writtenPct, 'var(--ok)')),
+      el('button', { className: 'stat stat-link', onclick: () => location.hash = `/project/${id}/targets` }, kick('Targets'),
+        srow(allTargets.length, null),
+        el('div', { className: 'stat-note' }, notStarted ? `${notStarted} not started` : allTargets.length ? 'all started' : 'add targets ›'))),
+    p.notes ? el('div', { className: 'ov-notes' }, el('div', { className: 'kicker' }, 'Notes'), el('p', { className: 'lede', style: 'white-space:pre-wrap' }, p.notes)) : null,
+    el('div', { className: 'srule', style: 'margin-top:22px' }, el('span', { className: 'kicker' }, 'Overview'), el('span', { className: 'rule' })),
+    overviewEditor));
+}
+
+// ---------- engagement (project) — lists Asset folders ----------
+async function renderProject(id) {
+  const p = await api('/projects/' + id);
+  setRail(null);
+  setCrumbs([{ label: 'engagements', go: () => location.hash = '' },
+    { label: p.name, go: () => location.hash = `/project/${id}` }, { label: 'Targets' }]);
+  // Every target across the engagement (the folders are just kind-groups under the hood now).
+  const allTargets = p.assets.flatMap(f => (f.items || []).map(t => ({ ...t, grp: f.grp })));
+  topActions(
+    el('button', { className: 'btn', onclick: () => location.hash = `/project/${id}` }, '‹ Overview'),
+    el('button', { className: 'btn', title: 'Every web domain & subdomain across this engagement', onclick: () => subdomainsModal(allTargets, p.name) }, icon('globe', 12), 'Subdomains'),
+    isEditor() ? el('button', { className: 'btn gold', onclick: () => addTargetToProject(id) }, icon('plus', 12), 'Add target') : null);
 
   const targetRow = (a, depth = 0, kids = 0) => {
     const t = TYPES.find(x => x.type === a.type) || {};
@@ -857,24 +929,9 @@ async function renderProject(id) {
     }
   }
 
-  const dateRange = fmtDateRange(p.start_date, p.end_date);
   $('#view').replaceChildren(el('div', { className: 'page narrow' },
-    el('div', { style: 'display:flex;align-items:center;gap:10px' },
-      el('div', { className: 'kicker' }, 'Engagement'),
-      finished ? el('span', { className: 'pill done' }, 'Finished') : null,
-      dateRange ? el('span', { className: 'muted small' }, '· ' + dateRange) : null),
+    el('div', { className: 'kicker' }, 'Engagement · Targets'),
     el('h1', {}, p.name),
-    p.client || p.scope ? el('div', { className: 'lede' }, [p.client, p.scope].filter(Boolean).join(' · ')) : null,
-    el('div', { className: 'stats' },
-      el('div', { className: 'stat' }, kick('Coverage'), row(cov + '%', `${handled} / ${total}`), bar(cov)),
-      el('button', { className: 'stat stat-link', onclick: () => location.hash = `/findings/${id}` }, kick('Findings'),
-        row(fs.vulns, null, 'red'),
-        sevMix.length
-          ? el('div', { className: 'sevmix' }, ...sevMix.map(([s, n]) => el('span', { className: 'sevmix-chip sev-' + s }, `${n} ${s.slice(0, 4)}`)))
-          : el('div', { className: 'stat-note' }, 'none yet')),
-      el('div', { className: 'stat' }, kick('Written up'), row(fs.written, 'of ' + fs.vulns, 'ok'), bar(writtenPct, 'var(--ok)')),
-      el('div', { className: 'stat' }, kick('Targets'), row(allTargets.length, null),
-        el('div', { className: 'stat-note' }, notStarted ? `${notStarted} not started` : 'all started'))),
     el('div', { className: 'srule' },
       el('span', { className: 'kicker' }, 'Targets'), el('span', { className: 'rule' }),
       isEditor() ? el('button', { className: 'btn line sm', onclick: () => addTargetToProject(id) }, '+ Add target') : null),
@@ -1016,7 +1073,7 @@ async function renderProjectFindings(projectId) {
 
 // The asset-folder layer is now implicit — any /asset link jumps straight to its engagement.
 async function renderAssetFolder(id) {
-  try { const f = await api('/assets/' + id); location.hash = `/project/${f.project_id}`; }
+  try { const f = await api('/assets/' + id); location.hash = `/project/${f.project_id}/targets`; }
   catch { location.hash = ''; }
 }
 function stat3(label, value, cls) {
@@ -1618,7 +1675,15 @@ function taInsert(ta, text) {
 // The per-target notebook: a Write ⇄ Preview Markdown editor with a formatting toolbar, autosaved.
 // Preview checkboxes are live (toggling one rewrites its "- [ ]" in the source). Read-only when the
 // viewer can't contribute (shows the rendered page only).
-function notebookEditor(id, initialMd, editable) {
+// A Markdown workspace (Write / Split / Preview, gutter, toolbar, live task checkboxes). Defaults to
+// a target's notebook; `opts` retargets it — e.g. the engagement overview saves to a project and
+// turns image upload off (opts: { savePath, saveKey, label, images:false }).
+function notebookEditor(id, initialMd, editable, opts = {}) {
+  const savePath = opts.savePath || ('/targets/' + id + '/notebook');
+  const saveKey = opts.saveKey || 'notebook';
+  const editorLabel = opts.label || 'Notebook';
+  const imagesEnabled = opts.images !== false;
+  const imagePath = opts.imagePath || ('/api/targets/' + id + '/notebook-images');
   let md = initialMd || '';
   const ta = el('textarea', { className: 'nb-input', value: md,
     placeholder: '# Notes\n\nWrite your working notes here.\n\n## Recon\n- found /admin\n- [ ] revisit the login\n\n**Markdown**: # H1, ## H2, - bullet, - [ ] task, **bold**, `code`.' });
@@ -1629,7 +1694,7 @@ function notebookEditor(id, initialMd, editable) {
     if (!editable) return;
     status.textContent = 'Saving…'; clearTimeout(saveTmr);
     saveTmr = setTimeout(async () => {
-      try { await api('/targets/' + id + '/notebook', { method: 'PATCH', body: { notebook: md } }); status.textContent = 'Saved'; }
+      try { await api(savePath, { method: 'PATCH', body: { [saveKey]: md } }); status.textContent = 'Saved'; }
       catch (e) { status.textContent = 'Not saved — ' + e.message; }
     }, 600);
   };
@@ -1673,10 +1738,10 @@ function notebookEditor(id, initialMd, editable) {
   // Images: upload the file, then drop a ![name](nbimg:<uid>) reference at the caret (uid is stable
   // across devices). Triggered by the toolbar button, paste, or drop — like SysReptor.
   const uploadImage = async (file) => {
-    if (!editable || !file || !/^image\//.test(file.type || '')) return;
+    if (!editable || !imagesEnabled || !file || !/^image\//.test(file.type || '')) return;
     status.textContent = 'Uploading image…';
     try {
-      const r = await fetch('/api/targets/' + id + '/notebook-images', {
+      const r = await fetch(imagePath, {
         method: 'POST', headers: authHeaders({ 'content-type': file.type, 'x-filename': encodeURIComponent(file.name || 'image') }),
         body: await file.arrayBuffer(),
       });
@@ -1699,21 +1764,24 @@ function notebookEditor(id, initialMd, editable) {
     el('span', { className: 'nb-sep' }),
     tbtn('•', 'Bullet list', () => taBlock(ta, 'ul')), tbtn('1.', 'Numbered list', () => taBlock(ta, 'ol')), tbtn('☐', 'Task', () => taBlock(ta, 'task')),
     tbtn('❝', 'Quote', () => taBlock(ta, 'quote')), tbtn('⊞', 'Table', () => taInsert(ta, TABLE)), tbtn('🔗', 'Link', () => taWrap(ta, '[', '](https://)')),
-    el('button', { type: 'button', className: 'nb-tb', title: 'Image — click, or paste / drop into the editor', onclick: () => imgInput.click() }, '🖼'), imgInput);
+    imagesEnabled ? el('button', { type: 'button', className: 'nb-tb', title: 'Image — click, or paste / drop into the editor', onclick: () => imgInput.click() }, '🖼') : null,
+    imagesEnabled ? imgInput : null);
 
   // Paste an image straight from the clipboard; drop one onto the editor.
-  ta.addEventListener('paste', (e) => {
+  if (imagesEnabled) ta.addEventListener('paste', (e) => {
     const items = [...(e.clipboardData?.items || [])].filter(it => (it.type || '').startsWith('image/'));
     if (!items.length) return; // let normal text paste through
     e.preventDefault(); for (const it of items) { const f = it.getAsFile(); if (f) uploadImage(f); }
   });
   const editor = el('div', { className: 'nb-editor' }, gutter, ta, mirror);
-  editor.addEventListener('dragover', (e) => { if ([...(e.dataTransfer?.types || [])].includes('Files')) e.preventDefault(); });
-  editor.addEventListener('drop', (e) => {
-    const files = [...(e.dataTransfer?.files || [])].filter(f => (f.type || '').startsWith('image/'));
-    if (!files.length) return;
-    e.preventDefault(); for (const f of files) uploadImage(f);
-  });
+  if (imagesEnabled) {
+    editor.addEventListener('dragover', (e) => { if ([...(e.dataTransfer?.types || [])].includes('Files')) e.preventDefault(); });
+    editor.addEventListener('drop', (e) => {
+      const files = [...(e.dataTransfer?.files || [])].filter(f => (f.type || '').startsWith('image/'));
+      if (!files.length) return;
+      e.preventDefault(); for (const f of files) uploadImage(f);
+    });
+  }
   const body = el('div', { className: 'nb-body' }, editor, preview);
   const tab = (label, m) => el('button', { type: 'button', className: 'nb-tab', onclick: () => setMode(m) }, label);
   const writeBtn = tab('Write', 'write'), splitBtn = tab('Split', 'split'), prevBtn = tab('Preview', 'preview');
@@ -1727,9 +1795,9 @@ function notebookEditor(id, initialMd, editable) {
     if (showWrite) { requestAnimationFrame(grow); scheduleGutter(); }
   };
   const bar = el('div', { className: 'nb-bar' },
-    editable ? el('div', { className: 'nb-tabs' }, writeBtn, splitBtn, prevBtn) : el('span', { className: 'kicker' }, 'Notebook'),
+    editable ? el('div', { className: 'nb-tabs' }, writeBtn, splitBtn, prevBtn) : el('span', { className: 'kicker' }, editorLabel),
     status);
-  const hint = editable ? el('div', { className: 'nb-uploadhint' }, 'Paste, drop, or 🖼 to add an image') : null;
+  const hint = editable && imagesEnabled ? el('div', { className: 'nb-uploadhint' }, 'Paste, drop, or 🖼 to add an image') : null;
   const box = el('div', { className: 'nb-wrap' }, bar, toolbar, body, hint);
   if (!editable) { editor.remove(); toolbar.remove(); }
   else { try { new ResizeObserver(scheduleGutter).observe(ta); } catch { window.addEventListener('resize', scheduleGutter); } } // re-number on width change (mode switch, resize)

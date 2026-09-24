@@ -316,15 +316,16 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .pct { font-family: var(--mono); font-size: 11px; color: var(--muted-2); width: 34px; text-align: right; flex: none; }
 .pct.good { color: var(--jade); }
 
-/* engagement priority meter (1..5, 5 = highest) — five equal bars; the number filled = priority */
-.pmeter { display: inline-flex; align-items: center; gap: 3px; height: 13px; flex: none; }
-.pmeter .pseg { width: 3px; height: 13px; background: var(--line-3); border-radius: 1px; }
-.pmeter .pseg.on { background: var(--muted-2); }
-.pmeter.lvl-crit .pseg.on { background: var(--red); }
-.pmeter.lvl-high .pseg.on { background: #E8894A; }
-.pmeter.lvl-med  .pseg.on { background: var(--gold); }
-.pmeter.lvl-low  .pseg.on { background: var(--blue); }
-.pmeter.lvl-min  .pseg.on { background: var(--muted-2); }
+/* engagement priority meter (1..5, 5 = highest) — one SVG of five rising bars, the number filled
+   equals the priority. Integer coords keep every bar and gap identical (no sub-pixel wobble). */
+.pmeter { display: inline-block; vertical-align: middle; flex: none; }
+.pmeter .pseg { fill: var(--line-3); }
+.pmeter .pseg.on { fill: var(--muted-2); }
+.pmeter.lvl-crit .pseg.on { fill: var(--red); }
+.pmeter.lvl-high .pseg.on { fill: #E8894A; }
+.pmeter.lvl-med  .pseg.on { fill: var(--gold); }
+.pmeter.lvl-low  .pseg.on { fill: var(--blue); }
+.pmeter.lvl-min  .pseg.on { fill: var(--muted-2); }
 .prow-asg { display: inline-flex; align-items: center; gap: 2px; margin-left: 8px; }
 .pmeta { display: inline-flex; align-items: center; flex-wrap: wrap; }
 

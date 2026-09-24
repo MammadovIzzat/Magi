@@ -464,11 +464,29 @@ $('#backBtn').onclick = () => { if (history.length > 1) history.back(); else loc
 const PRIORITY_LABEL = { 5: 'Highest', 4: 'High', 3: 'Medium', 2: 'Low', 1: 'Lowest' };
 const PRIORITY_OPTS = [5, 4, 3, 2, 1].map(v => ({ value: String(v), label: `${v} — ${PRIORITY_LABEL[v]}` }));
 function priorityMeter(pr) {
-  const n = Number(pr) || 0;
+  const n = Math.max(0, Math.min(5, Number(pr) || 0));
   const lvl = n >= 5 ? 'crit' : n === 4 ? 'high' : n === 3 ? 'med' : n === 2 ? 'low' : n === 1 ? 'min' : 'none';
-  const m = el('span', { className: 'pmeter lvl-' + lvl, title: n ? `Priority ${n}/5 · ${PRIORITY_LABEL[n]}` : 'No priority set' });
-  for (let i = 1; i <= 5; i++) m.append(el('span', { className: 'pseg' + (i <= n ? ' on' : '') }));
-  return m;
+  // Drawn as one SVG (not flexed <div>s) so every bar is exactly 3 wide with a 2-wide gap and an
+  // even +2 height step — pixel-crisp and symmetric at any zoom, no sub-pixel bold/thin wobble.
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('class', 'pmeter lvl-' + lvl);
+  svg.setAttribute('viewBox', '0 0 23 13');
+  svg.setAttribute('width', '23'); svg.setAttribute('height', '13');
+  for (let i = 0; i < 5; i++) {
+    const h = 5 + i * 2;                 // 5, 7, 9, 11, 13 — uniform rise
+    const r = document.createElementNS(NS, 'rect');
+    r.setAttribute('x', i * 5);          // 0, 5, 10, 15, 20 → 3 wide + 2 gap
+    r.setAttribute('y', 13 - h);
+    r.setAttribute('width', '3');
+    r.setAttribute('height', h);
+    r.setAttribute('rx', '0.5');
+    r.setAttribute('class', 'pseg' + (i < n ? ' on' : ''));
+    svg.append(r);
+  }
+  const t = document.createElementNS(NS, 'title');
+  t.textContent = n ? `Priority ${n}/5 · ${PRIORITY_LABEL[n]}` : 'No priority set';
+  svg.append(t);
+  return svg;
 }
 // Highest priority first (unset sinks to the bottom), then newest.
 const byPriority = (a, b) => (Number(b.priority) || 0) - (Number(a.priority) || 0) || (new Date(b.created_at) - new Date(a.created_at));

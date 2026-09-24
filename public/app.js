@@ -39,6 +39,7 @@ const ICON = {
   server: ['M2.5 4h11v3.4h-11zM2.5 8.6h11V12h-11zM4.6 5.7h.01M4.6 10.3h.01', 1.3],
   user: ['M8 8.2a2.4 2.4 0 100-4.8 2.4 2.4 0 000 4.8zM3.5 13.3c0-2.4 2-3.9 4.5-3.9s4.5 1.5 4.5 3.9', 1.3],
   globe: ['M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13M1.8 8h12.4M8 1.5c2.4 2.5 2.4 10.5 0 13M8 1.5c-2.4 2.5-2.4 10.5 0 13', 1.2],
+  gear: ['M8 2.4v2.3M8 11.3v2.3M2.4 8h2.3M11.3 8h2.3M4.1 4.1l1.6 1.6M10.3 10.3l1.6 1.6M11.9 4.1l-1.6 1.6M5.7 10.3l-1.6 1.6M8 5.5a2.5 2.5 0 100 5 2.5 2.5 0 000-5', 1.3],
   copy: ['M5.5 5.5h7v8h-7zM3.5 10.5V2.5h7v2', 1.4],
   right: ['M6 3.5L10.5 8 6 12.5', 1.6],
 };
@@ -331,7 +332,9 @@ function field(parent, label, name, { type = 'text', value = '', ph = '', textar
 }
 
 // ---------- chrome ----------
+let CRUMBS = [];
 function setCrumbs(parts) {
+  CRUMBS = parts;
   const c = $('#crumbs'); c.replaceChildren();
   parts.forEach((p, i) => {
     c.append(el('span', { className: 'sep' }, '/'));
@@ -374,7 +377,10 @@ function renderAccount() {
     el('button', { className: 'iconbtn theme', title: `Theme — ${currentTheme()} (click to switch)`, onclick: toggleTheme },
       el('span', { className: 'themedot' })),
     el('button', { className: 'iconbtn danger', title: 'Sign out', onclick: logout }, icon('exit'))));
-  const tb = $('#tplBtn'); if (tb) tb.hidden = !isAdmin(); // editing templates is admin-only
+  // Templates are admin-only. On a connected install (team server / linked admin) they live INSIDE
+  // the Admin panel (a Templates tab), so the top-bar button is hidden there; a local/standalone
+  // install has no Admin panel, so it keeps the top-bar Templates button.
+  const tb = $('#tplBtn'); if (tb) tb.hidden = !isAdmin() || !!adminCtx();
 }
 // When the background poll first notices the token has lapsed (server 401 → sync paused),
 // open the sign-in dialog once, so the user is actually asked for a fresh token instead of
@@ -463,8 +469,13 @@ window.addEventListener('hashchange', () => {
   v.classList.remove('nav-in'); void v.offsetWidth; v.classList.add('nav-in');
 });
 $('#homeBtn').onclick = () => location.hash = '';
-// Universal back: walk the hash history, or fall home if this is the first screen.
-$('#backBtn').onclick = () => { if (history.length > 1) history.back(); else location.hash = ''; };
+// Hierarchical back: go up ONE level (the parent breadcrumb), not browser-history back — so jumping
+// target → target and pressing back lands on the targets list, never the previously-viewed target.
+$('#backBtn').onclick = () => {
+  const nav = CRUMBS.filter(c => c.go); // navigable ancestors; the current page is the last (unlinked) crumb
+  const parent = nav[nav.length - 1];
+  if (parent) parent.go(); else location.hash = '';
+};
 
 // ---------- engagements (home) ----------
 // Engagement priority: 1..5, 5 = highest. Rendered as a 5-segment "signal" meter and used to sort
@@ -527,7 +538,7 @@ async function renderHome() {
         el('span', { style: 'display:flex;flex-direction:column;gap:3px;min-width:0' },
           el('span', { className: 'pname' }, p.name),
           el('span', { className: 'pmeta' }, `${p.asset_count} targets · ${p.finding_count} findings`,
-            asg.length ? el('span', { className: 'prow-asg', title: 'Assigned to ' + asg.join(', ') }, ...asg.slice(0, 3).map(avatarSm)) : null))),
+            asg.length ? el('span', { className: 'prow-asg' + (CURRENT_USER && asg.includes(CURRENT_USER) ? ' mine' : ''), title: 'Assigned to ' + asg.join(', ') }, ...asg.slice(0, 3).map(avatarSm)) : null))),
       el('span', { className: 'pcell hide-sm' }, p.client || '—'),
       el('span', { className: 'hide-sm', style: 'display:flex;align-items:center;gap:10px' },
         el('span', { className: 'bar' + (cov > 70 ? ' good' : !cov ? ' idle' : '') }, el('span', { style: `width:${cov}%` })),
@@ -818,17 +829,11 @@ async function renderProjectOverview(id) {
   setCrumbs([{ label: 'engagements', go: () => location.hash = '' }, { label: p.name }]);
   const finished = p.status === 'finished';
   const allTargets = p.assets.flatMap(f => (f.items || []).map(t => ({ ...t, grp: f.grp })));
+  // Engagement chrome collapses into one Settings popup (details + Edit / Export / Finish / Delete);
+  // targets open by clicking the Targets tile, and the back button walks up the hierarchy.
   topActions(
-    el('button', { className: 'btn gold', onclick: () => location.hash = `/project/${id}/targets` }, 'Open targets ›'),
-    el('button', { className: 'btn', onclick: () => exportProjectMenu(id, p.name) }, icon('down', 12), 'Export'),
-    el('button', { className: 'btn', title: 'Every web domain & subdomain across this engagement', onclick: () => subdomainsModal(allTargets, p.name) }, icon('globe', 12), 'Subdomains'),
-    isEditor() ? el('button', { className: 'btn', onclick: () => editProject(p, () => renderProjectOverview(id)) }, icon('edit', 12), 'Edit') : null,
-    isEditor()
-      ? (finished
-        ? el('button', { className: 'btn', onclick: () => setProjectStatus(p, 'active', () => renderProjectOverview(id)) }, 'Reopen')
-        : el('button', { className: 'btn', onclick: () => setProjectStatus(p, 'finished', () => renderProjectOverview(id)) }, icon('check', 12), 'Finish'))
-      : null,
-    isEditor() ? el('button', { className: 'btn danger', onclick: () => delProject(p, allTargets.length, () => location.hash = '') }, 'Delete') : null);
+    el('button', { className: 'btn', title: 'Engagement details, export, finish, delete', onclick: () => engagementSettings(p, () => renderProjectOverview(id)) }, icon('gear', 12), 'Settings'),
+    el('button', { className: 'btn', title: 'Every web domain & subdomain across this engagement', onclick: () => subdomainsModal(allTargets, p.name) }, icon('globe', 12), 'Subdomains'));
 
   const total = allTargets.reduce((a, x) => a + x.total, 0);
   const handled = allTargets.reduce((a, x) => a + x.handled, 0);
@@ -859,8 +864,33 @@ async function renderProjectOverview(id) {
       : [el('span', { className: 'assign-none' }, 'Unassigned')]));
 
   const dateRange = fmtDateRange(p.start_date, p.end_date);
-  const overviewEditor = notebookEditor(id, p.overview || '', isEditor(),
-    { savePath: '/projects/' + id + '/overview', saveKey: 'overview', label: 'Overview', images: false });
+
+  // Overview details: rendered read-only by default (no Write/Split/Preview clutter). Editors reveal
+  // the full SysReptor-style editor (Write / Split / Preview) with an Edit button, and Done returns
+  // to the rendered view. Autosave means the text is already persisted when Done is pressed.
+  const canEditOverview = isEditor();
+  const ovSection = el('div', {});
+  let ovEditing = false;
+  const paintOverview = () => {
+    const editBtn = canEditOverview
+      ? (ovEditing
+        ? el('button', { className: 'btn line sm', onclick: () => { const ta = ovSection.querySelector('.nb-input'); if (ta) p.overview = ta.value; ovEditing = false; paintOverview(); } }, icon('check', 12), 'Done')
+        : el('button', { className: 'btn line sm', onclick: () => { ovEditing = true; paintOverview(); } }, icon('edit', 12), 'Edit'))
+      : null;
+    const head = el('div', { className: 'srule', style: 'margin-top:22px' },
+      el('span', { className: 'kicker' }, 'Overview'), el('span', { className: 'rule' }), editBtn);
+    let bodyNode;
+    if (ovEditing) {
+      bodyNode = notebookEditor(id, p.overview || '', true,
+        { savePath: '/projects/' + id + '/overview', saveKey: 'overview', label: 'Overview', images: false });
+    } else {
+      const md = (p.overview || '').trim();
+      if (md) { bodyNode = el('div', { className: 'markdown ov-render' }); bodyNode.innerHTML = mdToHtml(md); bodyNode.querySelectorAll('input.md-task').forEach(cb => { cb.disabled = true; }); }
+      else bodyNode = el('div', { className: 'pmeta', style: 'padding:10px 2px' }, canEditOverview ? 'No overview yet — click Edit to write one.' : 'No overview yet.');
+    }
+    ovSection.replaceChildren(head, bodyNode);
+  };
+  paintOverview();
 
   $('#view').replaceChildren(el('div', { className: 'page narrow' },
     el('div', { style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap' },
@@ -884,9 +914,37 @@ async function renderProjectOverview(id) {
       el('button', { className: 'stat stat-link', onclick: () => location.hash = `/project/${id}/targets` }, kick('Targets'),
         srow(allTargets.length, null),
         el('div', { className: 'stat-note' }, notStarted ? `${notStarted} not started` : allTargets.length ? 'all started' : 'add targets ›'))),
-    p.notes ? el('div', { className: 'ov-notes' }, el('div', { className: 'kicker' }, 'Notes'), el('p', { className: 'lede', style: 'white-space:pre-wrap' }, p.notes)) : null,
-    el('div', { className: 'srule', style: 'margin-top:22px' }, el('span', { className: 'kicker' }, 'Overview'), el('span', { className: 'rule' })),
-    overviewEditor));
+    ovSection));
+}
+
+// The engagement's chrome in one popup: read-only details, plus Edit / Export / Finish / Delete for
+// editors. Replaces the row of top-bar buttons. `done` re-renders the overview after a change.
+function engagementSettings(p, done) {
+  const id = p.id;
+  const finished = p.status === 'finished';
+  const tcount = (p.assets || []).flatMap(f => f.items || []).length;
+  const kv = (k, v, pre) => v ? el('div', { className: 'es-kv' }, el('span', { className: 'es-k' }, k),
+    el('span', { className: 'es-v', style: pre ? 'white-space:pre-wrap' : '' }, v)) : null;
+  modal({
+    kicker: 'Engagement', title: p.name, cta: 'Close', wide: true,
+    build: (b) => {
+      b.append(el('div', { className: 'es-details' },
+        kv('Client', p.client),
+        kv('Scope', p.scope),
+        kv('Dates', fmtDateRange(p.start_date, p.end_date)),
+        kv('Priority', p.priority ? `${p.priority} — ${PRIORITY_LABEL[p.priority]}` : null),
+        finished ? kv('Status', 'Finished') : null,
+        kv('Notes', p.notes, true)) );
+      const acts = el('div', { className: 'es-actions' });
+      acts.append(el('button', { type: 'button', className: 'btn', onclick: () => exportProjectMenu(id, p.name) }, icon('down', 12), 'Export'));
+      if (isEditor()) acts.append(
+        el('button', { type: 'button', className: 'btn', onclick: () => editProject(p, done) }, icon('edit', 12), 'Edit details'),
+        el('button', { type: 'button', className: 'btn', onclick: () => setProjectStatus(p, finished ? 'active' : 'finished', done) }, icon('check', 12), finished ? 'Reopen' : 'Finish'),
+        el('button', { type: 'button', className: 'btn danger', onclick: () => delProject(p, tcount, () => location.hash = '') }, icon('trash', 12), 'Delete'));
+      b.append(acts);
+    },
+    onSubmit: async () => {},
+  });
 }
 
 // ---------- engagement (project) — lists Asset folders ----------
@@ -899,7 +957,6 @@ async function renderProject(id) {
   const allTargets = p.assets.flatMap(f => (f.items || []).map(t => ({ ...t, grp: f.grp })));
   const mayWork = canWorkProjectC(p); // editors/admins, or a worker assigned to this engagement
   topActions(
-    el('button', { className: 'btn', onclick: () => location.hash = `/project/${id}` }, '‹ Overview'),
     el('button', { className: 'btn', title: 'Every web domain & subdomain across this engagement', onclick: () => subdomainsModal(allTargets, p.name) }, icon('globe', 12), 'Subdomains'),
     mayWork ? el('button', { className: 'btn gold', onclick: () => addTargetToProject(id) }, icon('plus', 12), 'Add target') : null);
 
@@ -925,16 +982,6 @@ async function renderProject(id) {
       el('span', { className: 'tgrow' },
         el('span', { className: 'tname' }, a.label),
         el('span', { className: 'tmeta' }, `${(t.label || a.type).toUpperCase()} · ${a.handled}/${a.total} handled${a.findings ? ' · ' + a.findings + ' finding' + (a.findings === 1 ? '' : 's') : ''}`)),
-      // own grid cell so it sits inline (not on a new line under the name); always present to keep
-      // the columns aligned whether or not a target is assigned.
-      (() => {
-        const asg = assigneeList(a.assignee);
-        const mine = CURRENT_USER && asg.includes(CURRENT_USER);
-        return el('span', { className: 'tassign' + (asg.length ? ' on' : '') + (mine ? ' mine' : ''), title: asg.length ? 'Assigned to ' + asg.join(', ') : 'Unassigned' },
-          ...(asg.length
-            ? asg.slice(0, 4).map(avatarSm).concat(asg.length > 4 ? [el('span', { className: 'tassign-more' }, '+' + (asg.length - 4))] : [])
-            : [el('span', { className: 'tassign-none' }, '—')]));
-      })(),
       el('span', { className: 'tprog' },
         el('span', { className: 'bar' + (cov > 70 ? ' good' : !cov ? ' idle' : '') }, el('span', { style: `width:${cov}%` })),
         el('span', { className: 'pct' + (cov > 70 ? ' good' : cov ? ' some' : '') }, cov + '%')),
@@ -1361,9 +1408,8 @@ async function renderTarget(id) {
   const pid = a.project?.id ?? a.folder?.project_id;
   const project = pid ? await api('/projects/' + pid) : null;   // engagement → all targets for the rail
   setRail(project ? railForProject(project, id) : null);
-  // A worker assigned to the ENGAGEMENT may work any of its targets (edit/delete, checklist, notes,
-  // findings), not just ones assigned to them directly — mirrors the server's canWorkProject.
-  const meOnProject = !!CURRENT_USER && assigneeList(project?.assignee).includes(CURRENT_USER);
+  // `a.can_work` (from the server) gates working this target: a lead, or a worker assigned to this
+  // engagement, may edit its checklist and record notes/creds/findings. Others get a read-only view.
   // Sub-targets spun up from a spawn_type item (e.g. a web target per subdomain), grouped by the
   // item uid that created them, so each such item can list its subs with live coverage.
   const spawnedByItem = {};
@@ -1385,29 +1431,17 @@ async function renderTarget(id) {
   setCrumbs([
     { label: 'engagements', go: () => location.hash = '' },
     { label: a.project?.name || 'engagement', go: () => location.hash = `/project/${pid}` },
+    { label: 'Targets', go: () => location.hash = `/project/${pid}/targets` },
     { label: a.label }]);
 
-  // "Who's on this target" — a display-only assignment anyone can set; it doesn't gate editing.
-  // Built up here (before the retest/PoC branches) so every target kind can be assigned, not just
-  // the ones that carry a checklist.
-  const assignCtl = multiAssign({
-    selected: assigneeList(a.assignee),
-    loadPeople: () => loadAssignees(),
-    onChange: async (list) => {
-      try { const r = await api('/targets/' + id + '/assignee', { method: 'PATCH', body: { assignee: list } }); a.assignee = r?.assignee || null; }
-      catch (e) { toast(e.message); }
-    },
-  });
-  // One reusable "Assignees: …" block. assignCtl is a single node, so only the branch that actually
-  // renders may mount it — safe because exactly one target-kind branch runs per render.
-  const assignBlock = (style) => el('div', { className: 'assign', style: style || '' },
-    el('span', { className: 'assign-lbl' }, icon('user', 12), 'Assignees'), assignCtl);
+  // Targets are no longer individually assigned — work rights come from the ENGAGEMENT assignment
+  // (canWorkProject): a lead or a worker on this engagement may work any of its targets.
 
   // Retest targets carry no checklist — just remediation items (a finding per re-checked issue).
   if (a.type === 'retest') {
     topActions(
       el('button', { className: 'btn gold', onclick: () => addFinding(id, true) }, icon('plus', 12), 'Add retest item'),
-      (isEditor() || meOnProject) ? el('button', { className: 'btn danger', onclick: () => delTarget(a) }, 'Delete target') : null);
+      a.can_work ? el('button', { className: 'btn danger', onclick: () => delTarget(a) }, 'Delete target') : null);
     const list = el('div', { className: 'tlist' });
     if (!a.findings.length) list.append(el('div', { className: 'empty', style: 'border:0' },
       el('div', {}, 'No retest items yet. Add one for each finding from the previous engagement you re-checked.'),
@@ -1419,7 +1453,6 @@ async function renderTarget(id) {
       el('div', { className: 'kicker' }, 'Retest'),
       el('h1', {}, a.label),
       el('div', { className: 'lede' }, `${a.findings.length} item${a.findings.length === 1 ? '' : 's'} · ${counts.fixed} fixed · ${counts.half_fixed} partial · ${counts.not_fixed} not fixed`),
-      assignBlock('margin:8px 0 2px'),
       el('div', { className: 'srule' }, el('span', { className: 'kicker' }, 'Remediation items'), el('span', { className: 'rule' }),
         el('button', { className: 'btn line sm', onclick: () => addFinding(id, true) }, '+ Add')),
       list));
@@ -1431,7 +1464,7 @@ async function renderTarget(id) {
   if (a.type === 'poc') {
     topActions(
       el('button', { className: 'btn gold', onclick: () => addFinding(id, false) }, icon('plus', 12), 'Add finding'),
-      (isEditor() || meOnProject) ? el('button', { className: 'btn danger', onclick: () => delTarget(a) }, 'Delete target') : null);
+      a.can_work ? el('button', { className: 'btn danger', onclick: () => delTarget(a) }, 'Delete target') : null);
     const list = el('div', { className: 'tlist' });
     if (!a.findings.length) list.append(el('div', { className: 'empty', style: 'border:0' },
       el('div', {}, 'No findings yet. Record the exploit — notes, requests, credentials and screenshots — as your proof of concept.'),
@@ -1441,7 +1474,6 @@ async function renderTarget(id) {
       el('div', { className: 'kicker' }, 'Proof of concept'),
       el('h1', {}, a.label),
       el('div', { className: 'lede' }, `${a.findings.length} finding${a.findings.length === 1 ? '' : 's'}`),
-      assignBlock('margin:8px 0 2px'),
       el('div', { className: 'srule' }, el('span', { className: 'kicker' }, 'Findings'), el('span', { className: 'rule' }),
         el('button', { className: 'btn line sm', onclick: () => addFinding(id, false) }, '+ Add')),
       list));
@@ -1454,10 +1486,10 @@ async function renderTarget(id) {
   const cov = pct(handled, actionable.length);
   // You work your OWN targets: a lead (editor/admin), someone already assigned, or anyone when the
   // target is still unassigned (the first note/finding auto-claims it). Otherwise it's read-only.
-  const roster = assigneeList(a.assignee);
-  const meAssigned = !!CURRENT_USER && roster.includes(CURRENT_USER);
-  const mayContribute = isEditor() || meAssigned || meOnProject || !roster.length;   // add notes/creds/findings (#10)
-  const mayEditChecklist = isEditor() || meAssigned || meOnProject;                  // add/edit/delete checklist items (#7)
+  // Work rights are engagement-level now: a lead (editor/admin) or a worker assigned to this
+  // engagement may add notes/creds/findings and edit the checklist. Others get a read-only view.
+  const mayContribute = a.can_work;
+  const mayEditChecklist = a.can_work;
 
   const checklistBtn = el('button', { className: 'checklist-open', title: 'Open the checklist', onclick: () => openChecklist(id) },
     icon('check', 14), el('span', { className: 'clk-lbl' }, 'Checklist'),
@@ -1471,9 +1503,7 @@ async function renderTarget(id) {
       el('div', { style: 'min-width:0;flex:1' },
         el('div', { style: 'display:flex;align-items:center;gap:9px' },
           codeBadge(a.type), el('span', { className: 'kicker' }, t.label || a.type)),
-        el('h1', {}, a.label)),
-      el('div', { className: 'target-actions' },
-        el('div', { className: 'assign' }, el('span', { className: 'assign-lbl' }, icon('user', 12), 'Assignees'), assignCtl))),
+        el('h1', {}, a.label))),
     // Task tools on one line under the title: open the checklist, record a finding, manage creds.
     // Findings show on the right; credentials open in a popup.
     el('div', { className: 'task-tools' },
@@ -1905,7 +1935,7 @@ async function openCreds(id) {
     let a;
     try { a = await api('/targets/' + id); } catch (e) { bodyEl.replaceChildren(el('div', { className: 'pmeta', style: 'padding:20px' }, e.message)); return; }
     const creds = (a.findings || []).filter(f => f.kind === 'credential');
-    const mayAdd = isEditor() || (!!CURRENT_USER && assigneeList(a.assignee).includes(CURRENT_USER)) || !assigneeList(a.assignee).length;
+    const mayAdd = a.can_work;
     const rows = creds.map(c => {
       const u = credField(c.body, 'Username'), p = credField(c.body, 'Password'), sv = credField(c.body, 'Server');
       const cell = (lbl, val) => val ? el('div', { className: 'cred-cell' }, el('span', { className: 'cred-k' }, lbl),
@@ -1954,7 +1984,7 @@ async function openChecklist(id) {
     for (const fo of (project?.assets || [])) for (const tg of (fo.items || [])) {
       const from = tg.metadata?.spawned_from_item; if (from) (spawnedByItem[from] ||= []).push(tg);
     }
-    const mayEdit = isEditor() || (!!CURRENT_USER && assigneeList(a.assignee).includes(CURRENT_USER)); // #7
+    const mayEdit = a.can_work; // engagement team + leads work the checklist
     const childrenBy = {}, byGroup = {};
     for (const it of a.items) { (byGroup[it.group_key] ||= []).push(it); if (it.parent_id != null) (childrenBy[it.parent_id] ||= []).push(it); }
     const survives = (it) => ACTIONABLE(it)
@@ -2098,11 +2128,9 @@ function renderItem(it, assetId, num, depth, childrenBy = {}, spawnedByItem = {}
       const lst = el('div', { className: 'sub-list' });
       for (const s of subs) {
         const cov = pct(s.handled, s.total);
-        const sAsg = assigneeList(s.assignee);
         lst.append(el('button', { className: 'sub-item', onclick: () => location.hash = `/target/${s.id}` },
           codeBadge(s.type),
           el('span', { className: 'sub-name' }, s.label),
-          sAsg.length ? el('span', { className: 'sub-asg', title: 'Assigned to ' + sAsg.join(', ') }, ...sAsg.slice(0, 3).map(avatarSm)) : null,
           el('span', { className: 'sub-cov' + (cov >= 100 ? ' done' : '') }, cov + '%')));
       }
       wrap.append(lst);
@@ -2773,7 +2801,11 @@ async function renderEditor(type) {
   const types = await api('/templates');
   const active = type || types[0]?.type;
   setRail(null);
-  setCrumbs([{ label: 'library' }]);
+  // Connected installs reach templates from the Admin panel, so the trail (and back button) return
+  // there; a local install reaches it from the top bar, so it's a standalone 'library' page.
+  setCrumbs(adminCtx()
+    ? [{ label: 'admin', go: () => location.hash = '/admin' }, { label: 'templates' }]
+    : [{ label: 'library' }]);
   topActions(
     el('button', { className: 'btn', onclick: importTemplates, title: 'Import checklist templates from a file' }, icon('up', 12), 'Import'),
     el('button', { className: 'btn', onclick: () => exportTemplates(), title: 'Export every asset type as one file' }, icon('down', 12), 'Export all'),
@@ -3395,6 +3427,7 @@ const ADMIN_TAB_LIST = [
   { key: 'ranking', label: 'Ranking' },
   { key: 'logs', label: 'Logs' },
   { key: 'backup', label: 'Backup' },
+  { key: 'templates', label: 'Templates', href: '#/editor' }, // the checklist editor (a full page, not a section)
 ];
 const admCard = (title, sub) => el('div', { className: 'setcard' },
   el('div', { className: 'setcard-hd', style: sub ? 'display:flex;align-items:baseline;justify-content:space-between;gap:12px' : '' },
@@ -3420,7 +3453,7 @@ async function renderAdmin(section) {
     const page = el('div', { className: 'page' });
     page.append(el('div', { className: 'page-head' }, el('div', {}, el('div', { className: 'kicker' }, 'Team server'), el('h1', {}, 'Admin'))));
     page.append(el('nav', { className: 'admtabs' }, ...ADMIN_TAB_LIST.map(t =>
-      el('a', { className: 'admtab' + (t.key === section ? ' on' : ''), href: '#/admin/' + t.key },
+      el('a', { className: 'admtab' + (t.key === section ? ' on' : ''), href: t.href || ('#/admin/' + t.key) },
         t.label,
         (t.key === 'devices' && ADMIN_PENDING) ? el('span', { className: 'tabcount' }, String(ADMIN_PENDING)) : null,
         (t.key === 'grading' && ADMIN_UNGRADED) ? el('span', { className: 'tabcount' }, String(ADMIN_UNGRADED)) : null))));

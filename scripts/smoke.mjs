@@ -210,9 +210,9 @@ checks.push(['checklist popup paints', await ev(`
   document.querySelector(".checklist-open")?.click(); await new Promise(r => setTimeout(r, 1000));
   document.querySelectorAll(".checklist-pop .ghdr")[0]?.click(); await new Promise(r => setTimeout(r, 900));
   return document.querySelectorAll(".checklist-pop .item").length > 0`)]);
-// A retest target (no checklist) can still be assigned — the assignee control renders on its page and
-// the assignment persists (regression: the retest/PoC branches returned before building the control).
-checks.push(['retest targets expose an assignee control', await ev(`
+// A retest target renders its own (checklist-free) page — no per-target assignee control anymore
+// (assignment is engagement-level only).
+checks.push(['retest targets render (no per-target assignee control)', await ev(`
   try {
     const p = (await (await fetch("/api/projects")).json())[0];
     const j = async (u, o) => (await fetch(u, { headers: { "content-type": "application/json" }, ...o })).json();
@@ -220,11 +220,8 @@ checks.push(['retest targets expose an assignee control', await ev(`
     const rt = await j("/api/assets/" + rf.id + "/targets", { method: "POST", body: JSON.stringify({ type: "retest", label: "retest-me" }) });
     location.hash = "#/target/" + rt.id; await new Promise(r => setTimeout(r, 1200));
     const isRetest = /Retest/i.test(document.querySelector(".page .kicker")?.textContent || "");
-    const hasCtl = !!document.querySelector(".assign .assign-sel .sel-trigger");
-    if (!isRetest || !hasCtl) return false;
-    await fetch("/api/targets/" + rt.id + "/assignee", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ assignee: "admin" }) });
-    const saved = await (await fetch("/api/targets/" + rt.id)).json();
-    return (saved.assignee || "").includes("admin");
+    const noAssignCtl = !document.querySelector(".assign .assign-sel");
+    return isRetest && noAssignCtl;
   } catch (e) { return false; }`)]);
 // Pasting a multi-line / comma list of subdomains into a spawn box creates one sub-target per host.
 checks.push(['paste a list of subdomains spawns a sub-target each', await ev(`
@@ -379,6 +376,45 @@ checks.push(['subdomains roll-up lists web domains and excludes IPs', await ev(`
     document.querySelector(".modal-x")?.click();
     return hasBoth && noIp && exports;
   } catch (e) { return false; }`)]);
+// Overview redesign: the top bar is just Settings + Subdomains (Export/Edit/Finish/Delete collapsed
+// into the Settings popup), and the overview text is read-only until you press Edit (which reveals
+// the Write/Split/Preview editor).
+checks.push(['engagement overview: settings popup + overview edit toggle', await ev(`
+  try {
+    const p = (await (await fetch("/api/projects")).json())[0];
+    location.hash = "#/project/" + p.id; await new Promise(r => setTimeout(r, 900));
+    const topBtns = [...document.querySelectorAll("#topActions .btn")].map(b => b.textContent);
+    const compact = topBtns.some(t => /Settings/.test(t)) && topBtns.some(t => /Subdomains/.test(t))
+      && !topBtns.some(t => /Open targets|Delete|Finish/.test(t));
+    [...document.querySelectorAll("#topActions .btn")].find(b => /Settings/.test(b.textContent)).click();
+    await new Promise(r => setTimeout(r, 300));
+    const settingsOk = !!document.querySelector(".es-details")
+      && [...document.querySelectorAll(".es-actions button")].some(b => /Edit details/.test(b.textContent))
+      && [...document.querySelectorAll(".es-actions button")].some(b => /Delete/.test(b.textContent));
+    document.querySelector(".modal-x")?.click(); await new Promise(r => setTimeout(r, 150));
+    const noTabsDefault = !document.querySelector(".nb-tabs");         // read-only render by default
+    const editBtn = [...document.querySelectorAll(".srule button")].find(b => /Edit/.test(b.textContent));
+    if (!editBtn) return false;
+    editBtn.click(); await new Promise(r => setTimeout(r, 300));
+    const editorShown = !!document.querySelector(".nb-input") && !!document.querySelector(".nb-tabs");
+    return compact && settingsOk && noTabsDefault && editorShown;
+  } catch (e) { return false; }`)]);
+// The back button walks UP the hierarchy (target -> targets list -> overview -> engagements), not
+// browser-history back — so jumping between targets and pressing back never lands on the last one.
+checks.push(['back button walks up the hierarchy', await ev(`
+  try {
+    const p = (await (await fetch("/api/projects")).json())[0];
+    const items = (await (await fetch("/api/projects/" + p.id)).json()).assets.flatMap(f => f.items || []);
+    if (!items.length) return false;
+    location.hash = "#/target/" + items[0].id; await new Promise(r => setTimeout(r, 900));
+    document.querySelector("#backBtn").click(); await new Promise(r => setTimeout(r, 500));
+    const onTargets = location.hash.includes("/targets");
+    document.querySelector("#backBtn").click(); await new Promise(r => setTimeout(r, 500));
+    const onOverview = /#\\/project\\/\\d+$/.test(location.hash);
+    document.querySelector("#backBtn").click(); await new Promise(r => setTimeout(r, 400));
+    const onHome = location.hash === "" || location.hash === "#" || location.hash === "#/";
+    return onTargets && onOverview && onHome;
+  } catch (e) { return false; }`)]);
 // Engagements gain a 1..5 priority (meter + sort), an Overview landing page, and engagement-level
 // assignees. Runs LAST of the project checks — it creates extra engagements, so no earlier
 // projects[0] check must follow it.
@@ -395,13 +431,13 @@ checks.push(['engagement priority meter, overview + assignees', await ev(`
     const names = [...document.querySelectorAll(".prow .pname")].map(e => e.textContent);
     const ai = names.indexOf("ZZ Priority Alpha"), oi = names.indexOf("ZZ Priority Omega");
     const sorted = ai !== -1 && oi !== -1 && ai < oi;
-    // overview: a full priority meter + assignee control + an Open-targets action
+    // overview: a full priority meter + assignee control; the Targets stat tile opens the target list
     location.hash = "#/project/" + hi.id; await new Promise(r => setTimeout(r, 800));
     const ovPrio = document.querySelectorAll(".ov-prio .pmeter .pseg.on").length === 5;
     const ovAssign = !!document.querySelector(".ov-meta .assign .assign-sel .sel-trigger");
-    const openBtn = [...document.querySelectorAll("#topActions .btn")].find(b => /Open targets/.test(b.textContent));
-    if (!openBtn) return false;
-    openBtn.click(); await new Promise(r => setTimeout(r, 700));
+    const targetsTile = [...document.querySelectorAll(".stat-link")].find(b => /Targets/.test(b.textContent));
+    if (!targetsTile) return false;
+    targetsTile.click(); await new Promise(r => setTimeout(r, 700));
     const onTargets = location.hash.includes("/targets") && !!document.querySelector(".srule");
     // engagement assignee endpoint persists a change (display-only, any user may set it)
     await fetch("/api/projects/" + hi.id + "/assignee", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ assignee: "admin,ana" }) });
@@ -447,6 +483,9 @@ checks.push(['admin tabs + ranking page paint', await ev(`
   const hasSev = document.querySelectorAll(".ranktable .sevchip").length > 0;
   const hasScore = /41/.test(document.querySelector(".rankrow .rank-score")?.textContent || "");
   const tabs = document.querySelectorAll(".admtabs .admtab").length;
+  // the Templates tab lives in the admin panel now (connected format) and links out to the editor
+  const tplTab = [...document.querySelectorAll(".admtabs .admtab")].find(a => /Templates/.test(a.textContent));
+  const tplTabOk = !!tplTab && tplTab.getAttribute("href") === "#/editor";
   const activeIsRanking = /ranking/i.test(document.querySelector(".admtab.on")?.textContent || "");
   location.hash = "#/admin/users"; await new Promise(r => setTimeout(r, 700));
   const usersActive = /users/i.test(document.querySelector(".admtab.on")?.textContent || "");
@@ -463,7 +502,7 @@ checks.push(['admin tabs + ranking page paint', await ev(`
   const devicesText = document.querySelector(".admbody")?.textContent || "";
   const devicesHasCodesAndRequests = /connection requests/i.test(devicesText) && /one-time codes/i.test(devicesText);
   window.fetch = real;
-  return rankRows === 2 && tabs === 6 && activeIsRanking && usersActive && hasSev && hasScore && usersHasCreate && udOk && devicesHasCodesAndRequests`)]);
+  return rankRows === 2 && tabs === 7 && activeIsRanking && usersActive && hasSev && hasScore && usersHasCreate && udOk && tplTabOk && devicesHasCodesAndRequests`)]);
 // Responsive top bar: at a narrow (phone-ish) width the page actions must not spill out of the bar —
 // the bar stays inside the window and the account badge remains on screen (actions scroll within).
 await cdp('Emulation.setDeviceMetricsOverride', { width: 480, height: 800, deviceScaleFactor: 1, mobile: false });

@@ -165,7 +165,8 @@ check('a different operator can sign in on the same device (shared portal)', (aw
 // the operator's token authorizes API use...
 const list = await req('GET', '/api/projects', { token: workerToken, device: dev1 });
 check('the operator token authorizes API', list.status === 200 && Array.isArray(list.json));
-// RBAC: engagement STRUCTURE + templates are admin-only; workers work checklists + findings.
+// RBAC: engagement STRUCTURE + templates are admin/editor; a WORKER works only the engagements
+// assigned to them (targets are no longer individually assigned).
 const wProj = await req('POST', '/api/projects', { token: workerToken, device: dev1, body: { name: 'Acme Q3' } });
 check('a worker cannot create an engagement', wProj.status === 403);
 const made = await req('POST', '/api/projects', { token: adminTok, body: { name: 'Acme Q3' } });
@@ -177,35 +178,39 @@ check('a worker cannot edit templates', wTpl.status === 403);
 const aFinish = await req('PATCH', `/api/projects/${made.json.id}`, { token: adminTok, body: { status: 'finished', client: 'Acme' } });
 check('an admin can edit + finish an engagement', aFinish.status === 200 && aFinish.json?.status === 'finished' && aFinish.json?.end_date);
 
-// findings: creation (the route the app posts to), attack-chain links, and the retest type
+// A worker NOT assigned to this engagement can't add its structure or work its targets.
 const extAsset = (await req('POST', `/api/projects/${made.json.id}/assets`, { token: adminTok, body: { grp: 'external', label: 'Ext' } })).json;
-const wAsset = await req('POST', `/api/projects/${made.json.id}/assets`, { token: workerToken, device: dev1, body: { grp: 'external', label: 'W' } });
-check('a worker cannot add an asset', wAsset.status === 403);
+const wAsset0 = await req('POST', `/api/projects/${made.json.id}/assets`, { token: workerToken, device: dev1, body: { grp: 'external', label: 'W' } });
+check('a worker NOT on the engagement cannot add an asset', wAsset0.status === 403);
 const webT = (await req('POST', `/api/assets/${extAsset.id}/targets`, { token: adminTok, body: { type: 'web', label: 'https://x.test' } })).json;
-const wTarget = await req('POST', `/api/assets/${extAsset.id}/targets`, { token: workerToken, device: dev1, body: { type: 'web', label: 'https://w.test' } });
-check('a worker cannot add a target', wTarget.status === 403);
-// but a worker CAN record findings and tick checklist items
-const wf = await req('POST', `/api/targets/${webT.id}/findings`, { token: workerToken, device: dev1, body: { title: 'Worker note', kind: 'note' } });
-check('a worker can record a finding', wf.status === 201 && !!wf.json?.id);
-const anItem = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.items[0];
-const wTick = await req('PATCH', `/api/items/${anItem.id}`, { token: workerToken, device: dev1, body: { status: 'done' } });
-check('a worker can tick a checklist item', wTick.status === 200 && wTick.json?.status === 'done');
-// #7: recording on webT auto-claimed it for ana, so as its assignee she may now edit its checklist.
-const wItemEdit = await req('PATCH', `/api/items/${anItem.id}`, { token: workerToken, device: dev1, body: { title: 'assignee edit' } });
-check('an assigned worker CAN edit a checklist item’s text', wItemEdit.status === 200 && wItemEdit.json?.title === 'assignee edit');
-// but a worker who is NOT on the target cannot touch its checklist structure
 const webT2 = (await req('POST', `/api/assets/${extAsset.id}/targets`, { token: adminTok, body: { type: 'web', label: 'https://x2.test' } })).json;
-await req('PATCH', `/api/targets/${webT2.id}/assignee`, { token: adminTok, body: { assignee: ['bob'] } });
-const item2 = (await req('GET', `/api/targets/${webT2.id}`, { token: adminTok })).json.items.find(i => i.kind === 'check');
-const wItemEdit2 = await req('PATCH', `/api/items/${item2.id}`, { token: workerToken, device: dev1, body: { title: 'nope' } });
-check('a worker NOT on the target cannot edit its checklist items', wItemEdit2.status === 403);
-const wItemAdd2 = await req('POST', `/api/targets/${webT2.id}/items`, { token: workerToken, device: dev1, body: { title: 'nope' } });
-check('a worker NOT on the target cannot add checklist items', wItemAdd2.status === 403);
-// #10: task ownership. Recording auto-claimed webT for ana; a worker can't record on someone else's.
-const webTOwner = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.assignee;
-check('recording on an unassigned target auto-claims it for the recorder', String(webTOwner || '').split(',').includes('ana'));
-const wFindBlocked = await req('POST', `/api/targets/${webT2.id}/findings`, { token: workerToken, device: dev1, body: { title: 'x', kind: 'note' } });
-check('a worker cannot record on a target assigned to someone else', wFindBlocked.status === 403);
+const wTarget0 = await req('POST', `/api/assets/${extAsset.id}/targets`, { token: workerToken, device: dev1, body: { type: 'web', label: 'https://w.test' } });
+check('a worker NOT on the engagement cannot add a target', wTarget0.status === 403);
+const wFind0 = await req('POST', `/api/targets/${webT.id}/findings`, { token: workerToken, device: dev1, body: { title: 'nope', kind: 'note' } });
+check('a worker NOT on the engagement cannot record a finding', wFind0.status === 403);
+const anItem = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.items[0];
+const wTick0 = await req('PATCH', `/api/items/${anItem.id}`, { token: workerToken, device: dev1, body: { status: 'done' } });
+check('a worker NOT on the engagement cannot tick its checklist', wTick0.status === 403);
+
+// Assign the engagement to the worker — now she may work ALL of its targets.
+await req('PATCH', `/api/projects/${made.json.id}/assignee`, { token: adminTok, body: { assignee: 'ana' } });
+const wf = await req('POST', `/api/targets/${webT.id}/findings`, { token: workerToken, device: dev1, body: { title: 'Worker note', kind: 'note' } });
+check('an engagement worker CAN record a finding', wf.status === 201 && !!wf.json?.id);
+const wTick = await req('PATCH', `/api/items/${anItem.id}`, { token: workerToken, device: dev1, body: { status: 'done' } });
+check('an engagement worker CAN tick a checklist item', wTick.status === 200 && wTick.json?.status === 'done');
+const wItemEdit = await req('PATCH', `/api/items/${anItem.id}`, { token: workerToken, device: dev1, body: { title: 'worker edit' } });
+check('an engagement worker CAN edit a checklist item’s text', wItemEdit.status === 200 && wItemEdit.json?.title === 'worker edit');
+const wAddT = await req('POST', `/api/assets/${extAsset.id}/targets`, { token: workerToken, device: dev1, body: { type: 'web', label: 'https://w-added.test' } });
+check('an engagement worker CAN add a target', wAddT.status === 201 && !!wAddT.json?.id);
+
+// A DIFFERENT worker, not on this engagement, stays read-only on its targets.
+await req('POST', '/api/admin/users', { token: adminTok, body: { username: 'carol', password: 'carol-pass-8', role: 'worker' } });
+const carolTok = (await req('POST', '/api/auth/token', { token: deviceToken, device: dev1, body: { username: 'carol', password: 'carol-pass-8' } })).json.token;
+const cItemEdit = await req('PATCH', `/api/items/${anItem.id}`, { token: carolTok, device: dev1, body: { title: 'nope' } });
+check('a worker NOT on the engagement cannot edit its checklist', cItemEdit.status === 403);
+const cFind = await req('POST', `/api/targets/${webT.id}/findings`, { token: carolTok, device: dev1, body: { title: 'x', kind: 'note' } });
+check('a worker NOT on the engagement cannot record on its targets', cFind.status === 403);
+
 const fA = await req('POST', `/api/targets/${webT.id}/findings`, { token: adminTok, body: { title: 'Creds', kind: 'credential', body: 'a:b' } });
 check('a finding can be created on a target', fA.status === 201 && !!fA.json?.id);
 const aUid = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.findings.find(f => f.title === 'Creds').uid;
@@ -288,6 +293,7 @@ check('an invalid bulk status is rejected', markBad.status === 400);
 // ---- durability: deleting an old engagement must NOT reduce the ranking ----
 const anaBefore = anaRank.findings;
 const tmpProj = (await req('POST', '/api/projects', { token: adminTok, body: { name: 'Old engagement' } })).json;
+await req('PATCH', `/api/projects/${tmpProj.id}/assignee`, { token: adminTok, body: { assignee: 'ana' } });
 const tmpAsset = (await req('POST', `/api/projects/${tmpProj.id}/assets`, { token: adminTok, body: { grp: 'external', label: 'X' } })).json;
 const tmpT = (await req('POST', `/api/assets/${tmpAsset.id}/targets`, { token: adminTok, body: { type: 'web', label: 'https://old.test' } })).json;
 await req('POST', `/api/targets/${tmpT.id}/findings`, { token: workerToken, device: dev1, body: { title: 'old finding', kind: 'vuln' } });
@@ -311,6 +317,7 @@ await req('PATCH', `/api/findings/${reF.json.id}`, { token: adminTok, body: { ki
 check('re-classifying it back to a vuln restores the credit', (await anaRankNow()) === reBase + 1);
 // but deleting the whole project must still NOT reduce the count (durable ledger)
 const durProj = (await req('POST', '/api/projects', { token: adminTok, body: { name: 'Dur' } })).json;
+await req('PATCH', `/api/projects/${durProj.id}/assignee`, { token: adminTok, body: { assignee: 'ana' } });
 const durAsset = (await req('POST', `/api/projects/${durProj.id}/assets`, { token: adminTok, body: { grp: 'external', label: 'D' } })).json;
 const durT = (await req('POST', `/api/assets/${durAsset.id}/targets`, { token: adminTok, body: { type: 'web', label: 'https://d.test' } })).json;
 await req('POST', `/api/targets/${durT.id}/findings`, { token: workerToken, device: dev1, body: { title: 'keep', kind: 'vuln' } });
@@ -327,8 +334,8 @@ check('a target can be added straight to an engagement', dt.status === 201 && !!
 const detail = await req('GET', `/api/projects/${made.json.id}`, { token: adminTok });
 const extGroup = (detail.json.assets || []).find(f => f.grp === 'external');
 check('the direct target lands in an auto External group with its checklist', !!extGroup && extGroup.items.some(t => t.label === 'https://direct.test' && t.total > 0));
-const wDirect = await req('POST', `/api/projects/${made.json.id}/targets`, { token: workerToken, device: dev1, body: { type: 'web', label: 'https://nope.test' } });
-check('a worker cannot add a target to an engagement', wDirect.status === 403);
+const wDirect = await req('POST', `/api/projects/${made.json.id}/targets`, { token: carolTok, device: dev1, body: { type: 'web', label: 'https://nope.test' } });
+check('a worker NOT on the engagement cannot add a target to it', wDirect.status === 403);
 
 // Screenshot attachments: a normal image saves; an over-cap upload returns a clean 413 (not an
 // opaque 500 that would let the image vanish silently), and a non-image is refused.
@@ -511,27 +518,18 @@ const oldName = await req('POST', '/api/auth/login', { body: { username: 'admin'
 const newName = await req('POST', '/api/auth/login', { body: { username: 'memo', password: PASS } });
 check('the new username is now the login name (old one gone)', oldName.status === 401 && newName.status === 200);
 
-// ---- target assignment: a "who's on this" label, set by anyone, not an access gate ----
+// ---- the operator roster still powers ENGAGEMENT assignment (targets aren't individually assigned) ----
 const roster = await req('GET', '/api/assignees', { token: adminTok });
 check('the assignee roster lists operator accounts', roster.status === 200 && Array.isArray(roster.json) && roster.json.some(u => u.username === 'ana'));
-const asgW = await req('PATCH', `/api/targets/${webT.id}/assignee`, { token: workerToken, device: dev1, body: { assignee: 'ana' } });
-check('a worker can assign a target (assignment is not gated on edit rights)', asgW.status === 200 && asgW.json?.assignee === 'ana');
-const asgSeen = await req('GET', `/api/targets/${webT.id}`, { token: adminTok });
-check('the assignee is returned with the target', asgSeen.json?.assignee === 'ana');
-const asgClear = await req('PATCH', `/api/targets/${webT.id}/assignee`, { token: adminTok, body: { assignee: '' } });
-check('assigning empty clears the assignee', asgClear.status === 200 && asgClear.json?.assignee == null);
-// multi-assign: an array of operators is stored as a normalised, de-duped comma list
-const asgMulti = await req('PATCH', `/api/targets/${webT.id}/assignee`, { token: adminTok, body: { assignee: ['ana', 'admin', 'ana', ' '] } });
-check('a target can be assigned to several operators (de-duped)', asgMulti.status === 200 && asgMulti.json?.assignee === 'ana,admin');
 
-// ---- spawn a full sub-target (a web target per subdomain), inheriting the assignee ----
-await req('PATCH', `/api/targets/${webT.id}/assignee`, { token: adminTok, body: { assignee: 'ana' } });
+// ---- spawn a full sub-target (a web target per subdomain) — an engagement worker executes this ----
 const webItems = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.items;
 const subItem = webItems.find(i => i.spawn_type === 'web');
 check('the web checklist has a subdomain item that spawns web targets', !!subItem && /subdomain/i.test(subItem.title));
 const spawned = await req('POST', `/api/items/${subItem.id}/spawn-target`, { token: workerToken, device: dev1, body: { label: 'api.acme.test' } });
-check('a worker can spawn a sub-target (executing the checklist, not gated on edit)', spawned.status === 201 && spawned.json?.type === 'web' && spawned.json?.label === 'api.acme.test');
-check('the spawned sub-target inherits the parent target’s assignee', spawned.json?.assignee === 'ana');
+check('an engagement worker can spawn a sub-target (executing the checklist)', spawned.status === 201 && spawned.json?.type === 'web' && spawned.json?.label === 'api.acme.test');
+const cSpawn = await req('POST', `/api/items/${subItem.id}/spawn-target`, { token: carolTok, device: dev1, body: { label: 'nope.acme.test' } });
+check('a worker NOT on the engagement cannot spawn a sub-target', cSpawn.status === 403);
 check('the spawned sub-target is linked back to the item that made it', spawned.json?.metadata?.spawned_from_item === subItem.uid);
 const subFull = await req('GET', `/api/targets/${spawned.json.id}`, { token: adminTok });
 check('the spawned sub-target gets the full web checklist', subFull.json?.items?.length > 20);

@@ -428,14 +428,10 @@ const requireManage = (req, res, next) =>
   canManage(req).then(ok => ok ? next() : res.status(403).json({ error: 'admins only' })).catch(next);
 const requireEdit = (req, res, next) =>
   canEdit(req).then(ok => ok ? next() : res.status(403).json({ error: 'read-only — adding or removing engagements and targets is for editors and admins' })).catch(next);
-// A target's assignees may WORK it — record notes/creds/findings and edit/flag its checklist —
-// alongside editors and admins (collaboration on a target you own, not team structure). Username
-// based; a standalone owner or a linked editor/admin always passes.
-const assigneesOf = (assetId) => String((q(`SELECT assignee FROM assets WHERE id=?`).get(assetId) || {}).assignee || '')
-  .split(',').map(s => s.trim()).filter(Boolean);
 // An engagement's assignees may WORK the whole engagement — add / edit / remove its targets and
-// work any of them — alongside editors and admins. They may NOT change engagement-level details or
-// the overview (that stays with editors/admins). Username based.
+// work any of them (notes, creds, findings, checklist) — alongside editors and admins. They may NOT
+// change engagement-level details or the overview (that stays with editors/admins). Username based.
+// Targets are no longer individually assigned; work rights are engagement-level only.
 const projectAssigneesOf = (projectId) => String((q(`SELECT assignee FROM projects WHERE id=?`).get(projectId) || {}).assignee || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 async function canWorkProject(req, projectId) {
@@ -444,13 +440,8 @@ async function canWorkProject(req, projectId) {
   return !!u && !!projectId && projectAssigneesOf(projectId).includes(u);
 }
 async function canWorkTarget(req, assetId) {
-  if (await canEdit(req)) return true;
-  const u = currentUser(req)?.username;
-  if (!u) return false;
-  if (assigneesOf(assetId).includes(u)) return true;
-  // an engagement assignee may work every target in that engagement
   const pid = (q(`SELECT project_id FROM assets WHERE id=?`).get(assetId) || {}).project_id;
-  return !!pid && projectAssigneesOf(pid).includes(u);
+  return canWorkProject(req, pid);
 }
 // 403 body for a structural change (add/edit/remove targets) attempted without rights.
 const NO_WORK_PROJECT = { error: 'you must be an editor, admin, or assigned to this engagement to change its targets' };
@@ -671,16 +662,18 @@ app.get('/api/admin/users/:id/tasks', requireAdmin, (req, res) => {
   const like = '%' + uname + '%';
   const projects = q(`SELECT id, name, assignee, status FROM projects WHERE assignee LIKE ? ORDER BY name`).all(like)
     .filter(p => isMember(p.assignee)).map(p => ({ id: p.id, name: p.name, status: p.status || 'active' }));
-  const targets = q(`SELECT a.id, a.type, a.label, a.assignee, a.project_id, p.name AS project,
+  // Targets are engagement-scoped now: list every target in the engagements this operator is on.
+  const pids = projects.map(p => p.id);
+  const targets = pids.length ? q(`SELECT a.id, a.type, a.label, a.project_id, p.name AS project,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group')) AS total,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group') AND i.status IN ('done','na','yes','no')) AS handled,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.status='flag') AS flags,
       (SELECT COUNT(*) FROM findings f WHERE f.asset_id=a.id AND f.kind='vuln') AS findings
-      FROM assets a JOIN projects p ON p.id=a.project_id WHERE a.assignee LIKE ? ORDER BY p.name, a.label`).all(like)
-    .filter(t => isMember(t.assignee))
+      FROM assets a JOIN projects p ON p.id=a.project_id
+      WHERE a.project_id IN (${pids.map(() => '?').join(',')}) ORDER BY p.name, a.label`).all(...pids)
     .map(t => ({ id: t.id, type: t.type, label: t.label, project: t.project, project_id: t.project_id,
       total: t.total, handled: t.handled, flags: t.flags, findings: t.findings,
-      done: t.total > 0 && t.handled >= t.total }));
+      done: t.total > 0 && t.handled >= t.total })) : [];
   const authored = q(`SELECT COUNT(*) c FROM findings WHERE author=? AND kind='vuln'`).get(uname).c;
   res.json({ user: u, projects, targets, authored });
 });
@@ -1415,7 +1408,7 @@ app.post('/api/assets/:id/targets', async (req, res) => {
   res.status(201).json(assetSummary(q(`SELECT * FROM assets WHERE id=?`).get(id)));
 });
 
-app.get('/api/targets/:id', (req, res) => {
+app.get('/api/targets/:id', async (req, res) => {
   const a = q(`SELECT * FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'not found' });
   const items = q(`SELECT * FROM items WHERE asset_id=? ORDER BY sort, id`).all(req.params.id)
@@ -1426,25 +1419,13 @@ app.get('/api/targets/:id', (req, res) => {
     .map(f => ({ ...f, refs: undefined, links: resolveLinks(f.refs), ref_uids: refUids(f.refs), attachments: att.get(f.id) || [] }));
   const folder = q(`SELECT id, grp, label, project_id FROM folders WHERE id=?`).get(a.folder_id);
   const project = folder ? q(`SELECT id, name FROM projects WHERE id=?`).get(folder.project_id) : null;
-  res.json({ ...assetSummary(a), notebook: a.notebook || '', items, findings, folder, project });
+  // can_work centralises the "may I add notes/creds/findings and edit the checklist here" decision
+  // (editor/admin, or assigned to this engagement) so the client doesn't recompute it.
+  res.json({ ...assetSummary(a), notebook: a.notebook || '', items, findings, folder, project, can_work: await canWorkTarget(req, a.id) });
 });
 
-// Assign a target to an operator. This is a "who's on this" label only — it does NOT gate who can
-// edit the target (the user asked for visibility, not access control), so ANY authenticated user
-// may (re)assign, letting the team pick up and hand off work freely. Empty/null clears it. The
-// UPDATE trips the sync trigger, so the assignment replicates like any other change.
-app.patch('/api/targets/:id/assignee', (req, res) => {
-  const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
-  if (!a) return res.status(404).json({ error: 'not found' });
-  // One or many operators. Accept an array or a comma-separated string; store as a normalised
-  // comma-joined list (trimmed, de-duped, capped) in the single synced `assignee` column.
-  const raw = req.body?.assignee;
-  const parts = Array.isArray(raw) ? raw : (raw == null || raw === '' ? [] : String(raw).split(','));
-  const list = [...new Set(parts.map(s => String(s).trim().slice(0, 40)).filter(Boolean))].slice(0, 30);
-  const assignee = list.length ? list.join(',') : null;
-  q(`UPDATE assets SET assignee=? WHERE id=?`).run(assignee, a.id);
-  res.json(assetSummary(q(`SELECT * FROM assets WHERE id=?`).get(a.id)));
-});
+// (Targets are no longer individually assigned — work rights come from the ENGAGEMENT assignment,
+// PATCH /api/projects/:id/assignee. The old per-target assignee endpoint was removed.)
 
 // The target's Markdown workspace (Obsidian-style notes). Its assignees and leads may write it; a
 // capped size keeps a runaway paste from bloating a synced row.
@@ -1497,10 +1478,10 @@ app.patch('/api/items/:id', async (req, res) => {
   const cur = q(`SELECT * FROM items WHERE id=?`).get(req.params.id);
   if (!cur) return res.status(404).json({ error: 'not found' });
   const b = req.body || {};
-  // Ticking a box (status/answer) is anyone's; editing the checklist item itself is for the target's
-  // assignees and leads.
-  if (['title', 'detail', 'kind', 'group_title', 'payloads'].some(k => k in b) && !(await canWorkTarget(req, cur.asset_id)))
-    return res.status(403).json({ error: 'editing checklist items is for this target’s assignees and leads' });
+  // Working the checklist (ticking a box or editing an item) is for this target's engagement team
+  // (its assignees) and leads; everyone else has a read-only view.
+  if (!(await canWorkTarget(req, cur.asset_id)))
+    return res.status(403).json({ error: 'working this checklist is for the engagement team and leads' });
   const status = b.status ?? cur.status;
   const answer = b.answer ?? cur.answer;
   const title = b.title ?? cur.title;
@@ -1542,9 +1523,10 @@ app.post('/api/targets/:id/items', async (req, res) => {
 // target at once, so you don't tick each box. Container rows (select/group) are left alone. Ticking
 // status is worker work (not gated on edit rights), and the row updates sync like any single tick.
 const BULK_STATUS = new Set(['todo', 'done', 'na', 'flag']);
-app.post('/api/targets/:id/mark', (req, res) => {
+app.post('/api/targets/:id/mark', async (req, res) => {
   const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'not found' });
+  if (!(await canWorkTarget(req, a.id))) return res.status(403).json(NO_WORK_PROJECT);
   const status = String(req.body?.status || '');
   if (!BULK_STATUS.has(status)) return res.status(400).json({ error: 'invalid status' });
   const gk = req.body?.group_key;
@@ -1554,9 +1536,10 @@ app.post('/api/targets/:id/mark', (req, res) => {
   const changed = q(sql).run(...args).changes;
   res.json({ ok: true, changed });
 });
-app.post('/api/items/:id/spawn', (req, res) => {
+app.post('/api/items/:id/spawn', async (req, res) => {
   const it = q(`SELECT * FROM items WHERE id=?`).get(req.params.id);
   if (!it) return res.status(404).json({ error: 'not found' });
+  if (!(await canWorkTarget(req, it.asset_id))) return res.status(403).json(NO_WORK_PROJECT);
   if (!it.spawns) return res.status(400).json({ error: 'item has no spawn group' });
   const asset = q(`SELECT * FROM assets WHERE id=?`).get(it.asset_id);
   const sg = tplGroup(asset.type, 'spawn', '', it.spawns);
@@ -1579,13 +1562,13 @@ app.post('/api/items/:id/spawn', (req, res) => {
 });
 
 // Spin up a full new target from a spawn_type item (e.g. a web target per subdomain). The new
-// target lands in the SAME asset folder, gets the whole checklist for that type, and inherits the
-// parent target's assignee (so the same person owns the sub). Its metadata links it back to the
-// item + parent, so the UI can list the subs under the item. Not gated on edit rights: adding a
-// sub-target is part of executing the checklist (like ticking a box), not structuring the engagement.
-app.post('/api/items/:id/spawn-target', (req, res) => {
+// target lands in the SAME asset folder and gets the whole checklist for that type. Its metadata
+// links it back to the item + parent, so the UI can list the subs under the item. Gated like the
+// rest of the checklist: the engagement team (and leads) work it.
+app.post('/api/items/:id/spawn-target', async (req, res) => {
   const it = q(`SELECT * FROM items WHERE id=?`).get(req.params.id);
   if (!it) return res.status(404).json({ error: 'not found' });
+  if (!(await canWorkTarget(req, it.asset_id))) return res.status(403).json(NO_WORK_PROJECT);
   if (!it.spawn_type) return res.status(400).json({ error: 'this item does not spawn targets' });
   const parent = q(`SELECT * FROM assets WHERE id=?`).get(it.asset_id);
   if (!parent || parent.folder_id == null) return res.status(400).json({ error: 'the target has no engagement folder' });
@@ -1595,14 +1578,15 @@ app.post('/api/items/:id/spawn-target', (req, res) => {
   const label = String(req.body?.label || '').trim().slice(0, 200);
   if (!label) return res.status(400).json({ error: 'a name is required' });
   const metadata = { spawned_from_item: it.uid || null, parent_target: parent.uid || null };
-  const tid = createTarget(parent.folder_id, parent.project_id, it.spawn_type, label, metadata, parent.assignee || null);
+  const tid = createTarget(parent.folder_id, parent.project_id, it.spawn_type, label, metadata);
   res.status(201).json(assetSummary(q(`SELECT * FROM assets WHERE id=?`).get(tid)));
 });
 
 // Toggle a `select` option -> unfold (or remove) that option's catalog checklist as children.
-app.post('/api/items/:id/select', (req, res) => {
+app.post('/api/items/:id/select', async (req, res) => {
   const it = q(`SELECT * FROM items WHERE id=?`).get(req.params.id);
   if (!it) return res.status(404).json({ error: 'not found' });
+  if (!(await canWorkTarget(req, it.asset_id))) return res.status(403).json(NO_WORK_PROJECT);
   const key = (req.body || {}).key;
   if (!it.catalog || !key) return res.status(400).json({ error: 'not a select item / key missing' });
   const existing = q(`SELECT id FROM items WHERE parent_id=? AND opt_key=?`).all(it.id, key);
@@ -1674,16 +1658,10 @@ app.post('/api/targets/:id/findings', async (req, res) => {
   // Attribute the finding to whoever recorded it — the team identity (username) so it stays
   // stable as the row syncs between a client and the server. Powers the admin ranking.
   const author = currentUser(req)?.username || null;
-  // Task ownership governs workers, not leads: an editor/admin records anywhere and never claims a
-  // target. A worker records only on their OWN target — an unassigned one auto-claims the first
-  // worker who works it, and one that already belongs to someone else is off-limits.
-  if (!(await canEdit(req))) {
-    const roster = assigneesOf(req.params.id);
-    if (!roster.length) {
-      if (author) { q(`UPDATE assets SET assignee=? WHERE id=?`).run(author, req.params.id); a.assignee = author; }
-    } else if (!author || !roster.includes(author)) {
-      return res.status(403).json({ error: 'this target is assigned to someone else — ask a lead to add you' });
-    }
+  // Work rights are engagement-level: a lead (editor/admin) or a worker assigned to this target's
+  // engagement may record here; everyone else is read-only.
+  if (!(await canWorkTarget(req, req.params.id))) {
+    return res.status(403).json({ error: 'you must be assigned to this engagement to record findings here' });
   }
   const { severity, cvss: vector } = gradeFields(req.body || {}, await canEdit(req)); // workers can't grade
   const info = q(`INSERT INTO findings (asset_id, title, kind, severity, body, refs, fix_status, author, cvss, flagged_to) VALUES (?,?,?,?,?,?,?,?,?,?)`)

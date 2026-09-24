@@ -147,10 +147,13 @@ const clogin = await link.login({ username: 'cara', password: 'cara-secret-8' })
 link.stopSyncLoop();
 check('a linked worker gets the worker role from the signed token', clogin.ok === true && link.status().link?.role === 'worker');
 check('a linked worker cannot create an engagement (editor-only)', (await link.remoteFetch('/api/projects', { method: 'POST', body: { name: 'nope' } })).status === 403);
-check('a linked worker cannot edit an unassigned target’s checklist', (await link.remoteFetch(`/api/items/${anItem.id}`, { method: 'PATCH', body: { title: 'nope' } })).status === 403);
-check('a linked worker can record on an unassigned target (auto-claims it)', (await link.remoteFetch(`/api/targets/${T.id}/findings`, { method: 'POST', body: { title: 'seen', kind: 'note' } })).status === 201);
+check('a linked worker cannot edit a checklist in an engagement they are not on', (await link.remoteFetch(`/api/items/${anItem.id}`, { method: 'PATCH', body: { title: 'nope' } })).status === 403);
+check('a linked worker cannot record on an engagement they are not on', (await link.remoteFetch(`/api/targets/${T.id}/findings`, { method: 'POST', body: { title: 'nope', kind: 'note' } })).status === 403);
+// assign the engagement to the worker (server-side, as admin) — now she may work all of its targets
+await req('PATCH', `/api/projects/${P.id}/assignee`, { token: adminTok, body: { assignee: 'cara' } });
+check('a linked engagement worker CAN record a finding', (await link.remoteFetch(`/api/targets/${T.id}/findings`, { method: 'POST', body: { title: 'seen', kind: 'note' } })).status === 201);
 const wEditOwned = await link.remoteFetch(`/api/items/${anItem.id}`, { method: 'PATCH', body: { title: 'cara edit' } });
-check('a linked worker CAN edit the checklist once the target is theirs', wEditOwned.status === 200 && wEditOwned.json?.title === 'cara edit');
+check('a linked engagement worker CAN edit the checklist', wEditOwned.status === 200 && wEditOwned.json?.title === 'cara edit');
 
 // 7) the code was consumed on accept — connecting again with it is refused
 const reuse = await link.connect({ server_url: serverUrl, code: code1, device_name: 'z' });

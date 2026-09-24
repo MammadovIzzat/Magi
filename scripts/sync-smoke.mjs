@@ -149,8 +149,8 @@ check('the admin’s template edit reaches the client', !!db.prepare(`SELECT 1 F
 check('a fresh web target on the client would include the admin’s item',
   db.prepare(`SELECT COUNT(*) c FROM tpl_items WHERE type='web' AND title='ZZ Universal Check'`).get().c === 1);
 
-// ---- 2c) a target assignment ("who's on this") replicates both ways ----
-await req('PATCH', `/api/targets/${sTarget.json.id}/assignee`, { token: adminTok, body: { assignee: 'admin' } });
+// ---- 2c) a mutable synced column (assets.assignee) replicates both ways ----
+serverDb.prepare(`UPDATE assets SET assignee=? WHERE id=?`).run('admin', sTarget.json.id);
 await syncNow();
 check('assignment replicates server->client', db.prepare(`SELECT assignee FROM assets WHERE label='https://srv.test'`).get()?.assignee === 'admin');
 db.prepare(`UPDATE assets SET assignee='ana' WHERE label='https://app.acme.test'`).run();

@@ -865,32 +865,10 @@ async function renderProjectOverview(id) {
 
   const dateRange = fmtDateRange(p.start_date, p.end_date);
 
-  // Overview details: rendered read-only by default (no Write/Split/Preview clutter). Editors reveal
-  // the full SysReptor-style editor (Write / Split / Preview) with an Edit button, and Done returns
-  // to the rendered view. Autosave means the text is already persisted when Done is pressed.
-  const canEditOverview = isEditor();
-  const ovSection = el('div', {});
-  let ovEditing = false;
-  const paintOverview = () => {
-    const editBtn = canEditOverview
-      ? (ovEditing
-        ? el('button', { className: 'btn line sm', onclick: () => { const ta = ovSection.querySelector('.nb-input'); if (ta) p.overview = ta.value; ovEditing = false; paintOverview(); } }, icon('check', 12), 'Done')
-        : el('button', { className: 'btn line sm', onclick: () => { ovEditing = true; paintOverview(); } }, icon('edit', 12), 'Edit'))
-      : null;
-    const head = el('div', { className: 'srule', style: 'margin-top:22px' },
-      el('span', { className: 'kicker' }, 'Overview'), el('span', { className: 'rule' }), editBtn);
-    let bodyNode;
-    if (ovEditing) {
-      bodyNode = notebookEditor(id, p.overview || '', true,
-        { savePath: '/projects/' + id + '/overview', saveKey: 'overview', label: 'Overview', images: false });
-    } else {
-      const md = (p.overview || '').trim();
-      if (md) { bodyNode = el('div', { className: 'markdown ov-render' }); bodyNode.innerHTML = mdToHtml(md); bodyNode.querySelectorAll('input.md-task').forEach(cb => { cb.disabled = true; }); }
-      else bodyNode = el('div', { className: 'pmeta', style: 'padding:10px 2px' }, canEditOverview ? 'No overview yet — click Edit to write one.' : 'No overview yet.');
-    }
-    ovSection.replaceChildren(head, bodyNode);
-  };
-  paintOverview();
+  // Overview details: rendered read-only by default; editors reveal the full Write/Split/Preview
+  // editor with Edit (the same shared pattern as a target's Notes).
+  const ovSection = editableMarkdown({ id, initial: p.overview || '', canEdit: isEditor(),
+    savePath: '/projects/' + id + '/overview', saveKey: 'overview', label: 'Overview', images: false, sectionLabel: 'Overview' });
 
   $('#view').replaceChildren(el('div', { className: 'page narrow' },
     el('div', { style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap' },
@@ -1570,9 +1548,11 @@ async function renderTarget(id) {
       })));
   }
 
-  // ── middle: the target's own Markdown workspace (Obsidian-style). One page the assignee writes —
-  // headers, key points, task lists — autosaved. Read-only for non-contributors.
-  const midCol = el('div', { className: 'target-col notes-col' }, head, oldBanner, notebookEditor(id, a.notebook || '', mayContribute));
+  // ── middle: the target's own Markdown notes. Rendered read-only by default; the engagement team
+  // reveals the full Write/Split/Preview editor with Edit (same pattern as the engagement Overview).
+  const notesSection = editableMarkdown({ id, initial: a.notebook || '', canEdit: mayContribute,
+    savePath: '/targets/' + id + '/notebook', saveKey: 'notebook', label: 'Notes', images: true, sectionLabel: 'Notes' });
+  const midCol = el('div', { className: 'target-col notes-col' }, head, oldBanner, notesSection);
 
   // ── right: findings (confirmed vulnerabilities only), with search + sort. Vulns are recorded from
   // the middle composer's "Evidence" button (Type → Vulnerability), so there's no add button here.
@@ -1680,6 +1660,43 @@ function mdInline(s) {
 // A small, safe Markdown → HTML renderer (content is escaped first). Supports #..#### headers,
 // - / * bullets, 1. numbers, - [ ]/- [x] (and empty - []) task lists (interactive), > quotes,
 // ``` fences, --- rules, and | pipe | tables.
+// Wire up auth-gated notebook images (referenced by uid) in a RENDERED markdown block: fetch each as
+// an object URL and open full-size on click. Safe to call on any container (no-op without nb images).
+function loadNbImages(container) {
+  container.querySelectorAll('img.nb-img[data-nbimg]').forEach((img) => {
+    nbImgSrc(img.dataset.nbimg).then(u => { img.src = u; }).catch(() => {});
+    img.onclick = () => { if (img.src) lightbox([{ id: img.dataset.nbimg, filename: img.alt || 'image', _nb: true }], 0); };
+  });
+}
+// A titled Markdown section that renders read-only by default and reveals the full Write/Split/Preview
+// editor behind an Edit button (Done returns to the render). Shared by the engagement Overview and a
+// target's Notes. opts: { id, initial, canEdit, savePath, saveKey, label, images, sectionLabel }.
+function editableMarkdown({ id, initial, canEdit, savePath, saveKey, label, images = false, sectionLabel }) {
+  const section = el('div', {});
+  let md = initial || '';
+  let editing = false;
+  const paint = () => {
+    const editBtn = canEdit
+      ? (editing
+        ? el('button', { className: 'btn line sm', onclick: () => { const ta = section.querySelector('.nb-input'); if (ta) md = ta.value; editing = false; paint(); } }, icon('check', 12), 'Done')
+        : el('button', { className: 'btn line sm', onclick: () => { editing = true; paint(); } }, icon('edit', 12), 'Edit'))
+      : null;
+    const head = el('div', { className: 'srule', style: 'margin-top:22px' },
+      el('span', { className: 'kicker' }, sectionLabel || label || 'Notes'), el('span', { className: 'rule' }), editBtn);
+    let bodyNode;
+    if (editing) {
+      bodyNode = notebookEditor(id, md, true, { savePath, saveKey, label: label || sectionLabel, images });
+    } else {
+      const t = (md || '').trim();
+      if (t) { bodyNode = el('div', { className: 'markdown ov-render' }); bodyNode.innerHTML = mdToHtml(t); loadNbImages(bodyNode); bodyNode.querySelectorAll('input.md-task').forEach(cb => { cb.disabled = true; }); }
+      else bodyNode = el('div', { className: 'pmeta', style: 'padding:10px 2px' }, canEdit ? 'Nothing here yet — click Edit to write.' : 'Nothing here yet.');
+    }
+    section.replaceChildren(head, bodyNode);
+  };
+  paint();
+  return section;
+}
+
 function mdToHtml(src) {
   const lines = String(src || '').replace(/\r\n?/g, '\n').split('\n');
   let html = '', taskIdx = 0, inUl = false, inOl = false, inCode = false; let para = [];

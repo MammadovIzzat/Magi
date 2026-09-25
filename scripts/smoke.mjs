@@ -112,6 +112,9 @@ checks.push(['target notebook + findings dock render', await ev(`
   const d = await (await fetch("/api/projects/" + p.id)).json();
   const f = await (await fetch("/api/assets/" + d.assets[0].id)).json();
   location.hash = "#/target/" + f.targets[0].id; await new Promise(r => setTimeout(r, 1400));
+  // notes render read-only by default now — open the editor with Edit before typing
+  [...document.querySelectorAll(".notes-col .srule button")].find(b => /Edit/.test(b.textContent))?.click();
+  await new Promise(r => setTimeout(r, 300));
   const hasNotebook = !!document.querySelector(".nb-wrap .nb-input");
   const hasTools = !!document.querySelector(".task-tools");
   const hasDock = /Findings/.test(document.querySelector(".dock-head")?.textContent || "");
@@ -146,10 +149,9 @@ checks.push(['notebook image uploads, renders inline, and serves', await ev(`
   const uid = uj.uid;
   const randomName = /^image-[0-9a-f]{12}\\.png$/.test(uj.filename || ""); // stored under a fresh random name, not the client's
   await fetch("/api/targets/" + tid + "/notebook", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ notebook: "# S\\n\\n![shot](nbimg:" + uid + ")" }) });
-  await renderTarget(tid); await new Promise(r => setTimeout(r, 500));
-  [...document.querySelectorAll(".nb-tab")].find(b => /Preview/.test(b.textContent))?.click();
-  await new Promise(r => setTimeout(r, 500));
-  const img = document.querySelector(".nb-preview img.nb-img");
+  await renderTarget(tid); await new Promise(r => setTimeout(r, 700));
+  // the read-only rendered notes load nb-images (referenced by uid) as blob URLs
+  const img = document.querySelector(".notes-col img.nb-img");
   const rendered = !!img && img.dataset.nbimg === uid;
   const loaded = !!img && /^blob:/.test(img.src || "");
   const g = await fetch("/api/notebook-images/" + uid);
@@ -178,6 +180,8 @@ checks.push(['notebook toolbar toggles/switches formatting', await ev(`
   const d = await (await fetch("/api/projects/" + p.id)).json();
   const f = await (await fetch("/api/assets/" + d.assets[0].id)).json();
   location.hash = "#/target/" + f.targets[0].id; await new Promise(r => setTimeout(r, 1200));
+  [...document.querySelectorAll(".notes-col .srule button")].find(b => /Edit/.test(b.textContent))?.click();
+  await new Promise(r => setTimeout(r, 300));
   const ta = document.querySelector(".nb-input");
   const btn = (name) => [...document.querySelectorAll(".nb-tb")].find(b => b.title === name);
   const press = (b) => b.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));

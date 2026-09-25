@@ -991,11 +991,27 @@ async function renderProject(id) {
 
   const body = el('div', {});
   const groups = p.assets.filter(f => (f.items || []).length); // only kind-groups that hold targets
-  if (!groups.length) {
-    body.append(el('div', { className: 'empty', style: 'border:0;margin-top:20px' },
-      el('div', {}, mayWork ? 'No targets yet. Add a web app, host, API, AD domain… to start testing.' : 'No targets yet. An admin or the engagement’s team adds these.'),
-      mayWork ? el('button', { className: 'btn gold', onclick: () => addTargetToProject(id) }, icon('plus', 12), 'Add target') : null));
-  } else {
+  const matches = (a, q) => `${a.label} ${(TYPES.find(x => x.type === a.type) || {}).label || a.type}`.toLowerCase().includes(q);
+  const search = el('input', { className: 'searchbox', type: 'search', placeholder: `Search ${allTargets.length} target${allTargets.length === 1 ? '' : 's'}…` });
+  const paintBody = () => {
+    body.replaceChildren();
+    if (!groups.length) {
+      body.append(el('div', { className: 'empty', style: 'border:0;margin-top:20px' },
+        el('div', {}, mayWork ? 'No targets yet. Add a web app, host, API, AD domain… to start testing.' : 'No targets yet. An admin or the engagement’s team adds these.'),
+        mayWork ? el('button', { className: 'btn gold', onclick: () => addTargetToProject(id) }, icon('plus', 12), 'Add target') : null));
+      return;
+    }
+    const q = search.value.trim().toLowerCase();
+    if (q) {
+      // A flat, filtered list across every group — tree folding is ignored while searching, and
+      // sub-targets are matched too (each is its own row in allTargets).
+      const hits = allTargets.filter(a => matches(a, q)).sort((x, y) => String(x.label).localeCompare(String(y.label)));
+      if (!hits.length) { body.append(el('div', { className: 'empty', style: 'border:0;margin-top:16px' }, `No targets match “${search.value.trim()}”.`)); return; }
+      const list = el('div', { className: 'tlist' });
+      for (const a of hits) list.append(targetRow(a, 0, 0));
+      body.append(list);
+      return;
+    }
     for (const f of groups) {
       body.append(el('div', { className: 'srule', style: 'margin-top:22px' },
         el('span', { className: 'kicker' }, `${groupLabel(f.grp)}`), el('span', { className: 'rule' }),
@@ -1009,7 +1025,9 @@ async function renderProject(id) {
       for (const root of buildTargetForest(f.items)) renderNode(root, 0);
       body.append(list);
     }
-  }
+  };
+  search.oninput = paintBody;
+  paintBody();
 
   $('#view').replaceChildren(el('div', { className: 'page narrow' },
     el('div', { className: 'kicker' }, 'Engagement · Targets'),
@@ -1017,6 +1035,7 @@ async function renderProject(id) {
     el('div', { className: 'srule' },
       el('span', { className: 'kicker' }, 'Targets'), el('span', { className: 'rule' }),
       mayWork ? el('button', { className: 'btn line sm', onclick: () => addTargetToProject(id) }, '+ Add target') : null),
+    groups.length ? search : null,
     body));
 }
 

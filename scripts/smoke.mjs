@@ -376,6 +376,26 @@ checks.push(['subdomains roll-up lists web domains and excludes IPs', await ev(`
     document.querySelector(".modal-x")?.click();
     return hasBoth && noIp && exports;
   } catch (e) { return false; }`)]);
+// The targets page has a live search that filters by name/type (flat while searching, incl. sub-targets).
+checks.push(['targets page search filters the list', await ev(`
+  try {
+    const p = (await (await fetch("/api/projects")).json())[0];
+    location.hash = "#/project/" + p.id + "/targets"; await new Promise(r => setTimeout(r, 900));
+    const search = document.querySelector(".page .searchbox");
+    if (!search) return false;
+    const before = document.querySelectorAll(".tlist .trow").length;
+    search.value = "api.smoke.test"; search.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise(r => setTimeout(r, 200));
+    const rows = [...document.querySelectorAll(".tlist .trow .tname")].map(e => e.textContent);
+    const filtered = rows.length >= 1 && rows.every(t => /api\\.smoke\\.test/.test(t));
+    search.value = "zzz-nope-xyz"; search.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise(r => setTimeout(r, 200));
+    const noneMsg = /No targets match/.test(document.querySelector(".page")?.textContent || "");
+    search.value = ""; search.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise(r => setTimeout(r, 200));
+    const restored = document.querySelectorAll(".tlist .trow").length === before;
+    return filtered && noneMsg && restored;
+  } catch (e) { return false; }`)]);
 // Overview redesign: the top bar is just Settings + Subdomains (Export/Edit/Finish/Delete collapsed
 // into the Settings popup), and the overview text is read-only until you press Edit (which reveals
 // the Write/Split/Preview editor).

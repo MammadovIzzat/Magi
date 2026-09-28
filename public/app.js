@@ -370,9 +370,10 @@ function renderAccount() {
     badge, adminBtn,
     el('div', { className: 'avatar' }, (CURRENT_USER || '?')[0].toUpperCase()),
     el('span', { className: 'who' }, CURRENT_USER || ''),
-    // Self-service rename is a self-hosted (standalone) thing. When connected to a team server the
-    // server owns identities (like AD), so the client doesn't offer it.
-    (LINK?.linked || LINK?.pending) ? null
+    // Self-service rename is a STANDALONE thing only. On a team server (its own web version) or a
+    // linked client the server owns identities and an admin manages accounts in the Admin panel, so
+    // the top-bar rename control is gone.
+    (LINK?.linked || LINK?.pending || LINK?.unavailable) ? null
       : el('button', { className: 'iconbtn', title: 'Change username', onclick: changeUsername }, icon('edit')),
     el('button', { className: 'iconbtn theme', title: `Theme — ${currentTheme()} (click to switch)`, onclick: toggleTheme },
       el('span', { className: 'themedot' })),
@@ -3541,17 +3542,14 @@ async function renderAdmin(section) {
   const view = $('#view');
   const same = view.dataset.adminSection === section && !!view.querySelector('.admbody'); // a live-refresh of the same page
   const savedY = same ? view.scrollTop : 0;
-  const shell = (content) => {
-    const page = el('div', { className: 'page' });
-    page.append(el('div', { className: 'page-head' }, el('div', {}, el('div', { className: 'kicker' }, 'Team server'), el('h1', {}, 'Admin'))));
-    page.append(el('nav', { className: 'admtabs' }, ...ADMIN_TAB_LIST.map(t =>
+  // The tab nav is a full-width secondary bar directly under the top bar (not buried under a title).
+  const shell = (content) => el('div', { className: 'admwrap' },
+    el('nav', { className: 'admtabs adminbar' }, ...ADMIN_TAB_LIST.map(t =>
       el('a', { className: 'admtab' + (t.key === section ? ' on' : ''), href: t.href || ('#/admin/' + t.key) },
         t.label,
         (t.key === 'devices' && ADMIN_PENDING) ? el('span', { className: 'tabcount' }, String(ADMIN_PENDING)) : null,
-        (t.key === 'grading' && ADMIN_UNGRADED) ? el('span', { className: 'tabcount' }, String(ADMIN_UNGRADED)) : null))));
-    page.append(el('div', { className: 'admbody' }, ...(Array.isArray(content) ? content : [content])));
-    return page;
-  };
+        (t.key === 'grading' && ADMIN_UNGRADED) ? el('span', { className: 'tabcount' }, String(ADMIN_UNGRADED)) : null))),
+    el('div', { className: 'page' }, el('div', { className: 'admbody' }, ...(Array.isArray(content) ? content : [content]))));
   if (!same) { view.replaceChildren(shell(el('div', { className: 'empty' }, 'Loading…'))); view.dataset.adminSection = section; }
 
   const A = (p, o) => api(ctx.base + p, { ...o, timeout: 8000 });
@@ -3760,46 +3758,66 @@ function sevChips(sev) {
 let RANK_VIEW = 'findings'; // 'findings' (severity-weighted score) | 'poc' (proof-of-concept leaders)
 async function adminRanking(ctx, A) {
   const { ranking = [], totals = {} } = await A('/ranking');
+  const nodes = [];
   const head = admCard('Operator ranking',
     `${totals.operators || 0} operator${totals.operators === 1 ? '' : 's'} · ${totals.findings || 0} finding${totals.findings === 1 ? '' : 's'}`);
   head.append(el('p', { className: 'muted small' },
-    'A finding is credited to whoever recorded it, even when a lead grades its severity later. Deleting an old engagement never lowers these numbers.'));
+    'Ranked live over the current findings — grading, deleting or marking a finding duplicate updates these numbers at once.'));
   if (totals.unattributed) head.append(el('p', { className: 'muted small' },
     `${totals.unattributed} finding${totals.unattributed === 1 ? '' : 's'} recorded before attribution existed aren’t counted.`));
-  if (!ranking.length) { head.append(el('p', { className: 'muted' }, 'No attributed findings yet — as operators record findings, they’ll rank here.')); return [head]; }
+  nodes.push(head);
 
-  const poc = RANK_VIEW === 'poc';
-  // Leaderboard panel: a Findings/PoC toggle in the header, rows ranked accordingly.
-  const board = el('div', { className: 'setcard' });
-  board.append(el('div', { className: 'setcard-hd rank-hd' },
-    el('h3', {}, 'Leaderboard'),
-    el('div', { className: 'rank-toggle' },
-      ...[['findings', 'Findings'], ['poc', 'PoC']].map(([v, l]) =>
-        el('button', { className: 'rank-tab' + (RANK_VIEW === v ? ' on' : ''), onclick: () => { RANK_VIEW = v; renderAdmin('ranking'); } }, l))),
-    el('span', { style: 'flex:1' }),
-    el('span', { className: 'muted small' }, poc ? 'proof-of-concept findings proven' : 'score weights severity, not volume')));
+  // Sub-nav under the admin tab bar: Findings (detailed table) · PoC (leaderboard).
+  nodes.push(el('nav', { className: 'admsub' },
+    ...[['findings', 'Findings'], ['poc', 'PoC']].map(([v, l]) =>
+      el('button', { className: 'admsub-tab' + (RANK_VIEW === v ? ' on' : ''), onclick: () => { RANK_VIEW = v; renderAdmin('ranking'); } }, l))));
 
-  const rows = poc
-    ? ranking.filter(r => r.poc > 0).sort((a, b) => b.poc - a.poc || b.score - a.score)
-    : ranking.slice();
-  const table = el('div', { className: 'ranktable' });
-  if (!rows.length) table.append(el('p', { className: 'muted', style: 'padding:8px 2px' }, 'No PoC findings recorded yet.'));
-  rows.forEach((r, i) => {
-    const meta = poc
-      ? el('div', { className: 'rank-meta' }, `${r.poc} PoC finding${r.poc === 1 ? '' : 's'} · ${r.projects} target${r.projects === 1 ? '' : 's'}`)
-      : el('div', { className: 'rank-meta' },
-          el('span', {}, `${r.findings} finding${r.findings === 1 ? '' : 's'} · ${r.projects} target${r.projects === 1 ? '' : 's'}`),
-          sevChips(r.sev));
-    table.append(el('div', { className: 'rankrow' + (i === 0 ? ' top' : '') },
+  if (!ranking.length) { nodes.push(el('p', { className: 'muted', style: 'padding:4px 2px' }, 'No attributed findings yet — as operators record findings, they’ll rank here.')); return nodes; }
+
+  if (RANK_VIEW === 'poc') {
+    const rows = ranking.filter(r => r.poc > 0).sort((a, b) => b.poc - a.poc || b.score - a.score);
+    const board = el('div', { className: 'setcard' });
+    board.append(el('div', { className: 'setcard-hd rank-hd' }, el('h3', {}, 'PoC leaderboard'),
+      el('span', { style: 'flex:1' }), el('span', { className: 'muted small' }, 'proof-of-concept findings proven')));
+    const table = el('div', { className: 'ranktable' });
+    if (!rows.length) table.append(el('p', { className: 'muted', style: 'padding:8px 2px' }, 'No PoC findings recorded yet.'));
+    rows.forEach((r, i) => table.append(el('div', { className: 'rankrow' + (i === 0 ? ' top' : '') },
       el('span', { className: 'rank-n' }, String(i + 1)),
       el('div', { className: 'rank-main' },
-        el('div', { className: 'rank-op' }, el('strong', {}, r.author),
-          r.role ? el('span', { className: 'pill' }, r.role) : null),
-        meta),
-      el('span', { className: 'rank-score' }, String(poc ? r.poc : (r.score ?? 0)))));
-  });
-  board.append(table);
-  return [head, board];
+        el('div', { className: 'rank-op' }, el('strong', {}, r.author), r.role ? el('span', { className: 'pill' }, r.role) : null),
+        el('div', { className: 'rank-meta' }, `${r.poc} PoC finding${r.poc === 1 ? '' : 's'} · ${r.projects} target${r.projects === 1 ? '' : 's'}`)),
+      el('span', { className: 'rank-score' }, String(r.poc)))));
+    board.append(table);
+    nodes.push(board);
+    return nodes;
+  }
+
+  // Findings — a detailed enumeration table: per-operator counts for the last 24h / 7d / 30d and the
+  // total, plus the severity-weighted score. Ranked by score, searchable by username.
+  const card = el('div', { className: 'setcard' });
+  card.append(el('div', { className: 'setcard-hd rank-hd' }, el('h3', {}, 'Findings by operator'),
+    el('span', { style: 'flex:1' }), el('span', { className: 'muted small' }, 'score weights severity, not volume')));
+  const search = el('input', { className: 'searchbox', type: 'search', placeholder: 'Search operator…', autocomplete: 'off' });
+  const tbl = el('div', { className: 'enumtable' });
+  const paint = () => {
+    const q = search.value.trim().toLowerCase();
+    const shown = q ? ranking.filter(r => r.author.toLowerCase().includes(q)) : ranking;
+    tbl.replaceChildren(
+      el('div', { className: 'enum-head' },
+        el('span', { className: 'enum-op' }, 'Operator'),
+        el('span', {}, '24h'), el('span', {}, '7d'), el('span', {}, '30d'), el('span', {}, 'Total'), el('span', {}, 'Score')),
+      ...(shown.length ? shown.map(r => el('div', { className: 'enum-row' + (ranking.indexOf(r) === 0 ? ' top' : '') },
+        el('span', { className: 'enum-op' }, el('span', { className: 'enum-n' }, String(ranking.indexOf(r) + 1)),
+          el('strong', {}, r.author), r.role ? el('span', { className: 'pill' }, r.role) : null),
+        el('span', {}, String(r.day)), el('span', {}, String(r.week)), el('span', {}, String(r.month)),
+        el('span', { className: 'enum-total' }, String(r.findings)), el('span', { className: 'enum-score' }, String(r.score))))
+        : [el('div', { className: 'muted', style: 'padding:12px 4px' }, 'No operators match.')]));
+  };
+  search.oninput = paint;
+  card.append(search, tbl);
+  paint();
+  nodes.push(card);
+  return nodes;
 }
 
 // Grading queue: vulnerabilities recorded without a severity yet. Served locally (from the synced

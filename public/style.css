@@ -1072,6 +1072,30 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 
 /* Admin tab nav — one row of pages (Users / Devices / Ranking / Logs / Backup). */
 .admtabs { display: flex; flex-wrap: wrap; gap: 2px; margin: 4px 0 18px; border-bottom: 1px solid var(--line); }
+/* admin tab nav as a full-width bar directly under the top bar */
+.admwrap { display: flex; flex-direction: column; }
+.admtabs.adminbar { flex-wrap: nowrap; overflow-x: auto; gap: 2px; margin: 0; padding: 0 16px;
+  background: var(--panel-2); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+.admtabs.adminbar::-webkit-scrollbar { height: 0; }
+.admwrap .page { padding-top: 22px; }
+/* ranking sub-nav (Findings / PoC) */
+.admsub { display: flex; gap: 6px; margin: 2px 0 14px; }
+.admsub-tab { background: none; border: 1px solid var(--line-3); border-radius: 999px; padding: 5px 14px;
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); cursor: pointer; }
+.admsub-tab:hover { color: var(--text); border-color: var(--line-hi); }
+.admsub-tab.on { color: var(--gold); border-color: var(--gold); background: var(--gold-wash); }
+/* per-operator enumeration table (24h / 7d / 30d / total / score) */
+.enumtable { display: flex; flex-direction: column; margin-top: 12px; }
+.enum-head, .enum-row { display: grid; grid-template-columns: 1fr 52px 52px 52px 56px 60px; gap: 8px; align-items: center; padding: 9px 8px; }
+.enum-head { font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--label); border-bottom: 1px solid var(--line); }
+.enum-head span:not(.enum-op), .enum-row span:not(.enum-op) { text-align: right; font-family: var(--mono); font-size: 12.5px; color: var(--muted-2); }
+.enum-row { border-bottom: 1px solid var(--line); }
+.enum-row.top { background: var(--gold-wash); }
+.enum-op { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.enum-op strong { font-size: 13px; color: var(--fg); }
+.enum-n { font-family: var(--mono); font-size: 10px; color: var(--muted-3); width: 18px; flex: none; }
+.enum-row .enum-total { color: var(--text); }
+.enum-row .enum-score { color: var(--gold); font-weight: 600; }
 .admtab {
   display: inline-flex; align-items: center; gap: 6px; padding: 9px 14px; margin-bottom: -1px;
   font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase;

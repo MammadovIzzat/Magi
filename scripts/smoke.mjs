@@ -517,8 +517,8 @@ checks.push(['admin tabs + ranking page paint', await ev(`
   const stub = {
     "/api/link": { unavailable: true },
     "/api/admin/ranking": { ranking: [
-      { author: "ana", role: "worker", findings: 7, poc: 3, projects: 2, score: 41, types: { web: 4, poc: 3 }, topType: "web", sev: { critical: 2, high: 3, medium: 2, low: 0, info: 0, none: 0 } },
-      { author: "bob", role: "editor", findings: 2, poc: 0, projects: 1, score: 4, types: { ad: 2 }, topType: "ad", sev: { critical: 0, high: 0, medium: 1, low: 1, info: 0, none: 0 } }],
+      { author: "ana", role: "worker", findings: 7, poc: 3, projects: 2, score: 41, day: 1, week: 3, month: 5, types: { web: 4, poc: 3 }, topType: "web", sev: { critical: 2, high: 3, medium: 2, low: 0, info: 0, none: 0 } },
+      { author: "bob", role: "editor", findings: 2, poc: 0, projects: 1, score: 4, day: 0, week: 1, month: 2, types: { ad: 2 }, topType: "ad", sev: { critical: 0, high: 0, medium: 1, low: 1, info: 0, none: 0 } }],
       totals: { operators: 2, findings: 9, unattributed: 1 } },
     "/api/admin/requests": [], "/api/admin/enroll-codes": [],
     "/api/admin/users": [{ id: 1, username: "ana", role: "worker", created_at: "2026-01-01", mfa_enabled: 1 }],
@@ -534,9 +534,18 @@ checks.push(['admin tabs + ranking page paint', await ev(`
   };
   LINK = { unavailable: true };
   location.hash = "#/admin/ranking"; await new Promise(r => setTimeout(r, 1000));
-  const rankRows = document.querySelectorAll(".ranktable .rankrow").length;
-  const hasSev = document.querySelectorAll(".ranktable .sevchip").length > 0;
-  const hasScore = /41/.test(document.querySelector(".rankrow .rank-score")?.textContent || "");
+  // the tab nav is now a full-width bar directly under the top bar
+  const adminBar = !!document.querySelector(".admwrap .admtabs.adminbar");
+  // Findings sub-tab shows the detailed enumeration table (24h/7d/30d/total/score), searchable
+  const subnav = document.querySelectorAll(".admsub .admsub-tab").length === 2;
+  const enumRows = document.querySelectorAll(".enumtable .enum-row").length;
+  const hasWindows = /24h/.test(document.querySelector(".enum-head")?.textContent || "") && /30d/.test(document.querySelector(".enum-head")?.textContent || "");
+  const hasScore = [...document.querySelectorAll(".enum-row .enum-score")].some(e => /41/.test(e.textContent));
+  // filtering the enum table by username narrows the rows
+  const searchBox = document.querySelector(".admbody .setcard .searchbox");
+  if (searchBox) { searchBox.value = "bob"; searchBox.dispatchEvent(new Event("input", { bubbles: true })); await new Promise(r => setTimeout(r, 150)); }
+  const filtered = !searchBox || document.querySelectorAll(".enumtable .enum-row").length === 1;
+  if (searchBox) { searchBox.value = ""; searchBox.dispatchEvent(new Event("input", { bubbles: true })); await new Promise(r => setTimeout(r, 100)); }
   const tabs = document.querySelectorAll(".admtabs .admtab").length;
   // the Templates tab lives in the admin panel now (connected format) and links out to the editor
   const tplTab = [...document.querySelectorAll(".admtabs .admtab")].find(a => /Templates/.test(a.textContent));
@@ -557,7 +566,7 @@ checks.push(['admin tabs + ranking page paint', await ev(`
   const devicesText = document.querySelector(".admbody")?.textContent || "";
   const devicesHasCodesAndRequests = /connection requests/i.test(devicesText) && /one-time codes/i.test(devicesText);
   window.fetch = real;
-  return rankRows === 2 && tabs === 7 && activeIsRanking && usersActive && hasSev && hasScore && usersHasCreate && udOk && tplTabOk && devicesHasCodesAndRequests`)]);
+  return adminBar && subnav && enumRows === 2 && hasWindows && hasScore && filtered && tabs === 7 && activeIsRanking && usersActive && usersHasCreate && udOk && tplTabOk && devicesHasCodesAndRequests`)]);
 // Responsive top bar: at a narrow (phone-ish) width the page actions must not spill out of the bar —
 // the bar stays inside the window and the account badge remains on screen (actions scroll within).
 await cdp('Emulation.setDeviceMetricsOverride', { width: 480, height: 800, deviceScaleFactor: 1, mobile: false });

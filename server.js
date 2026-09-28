@@ -759,39 +759,43 @@ app.get('/api/admin/audit', requireAdmin, (req, res) => {
 });
 
 // Worker ranking: how much each operator has produced, so a lead can see who is finding things.
-// Attribution is findings.author (the username set when a finding is recorded), joined to its
-// asset for the target TYPE (web/api/ad/poc/…) and the engagement it belongs to. Findings from
-// before author-tracking (author NULL) are simply not counted. Returns rows sorted by volume plus
-// a couple of totals for the page header.
-// Weight per severity, so the score rewards impact, not just volume (an editor's grade on a
-// worker's finding thus lifts that worker). Roughly tracks the CVSS bands.
+// Computed LIVE over the current findings — attribution is findings.author, joined to its asset for
+// the target TYPE (web/api/ad/poc/…) and engagement. So a re-graded severity, a deleted finding or a
+// duplicate mark is reflected at once (no durable ledger). Duplicates and unattributed vulns don't
+// count. Weight per severity so the score rewards impact, not volume, and per-operator day/week/month
+// counts drive the detailed enumeration table.
 const SEV_WEIGHT = { critical: 10, high: 6, medium: 3, low: 1, info: 0 };
 app.get('/api/admin/ranking', requireAdmin, (req, res) => {
-  // Read the DURABLE ledger, not live findings — so deleting an old engagement doesn't wipe the
-  // credit its author earned. Rows are snapshotted at grade time (project_id, target type, severity).
-  const rows = q(`SELECT author, asset_type AS type, project_id, severity FROM finding_credits
-    WHERE author IS NOT NULL AND author <> ''`).all();
+  const rows = q(`SELECT f.author, a.type AS type, a.project_id AS project_id, f.severity, f.created_at
+    FROM findings f JOIN assets a ON a.id=f.asset_id
+    WHERE f.kind='vuln' AND f.duplicate=0 AND f.author IS NOT NULL AND f.author <> ''`).all();
   const roles = {};
   for (const u of q(`SELECT username, role FROM users`).all()) roles[u.username] = u.role;
+  const now = Date.now(), DAY = 864e5;
+  const ageOf = (s) => { const d = Date.parse(String(s || '').replace(' ', 'T') + 'Z'); return Number.isFinite(d) ? now - d : Infinity; };
   const by = new Map();
   for (const r of rows) {
     let e = by.get(r.author);
     if (!e) { e = { author: r.author, role: roles[r.author] || null, findings: 0, poc: 0, score: 0,
-      projects: new Set(), types: {}, sev: { critical: 0, high: 0, medium: 0, low: 0, info: 0, none: 0 } }; by.set(r.author, e); }
+      projects: new Set(), types: {}, sev: { critical: 0, high: 0, medium: 0, low: 0, info: 0, none: 0 },
+      day: 0, week: 0, month: 0 }; by.set(r.author, e); }
     e.findings++;
     if (r.type === 'poc') e.poc++;
     if (r.project_id != null) e.projects.add(r.project_id);
     if (r.type) e.types[r.type] = (e.types[r.type] || 0) + 1;
     e.sev[(r.severity && r.severity in e.sev) ? r.severity : 'none']++;
     e.score += SEV_WEIGHT[r.severity] ?? 0;
+    const age = ageOf(r.created_at);
+    if (age <= DAY) e.day++;
+    if (age <= 7 * DAY) e.week++;
+    if (age <= 30 * DAY) e.month++;
   }
   const ranking = [...by.values()].map(e => {
     const types = Object.entries(e.types).sort((a, b) => b[1] - a[1]);
     return { author: e.author, role: e.role, findings: e.findings, poc: e.poc, score: e.score,
-      projects: e.projects.size, types: Object.fromEntries(types), topType: types[0]?.[0] || null, sev: e.sev };
+      projects: e.projects.size, types: Object.fromEntries(types), topType: types[0]?.[0] || null, sev: e.sev,
+      day: e.day, week: e.week, month: e.month };
   }).sort((a, b) => b.score - a.score || b.findings - a.findings || b.projects - a.projects);
-  // Live vulns that still have no author (recorded before attribution) — a soft "not counted" note.
-  // Notes/credentials never count, so they're excluded here too.
   const unattributed = q(`SELECT COUNT(*) c FROM findings WHERE kind='vuln' AND duplicate=0 AND (author IS NULL OR author='')`).get().c;
   res.json({ ranking, totals: { operators: ranking.length, findings: rows.length, unattributed } });
 });
@@ -846,8 +850,6 @@ if (SERVER_MODE) {
         });
       }
       const r = applyChanges(db, { rows: rows || [], tombstones: tombstones || [] });
-      // Credit any pushed findings now present in the ledger (attribution + latest severity).
-      for (const row of (rows || [])) if (row?.table === 'findings' && row.uid) creditFinding(row.uid);
       res.json({ ok: true, ...r, server_hlc: maxHlc(db) });
     } catch (e) { res.status(400).json({ error: e.message }); }
   });
@@ -1629,27 +1631,7 @@ function gradeFields(body, mayGrade, cur = {}) {
   else if (vector) vector = null; // a malformed vector is ignored rather than stored
   return { severity, cvss: vector };
 }
-// Record/refresh a finding's contribution in the durable ranking ledger (server only). Called after
-// a finding is created or (re)graded — from the web UI and from an incoming sync push. Keyed by uid
-// so there's no double counting, and it NEVER deletes, so a later project deletion can't erase the
-// credit. Attribution is the recorder (author), even when an editor set the severity.
-function creditFinding(uid) {
-  if (!SERVER_MODE || !uid) return;
-  const f = q(`SELECT f.uid, f.author, f.kind, f.severity, f.duplicate, a.type AS asset_type, a.project_id
-    FROM findings f JOIN assets a ON a.id = f.asset_id WHERE f.uid=?`).get(uid);
-  if (!f) return; // not present yet (deferred) → leave any durable credit intact
-  // Only vulnerabilities count toward the ranking — notes, credentials and raw requests are
-  // evidence, not findings, and a DUPLICATE earns no credit either (it keeps its severity but isn't
-  // a new finding). If an entry is (or became) a non-vuln or a duplicate, it earns no credit; drop
-  // any stale one. This runs only on create/grade/sync, never on delete, so a deleted project's
-  // credits stay durable (deletion paths don't call this).
-  if (f.kind !== 'vuln' || f.duplicate) { q(`DELETE FROM finding_credits WHERE uid=?`).run(uid); return; }
-  if (!f.author) return; // a vuln with no recorder yet → nothing to credit
-  q(`INSERT INTO finding_credits (uid, author, project_id, asset_type, severity, updated_at)
-     VALUES (?,?,?,?,?, datetime('now'))
-     ON CONFLICT(uid) DO UPDATE SET author=excluded.author, severity=excluded.severity, updated_at=excluded.updated_at`)
-    .run(f.uid, f.author, f.project_id, f.asset_type, f.severity);
-}
+// (The ranking is computed live from the findings table — no durable credit ledger anymore.)
 
 app.post('/api/targets/:id/findings', async (req, res) => {
   const a = q(`SELECT id, assignee FROM assets WHERE id=?`).get(req.params.id);
@@ -1668,7 +1650,6 @@ app.post('/api/targets/:id/findings', async (req, res) => {
   const info = q(`INSERT INTO findings (asset_id, title, kind, severity, body, refs, fix_status, author, cvss, flagged_to) VALUES (?,?,?,?,?,?,?,?,?,?)`)
     .run(req.params.id, title, kind || 'note', severity, body || null, cleanRefs(refs), cleanFix(fix_status), author, vector, flagged_to ? String(flagged_to).slice(0, 120) : null);
   const row = q(`SELECT * FROM findings WHERE id=?`).get(info.lastInsertRowid);
-  creditFinding(row.uid);
   res.status(201).json(row);
 });
 // Other findings in the same engagement, to link as an attack chain (or a retest reference).
@@ -1733,7 +1714,6 @@ app.patch('/api/findings/:id', async (req, res) => {
     'refs' in b ? cleanRefs(b.refs) : cur.refs,
     'fix_status' in b ? cleanFix(b.fix_status) : cur.fix_status,
     'in_report' in b ? (b.in_report ? 1 : 0) : cur.in_report, vector, ni, note, flaggedTo, dup, cur.id);
-  creditFinding(cur.uid);
   res.json(q(`SELECT * FROM findings WHERE id=?`).get(cur.id));
 });
 

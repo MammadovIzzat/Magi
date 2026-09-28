@@ -290,7 +290,7 @@ check('marking the whole target done sets every actionable item', markAll.status
 const markBad = await req('POST', `/api/targets/${webT.id}/mark`, { token: adminTok, body: { status: 'bogus' } });
 check('an invalid bulk status is rejected', markBad.status === 400);
 
-// ---- durability: deleting an old engagement must NOT reduce the ranking ----
+// ---- the ranking is LIVE: recording lifts it, deleting the engagement removes it again ----
 const anaBefore = anaRank.findings;
 const tmpProj = (await req('POST', '/api/projects', { token: adminTok, body: { name: 'Old engagement' } })).json;
 await req('PATCH', `/api/projects/${tmpProj.id}/assignee`, { token: adminTok, body: { assignee: 'ana' } });
@@ -302,7 +302,7 @@ check('ranking counts a finding in a fresh project', anaMid === anaBefore + 1);
 const delOld = await req('DELETE', `/api/projects/${tmpProj.id}`, { token: adminTok });
 check('the old project is deleted', delOld.status === 200 || delOld.status === 204);
 const anaAfter = (await req('GET', '/api/admin/ranking', { token: adminTok })).json.ranking.find(r => r.author === 'ana')?.findings || 0;
-check('deleting the old project does NOT reduce the ranking', anaAfter === anaMid);
+check('deleting the project removes its finding from the live ranking', anaAfter === anaMid - 1);
 const rf = await req('POST', `/api/targets/${rT.json.id}/findings`, { token: adminTok, body: { title: 'ACME-1', kind: 'vuln', fix_status: 'half_fixed' } });
 check('a retest finding stores its fix status', rf.status === 201 && rf.json?.fix_status === 'half_fixed');
 
@@ -315,7 +315,7 @@ await req('PATCH', `/api/findings/${reF.json.id}`, { token: adminTok, body: { ki
 check('re-classifying a vuln to a note drops its credit', (await anaRankNow()) === reBase);
 await req('PATCH', `/api/findings/${reF.json.id}`, { token: adminTok, body: { kind: 'vuln' } });
 check('re-classifying it back to a vuln restores the credit', (await anaRankNow()) === reBase + 1);
-// but deleting the whole project must still NOT reduce the count (durable ledger)
+// deleting the whole engagement drops its finding from the live ranking too
 const durProj = (await req('POST', '/api/projects', { token: adminTok, body: { name: 'Dur' } })).json;
 await req('PATCH', `/api/projects/${durProj.id}/assignee`, { token: adminTok, body: { assignee: 'ana' } });
 const durAsset = (await req('POST', `/api/projects/${durProj.id}/assets`, { token: adminTok, body: { grp: 'external', label: 'D' } })).json;
@@ -323,7 +323,13 @@ const durT = (await req('POST', `/api/assets/${durAsset.id}/targets`, { token: a
 await req('POST', `/api/targets/${durT.id}/findings`, { token: workerToken, device: dev1, body: { title: 'keep', kind: 'vuln' } });
 const durMid = await anaRankNow();
 await req('DELETE', `/api/projects/${durProj.id}`, { token: adminTok });
-check('deleting a project never drops a vuln credit (durable)', (await anaRankNow()) === durMid);
+check('deleting an engagement drops its vuln from the live ranking', (await anaRankNow()) === durMid - 1);
+// the ranking exposes per-operator enumeration counts (24h / 7d / 30d / total)
+const enumRow = (await req('GET', '/api/admin/ranking', { token: adminTok })).json.ranking.find(r => r.author === 'ana');
+check('ranking rows carry day/week/month enumeration counts', !!enumRow
+  && Number.isInteger(enumRow.day) && Number.isInteger(enumRow.week) && Number.isInteger(enumRow.month)
+  && enumRow.day <= enumRow.week && enumRow.week <= enumRow.month && enumRow.month <= enumRow.findings);
+check('freshly recorded findings fall in the 24h window', enumRow.day >= 1);
 const badFix = await req('POST', `/api/targets/${rT.json.id}/findings`, { token: adminTok, body: { title: 'x', fix_status: 'nonsense' } });
 check('an invalid fix status is rejected (stored null)', badFix.json?.fix_status === null);
 

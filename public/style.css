@@ -1050,20 +1050,6 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 .setcard-hd h3 { margin: 0; font-size: 13px; letter-spacing: .02em; color: var(--fg); }
 .small { font-size: 10.5px; }
 
-.reqrow {
-  display: flex; align-items: center; justify-content: space-between; gap: 14px;
-  padding: 11px 12px; margin: 0 -12px; border-top: 1px solid var(--line-2);
-  transition: background .12s;
-}
-.reqrow:hover { background: var(--row-hover); }
-.reqinfo { min-width: 0; }
-.reqinfo strong { color: var(--fg); font-weight: 600; }
-.reqinfo .muted.small { margin-top: 3px; font-family: var(--mono); }
-.reqactions { display: flex; gap: 7px; flex-shrink: 0; }
-
-.auditrow { display: flex; gap: 8px; padding: 4px 0; font-size: 12px; border-top: 1px solid var(--line-faint); }
-.auditrow .aud-who { color: var(--gold-text); }
-
 .pill.gold { border-color: var(--gold); color: var(--gold); background: var(--gold-wash); }
 
 /* ── Admin panel v2 — full dashboard: grouped sidebar + wide, squared content ── */

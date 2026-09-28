@@ -205,14 +205,6 @@ function dockResizer(dock) {
   return handle;
 }
 const SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
-function filterSortFindings(findings) {
-  let out = EVID.kind === 'all' ? findings.slice() : findings.filter(f => f.kind === EVID.kind);
-  const q = EVID.q.trim().toLowerCase();
-  if (q) out = out.filter(f => `${f.title || ''} ${f.body || ''}`.toLowerCase().includes(q));
-  if (EVID.sort === 'sev') out.sort((a, b) => (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9));
-  else if (EVID.sort === 'title') out.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
-  return out; // 'new' keeps the server's created_at-DESC order
-}
 
 // Where the admin API lives for the signed-in identity, or null if not an admin:
 //  - on the server's own web UI: /api/admin directly (session admin)
@@ -665,38 +657,7 @@ const TYPE_CODE = { web: 'WEB', api: 'API', ip: 'NET', exthost: 'NET', ad: 'AD',
 const typeCode = (t) => TYPE_CODE[t] || String(t || '?').replace(/[^a-z0-9]/gi, '').slice(0, 3).toUpperCase() || '?';
 const codeBadge = (type, on) => el('span', { className: 'tcode' + (on ? ' on' : '') }, typeCode(type));
 function groupLabel(key) { return (GROUP_ORDER.find(g => g.key === key) || {}).label || key; }
-// engagement groups that actually have a selectable (non-soon) target type
-function selectableGroups() { return new Set(TYPES.filter(t => !t.soon).map(t => t.grp || 'additional')); }
 
-function railForFolder(folder, activeTargetId) {
-  const targets = folder.targets || [];
-  const total = targets.reduce((a, x) => a + x.total, 0);
-  const handled = targets.reduce((a, x) => a + x.handled, 0);
-  const head = el('div', { className: 'rail-head' },
-    el('div', { className: 'kicker' }, 'Asset · ' + groupLabel(folder.grp)),
-    el('div', { className: 'rail-title' }, `${folder.label}`),
-    el('div', { className: 'rail-status' }, el('span', { className: 'pulse' }),
-      `${pct(handled, total)}% · ${targets.length} TARGET${targets.length === 1 ? '' : 'S'}`));
-  const list = el('div', { className: 'rail-list' });
-  for (const a of targets) {
-    const p = pct(a.handled, a.total);
-    list.append(el('button', {
-      className: 'railtarget' + (String(a.id) === String(activeTargetId) ? ' on' : ''),
-      onclick: () => location.hash = `/target/${a.id}`,
-    },
-      el('span', { className: 'rt-top' },
-        codeBadge(a.type, String(a.id) === String(activeTargetId)),
-        el('span', { className: 'rt-pct' }, p + '%')),
-      el('span', { className: 'rt-name' }, a.label),
-      el('span', { className: 'bar thin' + (p > 70 ? ' good' : !p ? ' idle' : '') }, el('span', { style: `width:${p}%` }))));
-  }
-  if (!targets.length) list.append(el('div', { className: 'pmeta', style: 'padding:10px' }, 'No targets yet'));
-  return [head,
-    el('button', { className: 'railback', onclick: () => location.hash = `/project/${folder.project_id}/targets` }, '‹ Back to targets'),
-    el('div', { className: 'rail-label kicker' }, 'Targets'), list,
-    isEditor() ? el('div', { className: 'rail-foot' },
-      el('button', { className: 'dashbtn', onclick: () => addTarget(folder) }, icon('plus', 12), 'Add target')) : null];
-}
 // Rail listing every target in the engagement, grouped by kind (the flat engagement→target model).
 function railForProject(project, activeTargetId) {
   const groups = (project.assets || []).filter(f => (f.items || []).length);
@@ -1175,75 +1136,6 @@ async function renderAssetFolder(id) {
   try { const f = await api('/assets/' + id); location.hash = `/project/${f.project_id}/targets`; }
   catch { location.hash = ''; }
 }
-function stat3(label, value, cls) {
-  return el('div', { className: 'stat' }, el('div', { className: 'kicker' }, label),
-    el('div', { className: 'stat-value ' + (cls || '') }, value));
-}
-
-// Create an engagement-type Asset folder inside a project.
-function addAsset(projectId) {
-  const selectable = selectableGroups();
-  modal({
-    kicker: 'Scope', title: 'Add an asset', cta: 'Add asset',
-    note: 'An asset is an engagement type. You add targets (web, host, AD…) inside it.',
-    build: (b) => {
-      const firstGrp = GROUP_ORDER.find(g => selectable.has(g.key))?.key || 'internal';
-      const hidden = el('input', { type: 'hidden', name: 'grp', value: firstGrp });
-      const label = el('input', { name: 'label', placeholder: 'e.g. Corporate internal, Acme external' });
-      const grid = el('div', { className: 'typegrid' });
-      const btns = [];
-      for (const g of GROUP_ORDER) {
-        const soon = !selectable.has(g.key);
-        const btn = el('button', { type: 'button', className: 'type' + (g.key === hidden.value ? ' sel' : '') + (soon ? ' soon' : '') },
-          el('span', { className: 'lbl' }, `${g.label}`),
-          el('span', { className: 'hint' }, soon ? 'coming soon' : (g.key === 'internal' ? 'host, subnet, AD'
-            : g.key === 'external' ? 'web, api, domain' : g.key === 'otiot' ? 'IoT, OT/ICS'
-            : g.key === 'additional' ? 'container, PoC' : g.key === 'retest' ? 'remediation check'
-              : g.label.toLowerCase())));
-        if (soon) btn.disabled = true;
-        else btn.onclick = () => { hidden.value = g.key; for (const x of btns) x.classList.remove('sel'); btn.classList.add('sel'); label.focus(); };
-        btns.push(btn); grid.append(btn);
-      }
-      b.append(el('label', {}, 'Engagement type'), grid, hidden, el('label', {}, 'Name'), label);
-    },
-    onSubmit: async (fd) => {
-      const body = { grp: fd.get('grp'), label: fd.get('label') };
-      if (!body.label) throw new Error('Name the asset');
-      const f = await api(`/projects/${projectId}/assets`, { method: 'POST', body });
-      location.hash = `/asset/${f.id}`;
-    },
-  });
-}
-
-// Create a Target inside an asset folder — types limited to the folder's engagement group.
-function addTarget(folder) {
-  const types = TYPES.filter(t => (t.grp || 'additional') === folder.grp && !t.soon);
-  if (!types.length) return alert('No target types are available for this engagement type yet.');
-  modal({
-    kicker: 'Target', title: `Add a target — ${groupLabel(folder.grp)}`, cta: 'Add target',
-    build: (b) => {
-      const hidden = el('input', { type: 'hidden', name: 'type', value: types[0].type });
-      const label = el('input', { name: 'label', placeholder: types[0].hint || 'value' });
-      const grid = el('div', { className: 'typegrid' });
-      const btns = [];
-      for (const t of types) {
-        const btn = el('button', { type: 'button', className: 'type' + (t.type === hidden.value ? ' sel' : '') },
-          el('span', { className: 'lbl' }, `${t.label}`),
-          el('span', { className: 'hint' }, t.hint || t.type));
-        btn.onclick = () => { hidden.value = t.type; label.placeholder = t.hint || 'value'; for (const x of btns) x.classList.remove('sel'); btn.classList.add('sel'); label.focus(); };
-        btns.push(btn); grid.append(btn);
-      }
-      b.append(el('label', {}, 'Target type'), grid, hidden, el('label', {}, 'Identifier'), label);
-    },
-    onSubmit: async (fd) => {
-      const body = { type: fd.get('type'), label: fd.get('label') };
-      if (!body.label) throw new Error('Enter an identifier');
-      const a = await api(`/assets/${folder.id}/targets`, { method: 'POST', body });
-      location.hash = `/target/${a.id}`;
-    },
-  });
-}
-
 // Add a target straight to an engagement — pick any target type; its kind-group is auto-managed.
 function addTargetToProject(projectId) {
   const types = TYPES.filter(t => !t.soon);
@@ -1283,25 +1175,6 @@ function addTargetToProject(projectId) {
 }
 
 // Delete an Asset folder and everything inside it.
-function delAsset(f, after) {
-  const targets = f.targets ?? (Array.isArray(f.targets) ? f.targets.length : 0);
-  const n = typeof targets === 'number' ? targets : (f.targets?.length || 0);
-  modal({
-    kicker: 'Destructive', title: `Delete asset “${f.label}”?`, danger: true, cta: 'Delete forever',
-    note: 'The engagement is kept. This asset and every target inside it are removed.',
-    build: (b) => b.append(el('div', { className: 'dangerbox' },
-      el('div', { className: 'kicker' }, 'Irreversible'),
-      el('ul', { className: 'dellist' },
-        el('li', {}, `${n} target${n === 1 ? '' : 's'} and their checklists`),
-        el('li', {}, 'All findings, evidence and progress inside them')))),
-    onSubmit: async () => {
-      await api('/assets/' + f.id, { method: 'DELETE' });
-      curAssetId = null; toast('Asset deleted');
-      if (after) after();
-    },
-  });
-}
-
 // Delete a single Target.
 function delTarget(a, after) {
   const items = a.total ?? a.items?.length ?? 0;
@@ -1393,12 +1266,6 @@ let curAssetId = null;
 const openGroups = new Set();
 const openPayloads = new Set();
 let FILTER = 'all';
-
-// Bulk-set every checklist item's status — a whole section (group_key) or the entire target.
-async function markChecklist(id, status, group_key) {
-  try { await api('/targets/' + id + '/mark', { method: 'POST', body: { status, ...(group_key ? { group_key } : {}) } }); renderTarget(id); }
-  catch (e) { toast(e.message); }
-}
 
 const MATCH = {
   all: () => true,
@@ -3561,12 +3428,6 @@ const ADMIN_NAV = [
   ] },
 ];
 const ADMIN_TAB_LIST = ADMIN_NAV.flatMap(g => g.items); // flat list for badge/section lookup
-const admCard = (title, sub) => el('div', { className: 'setcard' },
-  el('div', { className: 'setcard-hd', style: sub ? 'display:flex;align-items:baseline;justify-content:space-between;gap:12px' : '' },
-    el('h3', {}, title), sub ? el('span', { className: 'muted small' }, sub) : null));
-const admRow = (info, ...actions) => el('div', { className: 'reqrow' },
-  el('div', { className: 'reqinfo' }, ...info), el('div', { className: 'reqactions' }, ...actions.filter(Boolean)));
-
 // ── admin panel v2 building blocks ──────────────────────────────────────────
 // Every section opens with a header: a mono kicker, a Chakra-Petch title, a muted subtitle, and
 // optional right-aligned action buttons.

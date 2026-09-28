@@ -3,6 +3,8 @@ node_modules/
 # Engagement data: client credentials, raw requests and findings. Never commit this.
 data/
 *.log
+# Generated pentest report exports (per-target HTML/screenshots) — client data, never commit.
+packaging/reports/
 
 # Generated design snapshots and design-tool exports, not source.
 design-export/

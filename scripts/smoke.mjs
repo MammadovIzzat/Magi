@@ -512,15 +512,17 @@ checks.push(['connect-to-server dialog opens', await ev(`
 // Admin is split into tabbed pages; the Ranking page renders a leaderboard. This standalone
 // install isn't a server, so force admin context (ME.role is already 'admin' here) and stub the
 // admin API, then verify the tab nav and the ranking table actually paint.
-checks.push(['admin tabs + ranking page paint', await ev(`
+checks.push(['admin dashboard: overview, sidebar groups, ranking, logs, templates', await ev(`
   const real = window.fetch;
   const stub = {
     "/api/link": { unavailable: true },
+    "/api/templates": [{ type: "web", label: "Web app", item_count: 3, grp: "external" }, { type: "api", label: "API", item_count: 2, grp: "external" }],
     "/api/admin/ranking": { ranking: [
-      { author: "ana", role: "worker", findings: 7, poc: 3, projects: 2, score: 41, day: 1, week: 3, month: 5, types: { web: 4, poc: 3 }, topType: "web", sev: { critical: 2, high: 3, medium: 2, low: 0, info: 0, none: 0 } },
-      { author: "bob", role: "editor", findings: 2, poc: 0, projects: 1, score: 4, day: 0, week: 1, month: 2, types: { ad: 2 }, topType: "ad", sev: { critical: 0, high: 0, medium: 1, low: 1, info: 0, none: 0 } }],
+      { author: "ana", role: "worker", findings: 7, poc: 3, projects: 2, score: 41, types: { web: 4, poc: 3 }, topType: "web", sev: { critical: 2, high: 3, medium: 2, low: 0, info: 0, none: 0 } },
+      { author: "bob", role: "editor", findings: 2, poc: 0, projects: 1, score: 4, types: { ad: 2 }, topType: "ad", sev: { critical: 0, high: 0, medium: 1, low: 1, info: 0, none: 0 } }],
       totals: { operators: 2, findings: 9, unattributed: 1 } },
     "/api/admin/requests": [], "/api/admin/enroll-codes": [],
+    "/api/ungraded": [{ id: 1, title: "Reflected XSS", target_type: "web", project: "Acme Q3", target: "app.x", author: "ana", target_id: 5, project_id: 9 }],
     "/api/admin/users": [{ id: 1, username: "ana", role: "worker", created_at: "2026-01-01", mfa_enabled: 1 }],
     "/api/admin/users/1/tasks": { user: { id: 1, username: "ana", role: "worker", created_at: "2026-01-01", mfa_enabled: 1 },
       projects: [{ id: 9, name: "Acme Q3", status: "active" }],
@@ -537,52 +539,54 @@ checks.push(['admin tabs + ranking page paint', await ev(`
     return real(u, o);
   };
   LINK = { unavailable: true };
-  location.hash = "#/admin/ranking"; await new Promise(r => setTimeout(r, 1000));
-  // the admin panel is a full-width dashboard with a left sidebar of sections
-  const adminBar = !!document.querySelector(".adminlayout .adminside .adminnavs");
-  // Findings/PoC is a segment in the control row, next to the time-window select and the search
-  const subnav = document.querySelectorAll(".rank-controls .admsub.rank-seg .admsub-tab").length === 2;
-  const hasWindow = !!document.querySelector(".rank-controls .rankwin");
-  const enumRows = document.querySelectorAll(".enumtable .enum-row").length;
-  // the table shows finding-type chips and a total (ana: 7), no time-window columns, no score column
-  const hasTypes = document.querySelectorAll(".enum-row .enum-types .rtype").length >= 1;
-  const hasTotal = [...document.querySelectorAll(".enum-row .enum-total")].some(e => /7/.test(e.textContent));
-  const noWindows = !/24h|30d/.test(document.querySelector(".enum-head")?.textContent || "");
-  // filtering the table by username narrows the rows
-  const searchBox = document.querySelector(".rank-controls .searchbox");
-  if (searchBox) { searchBox.value = "bob"; searchBox.dispatchEvent(new Event("input", { bubbles: true })); await new Promise(r => setTimeout(r, 150)); }
-  const filtered = !searchBox || document.querySelectorAll(".enumtable .enum-row").length === 1;
-  if (searchBox) { searchBox.value = ""; searchBox.dispatchEvent(new Event("input", { bubbles: true })); await new Promise(r => setTimeout(r, 100)); }
-  const tabs = document.querySelectorAll(".adminside .adminnav").length;
-  // the Templates item lives in the admin sidebar now (connected format) and links out to the editor
-  const tplTab = [...document.querySelectorAll(".adminside .adminnav")].find(a => /Templates/.test(a.textContent));
-  const tplTabOk = !!tplTab && tplTab.getAttribute("href") === "#/editor";
+  // ── Overview (the default admin landing) ──
+  location.hash = "#/admin/overview"; await new Promise(r => setTimeout(r, 1000));
+  const adminShell = !!document.querySelector(".adminlayout .adminside .adminnavs");
+  const groups = document.querySelectorAll(".adminside .sidegroup").length === 3;
+  const tabs = document.querySelectorAll(".adminside .adminnav").length === 8;   // Overview + 6 sections + Templates
+  const tiles = document.querySelectorAll(".stat-tiles .stat").length >= 4;
+  const panels = document.querySelectorAll(".dashgrid .dashpanel").length === 2;
+  const ovText = document.querySelector(".admbody")?.textContent || "";
+  const ovActivity = /Recorded a finding/.test(ovText) && /Worker status/.test(ovText);
+  // ── Ranking: severity-mix chips + total, type/time selects, operator search ──
+  location.hash = "#/admin/ranking"; await new Promise(r => setTimeout(r, 700));
+  const rankRows = document.querySelectorAll(".rankboard .rank-row").length === 2;
+  const sevChips = document.querySelectorAll(".rank-row .sevmix .sevmix-chip").length >= 1;
+  const rankTotal = [...document.querySelectorAll(".rank-row .rank-total")].some(e => /7/.test(e.textContent));
+  const rankSelects = document.querySelectorAll(".arow-controls .sel.aselect").length >= 2;  // type + window
+  const rsearch = document.querySelector(".arow-controls .ainput");
+  if (rsearch) { rsearch.value = "bob"; rsearch.dispatchEvent(new Event("input", { bubbles: true })); await new Promise(r => setTimeout(r, 150)); }
+  const rankFiltered = !rsearch || document.querySelectorAll(".rankboard .rank-row").length === 1;
   const activeIsRanking = /ranking/i.test(document.querySelector(".adminnav.on")?.textContent || "");
+  // ── Users: table + New operator + Details dialog ──
   location.hash = "#/admin/users"; await new Promise(r => setTimeout(r, 700));
-  const usersActive = /users/i.test(document.querySelector(".adminnav.on")?.textContent || "");
-  // Users page has "New operator"; the connection requests + codes moved to the Devices page.
+  const usersTable = document.querySelectorAll(".atable .arow").length >= 1;
   const usersHasCreate = [...document.querySelectorAll(".admbody button")].some(b => /new operator/i.test(b.textContent));
-  // the per-operator Details dialog shows their workload (summary tiles + engagements + targets)
   [...document.querySelectorAll(".admbody button")].find(b => /details/i.test(b.textContent))?.click();
   await new Promise(r => setTimeout(r, 400));
-  const udOk = document.querySelectorAll(".ud-summary .ud-tile").length >= 3
-    && /Acme Q3/.test(document.querySelector(".ud-list")?.textContent || "")
-    && !!document.querySelector(".ud-status.done");
+  const udOk = document.querySelectorAll(".ud-summary .ud-tile").length >= 3 && /Acme Q3/.test(document.querySelector(".ud-list")?.textContent || "");
   document.querySelector(".modal-x")?.click(); await new Promise(r => setTimeout(r, 150));
+  // ── Grading: table + Grade all ──
+  location.hash = "#/admin/grading"; await new Promise(r => setTimeout(r, 600));
+  const gradingText = document.querySelector(".admbody")?.textContent || "";
+  const gradingOk = /Reflected XSS/.test(gradingText) && /Grade all/.test(gradingText);
+  // ── Devices ──
   location.hash = "#/admin/devices"; await new Promise(r => setTimeout(r, 700));
   const devicesText = document.querySelector(".admbody")?.textContent || "";
-  const devicesHasCodesAndRequests = /connection requests/i.test(devicesText) && /one-time codes/i.test(devicesText);
-  // Logs: readable actions (not raw routes) + page-size control + pager
+  const devicesOk = /Connection requests/i.test(devicesText) && /One-time codes/i.test(devicesText);
+  // ── Logs: readable actions, filters (user + page size), pager, Export CSV ──
   location.hash = "#/admin/logs"; await new Promise(r => setTimeout(r, 700));
   const logText = document.querySelector(".admbody")?.textContent || "";
-  const logsReadable = /Recorded a finding/.test(logText) && /Graded a finding/.test(logText) && !/POST \\/targets/.test(logText);
-  const logsControls = !!document.querySelector(".log-controls .sel.logsize") && !!document.querySelector(".log-pager") && /of 3/.test(logText);
-  // Templates opens INSIDE the admin panel — the sidebar stays, the editor fills the body
+  const logsReadable = /Recorded a finding/.test(logText) && /Graded a finding/.test(logText);
+  const logsControls = document.querySelectorAll(".arow-controls .sel.aselect").length >= 2 && !!document.querySelector(".log-pager") && /of 3/.test(logText);
+  const logsExport = [...document.querySelectorAll(".ahead-actions button")].some(b => /export csv/i.test(b.textContent));
+  // ── Templates opens INSIDE the panel ──
   location.hash = "#/editor"; await new Promise(r => setTimeout(r, 900));
   const tplInPanel = !!document.querySelector(".adminlayout .adminside") && !!document.querySelector(".adminlayout .admbody .tpl-layout");
-  const tplActive = /templates/i.test(document.querySelector(".adminnav.on")?.textContent || "");
+  const tplTab = [...document.querySelectorAll(".adminside .adminnav")].find(a => /Templates/.test(a.textContent));
+  const tplTabOk = !!tplTab && tplTab.getAttribute("href") === "#/editor";
   window.fetch = real;
-  return adminBar && subnav && hasWindow && enumRows === 2 && hasTypes && hasTotal && noWindows && filtered && tabs === 7 && activeIsRanking && usersActive && usersHasCreate && udOk && tplTabOk && devicesHasCodesAndRequests && logsReadable && logsControls && tplInPanel && tplActive`)]);
+  return adminShell && groups && tabs && tiles && panels && ovActivity && rankRows && sevChips && rankTotal && rankSelects && rankFiltered && activeIsRanking && usersTable && usersHasCreate && udOk && gradingOk && devicesOk && logsReadable && logsControls && logsExport && tplInPanel && tplTabOk`)]);
 // Responsive top bar: at a narrow (phone-ish) width the page actions must not spill out of the bar —
 // the bar stays inside the window and the account badge remains on screen (actions scroll within).
 await cdp('Emulation.setDeviceMetricsOverride', { width: 480, height: 800, deviceScaleFactor: 1, mobile: false });

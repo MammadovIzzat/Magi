@@ -335,6 +335,13 @@ const win24 = (await req('GET', `/api/admin/ranking?from=${now - DAY}`, { token:
 check('a 24h window keeps freshly recorded findings', (win24.ranking.find(r => r.author === 'ana')?.findings || 0) >= 1);
 const winOld = (await req('GET', `/api/admin/ranking?to=${now - 3650 * DAY}`, { token: adminTok })).json;
 check('a window before any finding existed counts nothing', (winOld.totals?.findings || 0) === 0 && winOld.ranking.length === 0);
+// a type filter narrows the ranking to one asset type; a type nobody has counts nothing.
+const allRank = (await req('GET', '/api/admin/ranking', { token: adminTok })).json;
+const webRank = (await req('GET', '/api/admin/ranking?type=web', { token: adminTok })).json;
+check('a type filter narrows the ranking to that asset type', (webRank.totals?.findings || 0) <= (allRank.totals?.findings || 0)
+  && webRank.ranking.every(r => !r.types || Object.keys(r.types).every(t => t === 'web')));
+const noneRank = (await req('GET', '/api/admin/ranking?type=__nope__', { token: adminTok })).json;
+check('a type nobody has counts nothing', (noneRank.totals?.findings || 0) === 0 && noneRank.ranking.length === 0);
 const badFix = await req('POST', `/api/targets/${rT.json.id}/findings`, { token: adminTok, body: { title: 'x', fix_status: 'nonsense' } });
 check('an invalid fix status is rejected (stored null)', badFix.json?.fix_status === null);
 

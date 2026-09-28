@@ -846,6 +846,7 @@ app.get('/api/admin/ranking', requireAdmin, (req, res) => {
   const roles = {};
   for (const u of q(`SELECT username, role FROM users`).all()) roles[u.username] = u.role;
   const fromMs = Number(req.query.from), toMs = Number(req.query.to);
+  const typeF = String(req.query.type || '').trim(); // optional asset-type filter (web/api/ad/…)
   const tOf = (s) => { const d = Date.parse(String(s || '').replace(' ', 'T') + 'Z'); return Number.isFinite(d) ? d : NaN; };
   const inWindow = (s) => {
     const t = tOf(s);
@@ -856,6 +857,7 @@ app.get('/api/admin/ranking', requireAdmin, (req, res) => {
   const by = new Map();
   let counted = 0, unattributed = 0;
   for (const r of rows) {
+    if (typeF && r.type !== typeF) continue;
     if (!inWindow(r.created_at)) continue;
     if (!r.author) { unattributed++; continue; }
     counted++;

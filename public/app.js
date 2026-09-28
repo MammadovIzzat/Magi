@@ -42,6 +42,7 @@ const ICON = {
   gear: ['M8 2.4v2.3M8 11.3v2.3M2.4 8h2.3M11.3 8h2.3M4.1 4.1l1.6 1.6M10.3 10.3l1.6 1.6M11.9 4.1l-1.6 1.6M5.7 10.3l-1.6 1.6M8 5.5a2.5 2.5 0 100 5 2.5 2.5 0 000-5', 1.3],
   copy: ['M5.5 5.5h7v8h-7zM3.5 10.5V2.5h7v2', 1.4],
   right: ['M6 3.5L10.5 8 6 12.5', 1.6],
+  grid: ['M2.5 2.5h5v5h-5zM8.5 2.5h5v3h-5zM8.5 6.5h5v7h-5zM2.5 8.5h5v5h-5z', 1.3],
 };
 function icon(name, size = 13) {
   const [d, w] = ICON[name];
@@ -3542,20 +3543,108 @@ let LAST_CODE = null; // a just-minted code to show once at the top of the panel
 // The Admin area is split into focused pages (a single scroll of everything didn't scale for a
 // larger team): Users, Devices, Ranking, Logs, Backup. Each is its own hash (#/admin/<key>) and
 // loads only its own data, so a page stays light. A shared shell draws the header + tab nav.
-const ADMIN_TAB_LIST = [
-  { key: 'users', label: 'Users', icon: 'user' },
-  { key: 'devices', label: 'Devices', icon: 'server' },
-  { key: 'grading', label: 'Grading', icon: 'flag' },
-  { key: 'ranking', label: 'Ranking', icon: 'up' },
-  { key: 'logs', label: 'Logs', icon: 'lines' },
-  { key: 'backup', label: 'Backup', icon: 'down' },
-  { key: 'templates', label: 'Templates', icon: 'edit', href: '#/editor' }, // the checklist editor (a full page, not a section)
+// The admin sidebar, grouped: Monitor (read the room) · Manage (act on people/work) · System (upkeep).
+const ADMIN_NAV = [
+  { group: 'Monitor', items: [
+    { key: 'overview', label: 'Overview', icon: 'grid' },
+    { key: 'ranking', label: 'Ranking', icon: 'up' },
+    { key: 'logs', label: 'Logs', icon: 'lines' },
+  ] },
+  { group: 'Manage', items: [
+    { key: 'users', label: 'Users', icon: 'user' },
+    { key: 'devices', label: 'Devices', icon: 'server' },
+    { key: 'grading', label: 'Grading', icon: 'flag' },
+    { key: 'templates', label: 'Templates', icon: 'edit', href: '#/editor' }, // the checklist editor (renders as a section)
+  ] },
+  { group: 'System', items: [
+    { key: 'backup', label: 'Backup', icon: 'down' },
+  ] },
 ];
+const ADMIN_TAB_LIST = ADMIN_NAV.flatMap(g => g.items); // flat list for badge/section lookup
 const admCard = (title, sub) => el('div', { className: 'setcard' },
   el('div', { className: 'setcard-hd', style: sub ? 'display:flex;align-items:baseline;justify-content:space-between;gap:12px' : '' },
     el('h3', {}, title), sub ? el('span', { className: 'muted small' }, sub) : null));
 const admRow = (info, ...actions) => el('div', { className: 'reqrow' },
   el('div', { className: 'reqinfo' }, ...info), el('div', { className: 'reqactions' }, ...actions.filter(Boolean)));
+
+// ── admin panel v2 building blocks ──────────────────────────────────────────
+// Every section opens with a header: a mono kicker, a Chakra-Petch title, a muted subtitle, and
+// optional right-aligned action buttons.
+function pageHead(kicker, title, sub, ...actions) {
+  actions = actions.flat().filter(Boolean);
+  return el('div', { className: 'ahead' },
+    el('div', { className: 'ahead-l' },
+      el('div', { className: 'kicker' }, 'Admin · ' + kicker),
+      el('h2', { className: 'ahead-title' }, title),
+      sub ? el('p', { className: 'ahead-sub' }, sub) : null),
+    actions.length ? el('div', { className: 'ahead-actions' }, ...actions) : null);
+}
+// A bordered, full-width table: a mono uppercase header row over grid rows. `cols` is the shared
+// grid-template-columns; `head` the column labels; `rows` an array of cell-arrays. Empty → an
+// inline empty-state with an icon, a title and a hint.
+function aTable(cols, head, rows, empty) {
+  const headRow = el('div', { className: 'acol-head', style: 'grid-template-columns:' + cols },
+    ...head.map(h => el('span', {}, h)));
+  const kids = rows.length
+    ? rows.map(cells => el('div', { className: 'arow', style: 'grid-template-columns:' + cols }, ...cells))
+    : [aEmpty(empty?.title || 'Nothing here yet', empty?.hint)];
+  return el('div', { className: 'atable' }, headRow, ...kids);
+}
+function aEmpty(title, hint, actionBtn) {
+  return el('div', { className: 'aempty' },
+    el('span', { className: 'aempty-i' }, icon('check', 13)),
+    el('strong', {}, title),
+    hint ? el('span', { className: 'aempty-h' }, hint) : null,
+    actionBtn || null);
+}
+// Admin action buttons — squared, matching the v2 mock. `variant`: '' (ghost) | 'gold' | 'danger'.
+function aBtn(label, onclick, variant = '', ico) {
+  return el('button', { className: 'abtn' + (variant ? ' ' + variant : ''), onclick },
+    ico ? icon(ico, 12) : null, label);
+}
+// Severity-mix chips (C/H/M/L/I) using the report's 5-tier colours; only the non-zero bands show.
+const SEV_MIX = [['critical', 'C'], ['high', 'H'], ['medium', 'M'], ['low', 'L'], ['info', 'I']];
+function sevMix(sev) {
+  const chips = SEV_MIX.filter(([k]) => sev?.[k]).map(([k, ab]) => el('span', { className: 'sevmix-chip sev-' + k, title: k }, `${ab} ${sev[k]}`));
+  return el('span', { className: 'sevmix' }, ...(chips.length ? chips : [el('span', { className: 'muted small' }, 'no findings')]));
+}
+// A small status dot + label (online / idle / offline).
+function statusDot(state, label) {
+  return el('span', { className: 'statuspill ' + state }, el('span', { className: 'sd' }), label);
+}
+// Parse a timestamp to epoch-ms. Handles both the SQLite UTC form ("YYYY-MM-DD HH:MM:SS", treated as
+// UTC) and a full ISO string (already carries its own zone), so callers can pass either.
+function tsMs(s) {
+  const str = String(s || ''); if (!str) return 0;
+  const iso = str.includes('T') ? str : str.replace(' ', 'T') + 'Z';
+  const d = Date.parse(iso); return Number.isFinite(d) ? d : 0;
+}
+function ago(s) {
+  const t = tsMs(s); if (!t) return 'never';
+  const d = Date.now() - t;
+  if (d < 60000) return 'just now';
+  if (d < 36e5) return Math.floor(d / 60000) + 'm ago';
+  if (d < 864e5) return Math.floor(d / 36e5) + 'h ago';
+  return Math.floor(d / 864e5) + 'd ago';
+}
+// Compact "time until" a future timestamp (for code expiry).
+function until(s) {
+  const t = tsMs(s); if (!t) return 'no expiry';
+  const d = t - Date.now();
+  if (d <= 0) return 'expired';
+  if (d < 36e5) return 'in ' + Math.ceil(d / 60000) + 'm';
+  if (d < 864e5) return 'in ' + Math.ceil(d / 36e5) + 'h';
+  return 'in ' + Math.ceil(d / 864e5) + 'd';
+}
+// A device's live state from its last-seen (online <3m, idle <30m, else offline; revoked wins).
+function deviceState(d) {
+  if (d.revoked) return { state: 'revoked', label: 'revoked' };
+  const t = tsMs(d.last_seen); if (!t) return { state: 'offline', label: 'never' };
+  const age = Date.now() - t;
+  if (age < 3 * 60000) return { state: 'online', label: 'online' };
+  if (age < 30 * 60000) return { state: 'idle', label: 'idle' };
+  return { state: 'offline', label: 'offline' };
+}
 
 // The admin panel is a full-width dashboard: a left sidebar of sections + a wide content area.
 // The shell is built ONCE and reused across section switches — only the active item, the counts,
@@ -3565,27 +3654,37 @@ const admRow = (info, ...actions) => el('div', { className: 'reqrow' },
 function ensureAdminShell(section) {
   const view = $('#view');
   const badgeFor = (t) => (t.key === 'devices' && ADMIN_PENDING) ? ADMIN_PENDING : (t.key === 'grading' && ADMIN_UNGRADED) ? ADMIN_UNGRADED : 0;
-  const navHtml = (t) => el('a', { className: 'adminnav' + (t.key === section ? ' on' : ''), href: t.href || ('#/admin/' + t.key) },
-    icon(t.icon || 'gear', 15),
-    el('span', { className: 'adminnav-lbl' }, t.label),
-    badgeFor(t) ? el('span', { className: 'tabcount' }, String(badgeFor(t))) : null);
+  // Backup shows a small "attention" dot when a scheduled backup is due, not a count.
+  const dotFor = (t) => t.key === 'backup' && BACKUP_DUE;
+  const navHtml = (t) => {
+    const a = el('a', { className: 'adminnav' + (t.key === section ? ' on' : ''), href: t.href || ('#/admin/' + t.key) },
+      icon(t.icon || 'gear', 15),
+      el('span', { className: 'adminnav-lbl' }, t.label),
+      badgeFor(t) ? el('span', { className: 'tabcount' }, String(badgeFor(t))) : (dotFor(t) ? el('span', { className: 'navdot' }) : null));
+    a.dataset.key = t.key;
+    return a;
+  };
   let body = view.querySelector('.adminlayout .admbody');
   if (!body) {
-    // fresh entry into the admin area — build the shell once
-    const nav = el('nav', { className: 'adminnavs' }, ...ADMIN_TAB_LIST.map(navHtml));
-    const side = el('aside', { className: 'adminside' }, el('div', { className: 'adminside-hd' }, 'Admin'), nav);
+    // fresh entry into the admin area — build the shell once (grouped nav + footer)
+    const groups = ADMIN_NAV.map(g => el('div', { className: 'sidegroup' },
+      el('div', { className: 'sidegroup-h' }, g.group),
+      el('nav', { className: 'adminnavs' }, ...g.items.map(navHtml))));
+    const foot = el('div', { className: 'sidefoot' },
+      el('div', {}, 'Magi v' + (ME?.version || '?')),
+      el('div', {}, (LINK?.linked ? 'linked' : 'server') + ' · online'));
+    const side = el('aside', { className: 'adminside' }, ...groups, el('div', { className: 'sidespace' }), foot);
     body = el('div', { className: 'admbody' });
     view.replaceChildren(el('div', { className: 'adminlayout' }, side, body));
   } else {
     // already on an admin page: refresh the sidebar in place (active state + counts), keep the DOM
-    const nav = view.querySelector('.adminside .adminnavs');
-    ADMIN_TAB_LIST.forEach((t, i) => {
-      const a = nav.children[i]; if (!a) return;
+    ADMIN_TAB_LIST.forEach((t) => {
+      const a = view.querySelector('.adminnav[data-key="' + t.key + '"]'); if (!a) return;
       a.classList.toggle('on', t.key === section);
       const n = badgeFor(t);
-      let badge = a.querySelector('.tabcount');
-      if (n) { if (!badge) { badge = el('span', { className: 'tabcount' }); a.append(badge); } badge.textContent = String(n); }
-      else if (badge) badge.remove();
+      let badge = a.querySelector('.tabcount'), dot = a.querySelector('.navdot');
+      if (n) { if (dot) dot.remove(); if (!badge) { badge = el('span', { className: 'tabcount' }); a.append(badge); } badge.textContent = String(n); }
+      else { if (badge) badge.remove(); if (dotFor(t)) { if (!dot) a.append(el('span', { className: 'navdot' })); } else if (dot) dot.remove(); }
     });
   }
   return body;
@@ -3594,13 +3693,12 @@ function ensureAdminShell(section) {
 async function renderAdmin(section) {
   const ctx = adminCtx();
   if (!ctx) { location.hash = '/settings'; return; } // not an admin here
-  if (!section) section = (location.hash.match(/^#\/admin\/(\w+)/) || [])[1] || 'users';
-  if (!ADMIN_SECTIONS[section]) section = 'users';
+  if (!section) section = (location.hash.match(/^#\/admin\/(\w+)/) || [])[1] || 'overview';
+  if (!ADMIN_SECTIONS[section]) section = 'overview';
   setRail(null);
   setCrumbs([{ label: 'admin', go: () => location.hash = '/admin' }, { label: section }]); // top-level area + its page
-  const acts = [el('button', { className: 'btn', onclick: () => renderAdmin(section) }, icon('down', 12), el('span', { className: 'lbl' }, 'Refresh'))];
-  if (section === 'devices') acts.push(el('button', { className: 'btn gold', onclick: () => mintCodeDialog(ctx) }, icon('plus', 12), el('span', { className: 'lbl' }, 'New code')));
-  topActions(...acts);
+  // Section-specific actions live in the page header now; the top bar keeps just a Refresh.
+  topActions(el('button', { className: 'btn', onclick: () => renderAdmin(section) }, icon('down', 12), el('span', { className: 'lbl' }, 'Refresh')));
 
   const view = $('#view');
   const same = view.dataset.adminSection === section && !!view.querySelector('.admbody'); // a live-refresh of the same page
@@ -3630,15 +3728,24 @@ async function renderAdmin(section) {
 // on the Devices page.)
 async function adminUsers(ctx, A) {
   const users = await A('/users');
-  const memCard = admCard(`Operators (${users.length})`);
-  memCard.append(el('div', { className: 'setcard-actions', style: 'margin-bottom:12px' },
-    el('button', { className: 'btn gold', onclick: () => createUserDialog(ctx) }, icon('plus', 12), 'New operator')));
-  for (const m of users) memCard.append(admRow(
-    [el('strong', {}, m.username), el('span', { className: 'muted' }, ' · '), el('span', { className: 'pill' }, m.role),
-      el('div', { className: 'muted small' }, m.mfa_enabled ? 'two-factor on' : 'two-factor not set up yet')],
-    el('button', { className: 'btn', onclick: () => userDetailsDialog(ctx, m) }, icon('user', 12), 'Details'),
-    el('button', { className: 'btn', onclick: () => manageUserDialog(ctx, m) }, icon('edit', 12), 'Manage')));
-  return [memCard];
+  const withMfa = users.filter(u => u.mfa_enabled).length;
+  const head = pageHead('Users', 'Operators',
+    `${users.length} account${users.length === 1 ? '' : 's'} · ${withMfa} with 2FA enabled`,
+    aBtn('New operator', () => createUserDialog(ctx), 'gold', 'plus'));
+  const cols = 'minmax(0,1.7fr) minmax(0,.8fr) minmax(82px,1fr) minmax(0,.5fr) 220px';
+  const rows = users.map(m => [
+    el('span', { className: 'acell-name' },
+      el('span', { className: 'avatar-sq' }, (m.username || '?').slice(0, 2).toUpperCase()),
+      el('strong', {}, m.username)),
+    el('span', { className: 'rolepill' + (m.role === 'admin' ? ' admin' : '') }, m.role),
+    el('span', { className: 'amono' }, m.created_at ? new Date(m.created_at).toLocaleDateString() : '—'),
+    el('span', { className: 'amono ' + (m.mfa_enabled ? 'ok' : 'off') }, m.mfa_enabled ? 'on' : 'off'),
+    el('span', { className: 'arow-actions' },
+      aBtn('Details', () => userDetailsDialog(ctx, m)),
+      m.role === 'admin' ? null : aBtn('Role…', () => manageUserDialog(ctx, m)),
+      m.role === 'admin' ? null : aBtn('Remove', () => removeUserDialog(ctx, m), 'danger')),
+  ]);
+  return [head, aTable(cols, ['Operator', 'Role', 'Created', '2FA', ''], rows, { title: 'No operators yet', hint: 'Create the first account to get started.' })];
 }
 
 // A read-only look at one operator's workload: the engagements and targets assigned to them, each
@@ -3714,46 +3821,71 @@ function createUserDialog(ctx) {
 async function adminDevices(ctx, A) {
   const [devices, requests, codes] = await Promise.all([A('/devices'), A('/requests'), A('/enroll-codes')]);
   ADMIN_PENDING = requests.length; renderAccount();
-  const out = [];
+  const activeDevs = devices.filter(d => !d.revoked);
+  const out = [pageHead('Devices', 'Devices',
+    `${activeDevs.length} connected · ${requests.length} request${requests.length === 1 ? '' : 's'} waiting on you`,
+    aBtn('New one-time code', () => mintCodeDialog(ctx), 'gold', 'plus'))];
 
-  const reqCard = admCard(`Connection requests (${requests.length})`);
-  if (!requests.length) reqCard.append(el('p', { className: 'muted' }, 'No devices waiting to connect.'));
-  for (const r of requests) reqCard.append(admRow(
-    [el('strong', {}, r.device_name), el('div', { className: 'muted small' }, `device ${String(r.device_id).slice(0, 8)}… · ${new Date(r.created_at).toLocaleString()}`)],
-    el('button', { className: 'btn gold', onclick: () => decide(ctx, r.id, 'approve', r.device_name) }, icon('check', 12), 'Accept'),
-    el('button', { className: 'btn danger', onclick: () => decide(ctx, r.id, 'reject', r.device_name) }, icon('x', 12), 'Reject')));
-  out.push(reqCard);
+  // ── Connection requests (amber, attention) ──
+  const reqPanel = el('div', { className: 'atable attn' },
+    el('div', { className: 'attn-bar' },
+      el('span', { className: 'attn-l' }, el('span', { className: 'navdot' }),
+        el('h3', {}, 'Connection requests')),
+      el('span', { className: 'attn-n' }, `${requests.length} waiting`)));
+  if (requests.length) {
+    for (const r of requests) reqPanel.append(el('div', { className: 'req-row' },
+      el('div', { className: 'req-info' },
+        el('strong', {}, r.device_name),
+        el('span', { className: 'amono muted' }, `device ${String(r.device_id).slice(0, 8)}… · requested ${ago(r.created_at)}`)),
+      el('div', { className: 'arow-actions' },
+        aBtn('Approve', () => decide(ctx, r.id, 'approve', r.device_name), 'gold'),
+        aBtn('Reject', () => decide(ctx, r.id, 'reject', r.device_name), 'danger'))));
+  } else {
+    reqPanel.append(aEmpty('No requests waiting', 'New devices appear here the moment they try to connect.'));
+  }
+  out.push(reqPanel);
 
-  const codeCard = admCard('One-time codes');
+  // ── one-time code banner (freshly minted, shown once) ──
   const now = Date.now();
-  const active = codes.filter(c => !c.used_at && !(c.expires_at && new Date(c.expires_at).getTime() < now));
+  const active = codes.filter(c => !c.used_at && !(c.expires_at && tsMs(c.expires_at) < now));
   const usedCount = codes.length - active.length;
   if (LAST_CODE && !active.some(c => c.id === LAST_CODE.id)) LAST_CODE = null;
-  if (LAST_CODE) codeCard.append(el('div', { className: 'codebanner' },
+  if (LAST_CODE) out.push(el('div', { className: 'codebanner' },
     el('div', {}, el('div', { className: 'muted small' }, 'New code — copy it now, it is not shown again'), el('code', { className: 'codebox' }, LAST_CODE.code)),
     el('div', { style: 'display:flex;gap:7px' },
-      el('button', { className: 'btn', onclick: () => { navigator.clipboard?.writeText(LAST_CODE.code); toast('Code copied'); } }, 'Copy'),
-      el('button', { className: 'btn', title: 'Dismiss', onclick: () => { LAST_CODE = null; renderAdmin('devices'); } }, icon('x', 12)))));
-  codeCard.append(el('p', { className: 'muted' }, `${active.length} active code${active.length === 1 ? '' : 's'}. A code lets one device connect; you accept it above. Mint with “New code”, then hand it to the operator.`));
-  for (const c of active) codeCard.append(admRow(
-    [el('strong', {}, 'code'), c.note ? el('span', { className: 'muted' }, ` · ${c.note}`) : null,
-      el('div', { className: 'muted small' }, `minted ${new Date(c.created_at).toLocaleString()}${c.expires_at ? ' · expires ' + new Date(c.expires_at).toLocaleString() : ''}`)],
-    el('button', { className: 'btn danger', onclick: () => killCode(ctx, c.id) }, icon('trash', 12), 'Kill')));
-  if (!active.length) codeCard.append(el('p', { className: 'muted small' }, 'No active codes right now.'));
-  if (usedCount) codeCard.append(el('div', { className: 'setcard-actions', style: 'margin-top:10px' },
-    el('button', { className: 'btn', onclick: () => clearUsedCodes(ctx, usedCount) }, icon('trash', 12), `Clear ${usedCount} used/expired`)));
-  out.push(codeCard);
+      aBtn('Copy', () => { navigator.clipboard?.writeText(LAST_CODE.code); toast('Code copied'); }),
+      aBtn('Dismiss', () => { LAST_CODE = null; renderAdmin('devices'); }))));
 
-  const devCard = admCard(`Connected devices (${devices.filter(d => !d.revoked).length} active${devices.length ? ` · ${devices.length} total` : ''})`);
-  if (!devices.length) devCard.append(el('p', { className: 'muted' }, 'No devices connected yet.'));
-  for (const d of devices) devCard.append(admRow(
-    [el('strong', { style: d.revoked ? 'text-decoration:line-through;opacity:.55' : '' }, d.display_name),
-      d.last_user ? el('span', { className: 'muted' }, ` · last operator: ${d.last_user}`) : null,
-      el('div', { className: 'muted small' }, `last seen ${d.last_seen ? new Date(d.last_seen).toLocaleString() : 'never'}`)],
-    ...(d.revoked
-      ? [el('span', { className: 'pill warn' }, 'revoked'), el('button', { className: 'btn danger', onclick: () => removeDevice(ctx, d.id, d.display_name) }, icon('trash', 12), 'Remove')]
-      : [el('button', { className: 'btn danger', onclick: () => revokeDevice(ctx, d.id, d.display_name) }, 'Revoke')])));
-  out.push(devCard);
+  // ── connected devices ──
+  const devCols = 'minmax(0,1.6fr) minmax(0,1fr) minmax(0,1fr) 96px';
+  const devRows = devices.map(d => {
+    const st = deviceState(d);
+    return [
+      el('strong', { className: d.revoked ? 'struck' : '' }, d.display_name + (d.last_user ? '' : '')),
+      statusDot(st.state, st.label),
+      el('span', { className: 'amono' }, ago(d.last_seen)),
+      el('span', { className: 'arow-actions' }, d.revoked
+        ? aBtn('Remove', () => removeDevice(ctx, d.id, d.display_name), 'danger')
+        : aBtn('Revoke', () => revokeDevice(ctx, d.id, d.display_name), 'danger')),
+    ];
+  });
+  out.push(el('div', { className: 'atable-wrap' },
+    el('div', { className: 'atable-cap' }, 'Connected devices'),
+    aTable(devCols, ['Connected device', 'Status', 'Last seen', ''], devRows, { title: 'No devices connected yet', hint: 'Hand out a one-time code to connect the first device.' })));
+
+  // ── one-time codes ──
+  const codeCols = 'minmax(0,1.6fr) minmax(0,1fr) minmax(0,1fr) 96px';
+  const codeRows = active.map(c => [
+    el('strong', { className: 'amono code' }, c.note || 'code'),
+    el('span', { className: 'rolepill' }, 'unused'),
+    el('span', { className: 'amono' }, until(c.expires_at)),
+    el('span', { className: 'arow-actions' }, aBtn('Kill', () => killCode(ctx, c.id), 'danger')),
+  ]);
+  const codeTbl = el('div', { className: 'atable-wrap' },
+    el('div', { className: 'atable-cap' }, 'One-time codes',
+      usedCount ? aBtn(`Clear ${usedCount} used/expired`, () => clearUsedCodes(ctx, usedCount)) : null),
+    aTable(codeCols, ['One-time code', 'Status', 'Expires', ''], codeRows, { title: 'No active codes', hint: 'Mint one with “New one-time code”, then hand it to the operator.' }));
+  out.push(codeTbl);
   return out;
 }
 
@@ -3774,71 +3906,115 @@ function auditLabel(a) {
   return `${verb} ${AUDIT_ENTITY[seg] || seg || 'a record'}`;
 }
 // Activity log: every recorded action, newest first, paged. The reader picks a page size
-// (50/100/200/500) and walks pages; the search filters the current page.
-let LOG_SIZE = 50, LOG_OFFSET = 0;
+// (50/100/200/500) and walks pages; a search + an actor filter narrow the page; Export CSV pulls
+// the whole trail (capped) into a downloadable file.
+let LOG_SIZE = 50, LOG_OFFSET = 0, LOG_USER = '';
 async function adminLogs(ctx, A) {
   const { items = [], total = 0 } = await A(`/audit?limit=${LOG_SIZE}&offset=${LOG_OFFSET}`);
   if (LOG_OFFSET && !items.length) { LOG_OFFSET = 0; return adminLogs(ctx, A); } // fell off the end (rows removed) → snap back
-  const card = admCard('Activity log', total ? `${total} event${total === 1 ? '' : 's'} recorded` : 'nothing yet');
-  if (!total) { card.append(el('p', { className: 'muted' }, 'Nothing recorded yet.')); return [card]; }
+  const head = pageHead('Logs', 'Activity log',
+    `${total} event${total === 1 ? '' : 's'} recorded`,
+    total ? aBtn('Export CSV', () => exportAuditCsv(ctx, A), '', 'down') : null);
+  if (!total) return [head, aTable('1fr', ['Timestamp', 'Actor', 'Action'], [], { title: 'Nothing recorded yet', hint: 'Actions across the team will appear here.' })];
 
-  const search = el('input', { className: 'audsearch', placeholder: 'Filter this page by user or action…', autocomplete: 'off' });
-  const sizeSel = customSelect({ className: 'logsize', value: String(LOG_SIZE), options: [50, 100, 200, 500].map(n => ({ value: String(n), label: `${n} / page` })) });
+  const actors = [...new Set(items.map(a => a.username || a.display_name).filter(Boolean))].sort();
+  const search = el('input', { className: 'ainput', placeholder: 'Filter by user or action…', autocomplete: 'off' });
+  const userSel = customSelect({ className: 'aselect', value: LOG_USER, options: [{ value: '', label: 'All users' }, ...actors.map(u => ({ value: u, label: u }))] });
+  userSel.addEventListener('change', () => { LOG_USER = userSel.value; paint(); });
+  const sizeSel = customSelect({ className: 'aselect', value: String(LOG_SIZE), options: [50, 100, 200, 500].map(n => ({ value: String(n), label: `${n} / page` })) });
   sizeSel.addEventListener('change', () => { LOG_SIZE = Number(sizeSel.value) || 50; LOG_OFFSET = 0; renderAdmin('logs'); });
-  card.append(el('div', { className: 'log-controls' }, search, sizeSel));
+  const controls = el('div', { className: 'arow-controls' }, search, userSel, sizeSel);
 
-  const list = el('div', { className: 'auditlist' });
-  const paint = (query) => {
-    const needle = (query || '').trim().toLowerCase();
-    const rows = items.filter(a => !needle || `${a.display_name || ''} ${a.username || ''} ${auditLabel(a)} ${a.method} ${a.path}`.toLowerCase().includes(needle));
-    list.replaceChildren(...rows.map(a => el('div', { className: 'auditrow' },
-      el('span', { className: 'muted small aud-when' }, new Date(a.at).toLocaleString()),
-      el('span', { className: 'aud-who' }, ` ${a.display_name || a.username || '—'} `),
-      el('span', { className: 'aud-act', title: `${a.method} ${a.path}` }, auditLabel(a)))));
-    if (!rows.length) list.append(el('p', { className: 'muted small' }, 'No entries on this page match.'));
+  const cols = 'minmax(0,1.4fr) minmax(0,.7fr) minmax(0,2fr)';
+  const table = el('div', { className: 'atable' }, el('div', { className: 'acol-head', style: 'grid-template-columns:' + cols }, el('span', {}, 'Timestamp'), el('span', {}, 'Actor'), el('span', {}, 'Action')));
+  const paint = () => {
+    const needle = search.value.trim().toLowerCase();
+    const rows = items.filter(a => {
+      const who = a.username || a.display_name || '';
+      if (LOG_USER && who !== LOG_USER) return false;
+      return !needle || `${a.display_name || ''} ${a.username || ''} ${auditLabel(a)} ${a.method} ${a.path}`.toLowerCase().includes(needle);
+    });
+    table.replaceChildren(table.firstChild, ...(rows.length ? rows.map(a => el('div', { className: 'arow', style: 'grid-template-columns:' + cols },
+      el('span', { className: 'amono' }, fmtStamp(a.at)),
+      el('strong', { className: 'aud-who' }, a.display_name || a.username || '—'),
+      el('span', { className: 'aud-act', title: `${a.method} ${a.path}` }, auditLabel(a))))
+      : [aEmpty('No entries match', 'Clear the filters to see more.')]));
   };
-  search.oninput = (e) => paint(e.target.value);
-  card.append(list);
-  paint('');
+  search.oninput = paint;
+  paint();
 
   // Pager: newest-first, so "Newer" walks toward offset 0 and "Older" walks deeper.
   const from = LOG_OFFSET + 1, to = Math.min(LOG_OFFSET + LOG_SIZE, total);
-  card.append(el('div', { className: 'log-pager' },
-    el('button', { className: 'btn sm', disabled: LOG_OFFSET <= 0, onclick: () => { LOG_OFFSET = Math.max(0, LOG_OFFSET - LOG_SIZE); renderAdmin('logs'); } }, icon('right', 11), 'Newer'),
-    el('span', { className: 'muted small' }, `${from}–${to} of ${total}`),
-    el('button', { className: 'btn sm', disabled: to >= total, onclick: () => { LOG_OFFSET += LOG_SIZE; renderAdmin('logs'); } }, 'Older', icon('right', 11))));
-  return [card];
+  const pager = el('div', { className: 'log-pager' },
+    el('span', { className: 'muted amono' }, `${from}–${to} of ${total}`),
+    el('div', { className: 'arow-actions' },
+      el('button', { className: 'abtn', disabled: LOG_OFFSET <= 0, onclick: () => { LOG_OFFSET = Math.max(0, LOG_OFFSET - LOG_SIZE); renderAdmin('logs'); } }, '‹ Newer'),
+      el('button', { className: 'abtn', disabled: to >= total, onclick: () => { LOG_OFFSET += LOG_SIZE; renderAdmin('logs'); } }, 'Older ›')));
+  return [head, controls, table, pager];
+}
+// Timestamp for a log row: "YYYY-MM-DD HH:MM" (server stores UTC; show local).
+function fmtStamp(at) {
+  const t = tsMs(at); if (!t) return '—';
+  const d = new Date(t), p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+// Export the whole audit trail (capped) as a CSV file. Walks pages by offset until covered.
+async function exportAuditCsv(ctx, A) {
+  const CAP = 5000, PAGE = 500, all = [];
+  try {
+    for (let off = 0; off < CAP; off += PAGE) {
+      const { items = [], total = 0 } = await A(`/audit?limit=${PAGE}&offset=${off}`);
+      all.push(...items);
+      if (off + PAGE >= total || !items.length) break;
+    }
+  } catch (e) { toast('Export failed: ' + e.message); return; }
+  const esc = (v) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  const lines = ['Timestamp,Actor,Action,Method,Path',
+    ...all.map(a => [fmtStamp(a.at), a.username || a.display_name || '', auditLabel(a), a.method || '', a.path || ''].map(esc).join(','))];
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob), a = el('a', { href: url, download: `magi-activity-${new Date().toISOString().slice(0, 10)}.csv` });
+  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
+  toast(`Exported ${all.length} event${all.length === 1 ? '' : 's'}`);
 }
 
 // Backup page: run / schedule / restore, and download individual snapshots.
 async function adminBackup(ctx, A) {
   let bk;
   try { bk = await A('/backup'); }
-  catch { const c = admCard('Backups'); c.append(el('p', { className: 'muted' }, 'Backups are a team-server feature and are not available here.')); return [c]; }
+  catch {
+    return [pageHead('Backup', 'Backups', 'Backups are a team-server feature and are not available here.')];
+  }
   const bc = bk.config || {};
-  const bcard = admCard('Backups');
-  if (bc.due) bcard.append(el('div', { className: 'duebanner' },
-    el('div', {}, el('strong', {}, 'Scheduled backup is due'), el('div', { className: 'muted small' }, 'Enter your backup password to run it now — the password is never stored, so a backup only happens when you do this.')),
-    el('button', { className: 'btn gold', onclick: () => backupNow(ctx) }, 'Back up now')));
-  bcard.append(el('p', { className: 'muted' },
-    `${bc.enabled ? `Reminds you every ${bc.interval_hours}h` : 'No schedule set'}${bc.last_backup_at ? ' · last backup ' + new Date(bc.last_backup_at).toLocaleString() : ' · never backed up'}. Each backup is a full, self-contained snapshot (findings’ screenshots included), encrypted with a password you type each time — nothing is stored. Only the newest ${bc.retain || 5} are kept.`));
-  bcard.append(el('div', { className: 'setcard-actions' },
-    el('button', { className: 'btn gold', onclick: () => backupNow(ctx) }, icon('down', 12), 'Back up now'),
-    el('button', { className: 'btn', onclick: () => backupConfigDialog(ctx, bc) }, bc.enabled ? 'Schedule…' : 'Set reminder…'),
-    el('button', { className: 'btn', onclick: () => restoreDialog(ctx) }, icon('up', 12), 'Restore…')));
-  for (const f of bk.backups) bcard.append(admRow(
-    [el('strong', {}, f.file), el('div', { className: 'muted small' }, `${(f.size / 1024).toFixed(1)} KB · ${new Date(f.at).toLocaleString()}`)],
-    el('button', { className: 'btn', onclick: () => downloadBackup(ctx, f.file) }, icon('down', 12), 'Download')));
-  BACKUP_DUE = !!bc.due; // keep the top-bar Admin badge in sync while the panel is open
-  return [bcard];
+  BACKUP_DUE = !!bc.due; // keep the top-bar Admin badge + sidebar dot in sync while the panel is open
+  const sub = `${bc.enabled ? `Full encrypted snapshots · reminder every ${bc.interval_hours}h` : 'Full encrypted snapshots · no schedule set'} · newest ${bc.retain || 5} kept${bc.last_backup_at ? ' · last ' + ago(bc.last_backup_at) : ' · never backed up'}`;
+  const head = pageHead('Backup', 'Backups', sub,
+    aBtn(bc.enabled ? 'Schedule…' : 'Set reminder…', () => backupConfigDialog(ctx, bc)),
+    aBtn('Restore…', () => restoreDialog(ctx)),
+    aBtn('Back up now', () => backupNow(ctx), 'gold', 'down'));
+  const out = [head];
+  if (bc.due) out.push(el('div', { className: 'duebanner' },
+    el('div', { className: 'due-l' }, el('span', { className: 'navdot' }),
+      el('div', {}, el('strong', {}, 'Scheduled backup is due'),
+        el('div', { className: 'muted small' }, 'Enter your backup password to run it now — nothing is stored.'))),
+    aBtn('Back up now', () => backupNow(ctx), 'gold')));
+  const cols = 'minmax(0,1.8fr) minmax(0,.8fr) minmax(0,1.2fr) 116px';
+  const rows = (bk.backups || []).map(f => [
+    el('strong', { className: 'amono' }, f.file),
+    el('span', { className: 'amono' }, `${(f.size / 1024).toFixed(1)} KB`),
+    el('span', { className: 'amono' }, new Date(f.at).toLocaleString()),
+    el('span', { className: 'arow-actions' }, aBtn('Download', () => downloadBackup(ctx, f.file), '', 'down')),
+  ]);
+  out.push(aTable(cols, ['Snapshot', 'Size', 'Created', ''], rows,
+    { title: 'No backups yet', hint: 'Run “Back up now” to create the first encrypted snapshot.' }));
+  return out;
 }
 
 // Ranking page: who is producing, attributed by findings.author. One control row (Findings/PoC view ·
 // time window · operator search) over a per-operator table of finding types and totals. Computed live
 // over the current findings, so a re-graded severity, a delete or a duplicate mark reflects at once.
-let RANK_VIEW = 'findings'; // 'findings' (all vulns) | 'poc' (proof-of-concept only)
 let RANK_WIN = 'all';       // 'all' | '24h' | '7d' | '30d' | 'custom'
 let RANK_FROM = '', RANK_TO = ''; // custom range (YYYY-MM-DD), used when RANK_WIN === 'custom'
+let RANK_TYPE = '';         // '' = all asset types, else a type key (web/api/ad/…)
 const RANK_WINS = [['all', 'All time'], ['24h', 'Last 24h'], ['7d', 'Last 7 days'], ['30d', 'Last 30 days'], ['custom', 'Custom range…']];
 // Resolve the current window to absolute epoch-ms bounds the server filters findings by.
 function rankWindowParams() {
@@ -3854,56 +4030,49 @@ function rankWindowParams() {
   }
   return {};
 }
-// Finding-type chips (web/api/ad/…): the type badge + how many of that type the operator found.
-function rankTypeChips(types) {
-  const ent = Object.entries(types || {});
-  if (!ent.length) return [el('span', { className: 'muted small' }, '—')];
-  return ent.map(([t, n]) => el('span', { className: 'rtype' }, codeBadge(t), String(n)));
-}
 async function adminRanking(ctx, A) {
   const p = rankWindowParams();
-  const qs = Object.entries(p).map(([k, v]) => `${k}=${v}`).join('&');
-  const { ranking = [], totals = {} } = await A('/ranking' + (qs ? '?' + qs : ''));
+  if (RANK_TYPE) p.type = RANK_TYPE;
+  const qs = Object.entries(p).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+  // The ranking (windowed/typed) and the full asset-type list (for the filter) load together.
+  const [{ ranking = [], totals = {} }, types] = await Promise.all([
+    A('/ranking' + (qs ? '?' + qs : '')),
+    api('/templates').catch(() => []),
+  ]);
 
-  const card = el('div', { className: 'setcard' });
+  const head = pageHead('Ranking', 'Operator ranking',
+    `${totals.operators || 0} operator${totals.operators === 1 ? '' : 's'} · ${totals.findings || 0} finding${totals.findings === 1 ? '' : 's'}${RANK_WIN === 'all' && !RANK_TYPE ? ' all time' : ''}`);
 
-  // One control row: Findings/PoC segment · time-window select (with custom date range) · operator search.
-  const seg = el('div', { className: 'admsub rank-seg' },
-    ...[['findings', 'Findings'], ['poc', 'PoC']].map(([v, l]) =>
-      el('button', { className: 'admsub-tab' + (RANK_VIEW === v ? ' on' : ''), onclick: () => { RANK_VIEW = v; renderAdmin('ranking'); } }, l)));
-  const winSel = customSelect({ className: 'rankwin', value: RANK_WIN, options: RANK_WINS.map(([v, l]) => ({ value: v, label: l })) });
+  // Controls row: operator search · type filter · time window (+ custom dates).
+  const search = el('input', { className: 'ainput rank-search', type: 'search', placeholder: 'Search operator…', autocomplete: 'off' });
+  const typeOpts = [{ value: '', label: 'All types' }, ...(Array.isArray(types) ? types.map(t => ({ value: t.type, label: t.label || t.type })) : [])];
+  const typeSel = customSelect({ className: 'aselect', value: RANK_TYPE, options: typeOpts });
+  typeSel.addEventListener('change', () => { RANK_TYPE = typeSel.value; renderAdmin('ranking'); });
+  const winSel = customSelect({ className: 'aselect', value: RANK_WIN, options: RANK_WINS.map(([v, l]) => ({ value: v, label: l })) });
   winSel.addEventListener('change', () => { RANK_WIN = winSel.value; renderAdmin('ranking'); });
   const fromIn = el('input', { className: 'rankdate', type: 'date', value: RANK_FROM, title: 'From', onchange: (e) => { RANK_FROM = e.target.value; renderAdmin('ranking'); } });
   const toIn = el('input', { className: 'rankdate', type: 'date', value: RANK_TO, title: 'To', onchange: (e) => { RANK_TO = e.target.value; renderAdmin('ranking'); } });
   const dates = el('div', { className: 'rankdates' + (RANK_WIN === 'custom' ? '' : ' hidden') }, fromIn, el('span', { className: 'muted small' }, '→'), toIn);
-  const search = el('input', { className: 'searchbox rank-search', type: 'search', placeholder: 'Search operator…', autocomplete: 'off' });
-  card.append(el('div', { className: 'rank-controls' }, seg, winSel, dates, search,
-    el('span', { className: 'rank-count muted small' }, `${totals.operators || 0} operator${totals.operators === 1 ? '' : 's'} · ${totals.findings || 0} finding${totals.findings === 1 ? '' : 's'}`)));
+  const controls = el('div', { className: 'arow-controls' }, search, typeSel, winSel, dates);
 
-  const tbl = el('div', { className: 'enumtable' });
-  const isPoc = RANK_VIEW === 'poc';
-  const totalOf = (r) => isPoc ? r.poc : r.findings;
+  // Ranking board: rank badge · name · role · severity-mix chips · total.
+  const board = el('div', { className: 'atable rankboard' });
   const paint = () => {
     const query = search.value.trim().toLowerCase();
-    let list = isPoc ? ranking.filter(r => r.poc > 0).sort((a, b) => b.poc - a.poc || b.findings - a.findings) : ranking.slice();
-    const shown = query ? list.filter(r => r.author.toLowerCase().includes(query)) : list;
-    tbl.replaceChildren(
-      el('div', { className: 'enum-head' },
-        el('span', { className: 'enum-op' }, 'Operator'),
-        el('span', { className: 'enum-types' }, 'Finding types'),
-        el('span', {}, isPoc ? 'PoC' : 'Total')),
-      ...(shown.length ? shown.map((r, i) => el('div', { className: 'enum-row' + (i === 0 ? ' top' : '') },
-        el('span', { className: 'enum-op' }, el('span', { className: 'enum-n' }, String(i + 1)),
-          el('strong', {}, r.author), r.role ? el('span', { className: 'pill' }, r.role) : null),
-        el('span', { className: 'enum-types' }, ...rankTypeChips(isPoc ? (r.types.poc ? { poc: r.types.poc } : r.types) : r.types)),
-        el('span', { className: 'enum-total' }, String(totalOf(r)))))
-        : [el('div', { className: 'muted', style: 'padding:12px 4px' },
-          ranking.length ? 'No operators match.' : 'No findings in this window yet.')]));
+    const shown = query ? ranking.filter(r => r.author.toLowerCase().includes(query)) : ranking;
+    board.replaceChildren(...(shown.length ? shown.map((r, i) => el('div', { className: 'rank-row' + (i === 0 ? ' top' : '') },
+      el('span', { className: 'rank-badge' }, String(i + 1)),
+      el('strong', { className: 'rank-name' }, r.author),
+      el('span', { className: 'rolepill' + (r.role === 'admin' ? ' admin' : '') }, r.role || '—'),
+      sevMix(r.sev),
+      el('span', { className: 'rank-spacer' }),
+      el('span', { className: 'rank-total' }, String(r.findings))))
+      : [aEmpty(ranking.length ? 'No operators match' : 'No findings in this window',
+        ranking.length ? 'Try a different search.' : 'Findings appear here as operators record them.')]));
   };
   search.oninput = paint;
-  card.append(tbl);
   paint();
-  return [card];
+  return [head, controls, board];
 }
 
 // Grading queue: vulnerabilities recorded without a severity yet. Served locally (from the synced
@@ -3913,15 +4082,21 @@ async function adminRanking(ctx, A) {
 async function adminGrading(ctx, A) {
   const rows = await api('/ungraded');
   ADMIN_UNGRADED = rows.length;
-  const card = admCard('Ungraded vulnerabilities', rows.length ? `${rows.length} awaiting a severity` : 'all graded');
-  if (!rows.length) { card.append(el('p', { className: 'muted' }, 'Every vulnerability has a severity. Nothing to grade.')); return [card]; }
-  card.append(el('p', { className: 'muted small' }, 'A worker records the finding; you set its severity. The finder keeps the credit.'));
-  for (const f of rows) card.append(admRow(
-    [el('div', { className: 'reqname' }, f.title),
-     el('div', { className: 'reqmeta muted small' }, `${f.project} · ${f.target}${f.author ? ' · by ' + f.author : ''}`)],
-    el('button', { className: 'btn', onclick: () => location.hash = `/target/${f.target_id}` }, 'Open'),
-    el('button', { className: 'btn gold', onclick: () => gradeDialog(f, () => renderAdmin('grading')) }, 'Grade')));
-  return [card];
+  const engs = new Set(rows.map(f => f.project_id)).size;
+  const head = pageHead('Grading', 'Ungraded vulnerabilities',
+    rows.length ? `${rows.length} finding${rows.length === 1 ? '' : 's'} waiting for a severity across ${engs} engagement${engs === 1 ? '' : 's'}` : 'Every vulnerability has a severity — nothing to grade.',
+    rows.length ? aBtn('Grade all…', () => gradeDialog(rows[0], () => renderAdmin('grading')), 'gold') : null);
+  const cols = 'minmax(0,2fr) minmax(0,1.1fr) minmax(0,.6fr) 132px';
+  const trows = rows.map(f => [
+    el('span', { className: 'acell-name' }, codeBadge(f.target_type), el('strong', {}, f.title)),
+    el('span', { className: 'amono muted ellip' }, `${f.project} · ${f.target}`),
+    el('span', {}, f.author || '—'),
+    el('span', { className: 'arow-actions' },
+      aBtn('Open', () => location.hash = `/target/${f.target_id}`),
+      aBtn('Grade', () => gradeDialog(f, () => renderAdmin('grading')), 'gold')),
+  ]);
+  return [head, aTable(cols, ['Finding', 'Engagement', 'Reporter', ''], trows,
+    { title: 'Nothing to grade', hint: 'Every vulnerability has a severity.' })];
 }
 function gradeDialog(f, onDone) {
   modal({
@@ -3977,7 +4152,93 @@ function gradeDialog(f, onDone) {
     },
   });
 }
-const ADMIN_SECTIONS = { users: adminUsers, devices: adminDevices, grading: adminGrading, ranking: adminRanking, logs: adminLogs, backup: adminBackup };
+// Overview: the admin landing page. Composed from the sections' own endpoints (no dedicated route,
+// so it works through the /link/admin proxy unchanged): four attention tiles + a recent-activity
+// feed + a worker-status board.
+async function adminOverview(ctx, A) {
+  const [requests, ungraded, backup, rankResp, devices, users, auditResp] = await Promise.all([
+    A('/requests').catch(() => []),
+    api('/ungraded').catch(() => []),
+    A('/backup').catch(() => ({ config: {}, backups: [] })),
+    A('/ranking').catch(() => ({ ranking: [], totals: {} })),
+    A('/devices').catch(() => []),
+    A('/users').catch(() => []),
+    A('/audit?limit=5&offset=0').catch(() => ({ items: [], total: 0 })),
+  ]);
+  ADMIN_PENDING = requests.length; ADMIN_UNGRADED = ungraded.length; BACKUP_DUE = !!backup.config?.due;
+  renderAccount();
+  const bc = backup.config || {};
+  const totals = rankResp.totals || {}, rankRows = rankResp.ranking || [];
+
+  // most-recent non-revoked device per operator → who is online
+  const bestDev = new Map();
+  for (const d of devices) {
+    if (d.revoked || !d.last_user) continue;
+    const cur = bestDev.get(d.last_user);
+    if (!cur || tsMs(d.last_seen) > tsMs(cur.last_seen)) bestDev.set(d.last_user, d);
+  }
+  const onlineOps = [...bestDev.values()].filter(d => deviceState(d).state === 'online').length;
+  const liveDevs = devices.filter(d => !d.revoked).length;
+
+  const hour = new Date().getHours();
+  const greet = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+  const me = ME?.username || CURRENT_USER || 'admin';
+  const waiting = requests.length + ungraded.length;
+  const head = el('div', { className: 'ahead' },
+    el('div', { className: 'ahead-l' },
+      el('div', { className: 'kicker' }, 'Admin · Overview'),
+      el('h2', { className: 'ahead-title' }, `${greet}, ${me}`),
+      el('p', { className: 'ahead-sub' }, waiting
+        ? `${waiting} thing${waiting === 1 ? '' : 's'} ${waiting === 1 ? 'is' : 'are'} waiting on you. Everything else is running normally.`
+        : 'Nothing is waiting on you. Everything is running normally.')),
+    el('div', { className: 'ahead-actions' }, aBtn('Open activity log', () => location.hash = '#/admin/logs')));
+
+  const oldestReq = requests.length ? Math.min(...requests.map(r => tsMs(r.created_at) || Infinity)) : 0;
+  const gradEngs = new Set(ungraded.map(f => f.project_id)).size;
+  const lastAt = bc.last_backup_at;
+  const nextDue = bc.enabled && lastAt ? until(new Date(tsMs(lastAt) + (bc.interval_hours || 24) * 36e5).toISOString().replace('T', ' ').slice(0, 19)) : (bc.enabled ? 'soon' : '');
+  const lastSize = backup.backups?.[0]?.size;
+
+  const tile = (tone, label, value, unit, sub, btnLabel, onclick) => el('div', { className: 'stat' + (tone ? ' ' + tone : '') },
+    el('div', { className: 'stat-h' }, el('span', { className: 'stat-dot' }), el('span', { className: 'stat-label' }, label)),
+    el('div', { className: 'stat-v' }, el('span', { className: 'stat-n' }, String(value)), unit ? el('span', { className: 'stat-u' }, unit) : null),
+    el('div', { className: 'stat-sub' }, sub),
+    aBtn(btnLabel, onclick, tone === 'attn' ? 'gold' : ''));
+  const tiles = el('div', { className: 'stat-tiles' },
+    tile(requests.length ? 'attn' : '', 'Needs approval', requests.length, requests.length === 1 ? 'device request' : 'device requests',
+      requests.length ? `oldest waiting ${ago(new Date(oldestReq).toISOString())}` : 'none waiting', 'Review requests', () => location.hash = '#/admin/devices'),
+    tile(ungraded.length ? 'attn' : '', 'Needs grading', ungraded.length, ungraded.length === 1 ? 'finding' : 'findings',
+      gradEngs ? `across ${gradEngs} engagement${gradEngs === 1 ? '' : 's'}` : 'nothing to grade', 'Grade findings', () => location.hash = '#/admin/grading'),
+    tile('', 'Last backup', lastAt ? ago(lastAt).replace(' ago', '') : 'never', lastAt ? 'ago' : '',
+      bc.enabled ? `next ${nextDue}${lastSize ? ` · ${(lastSize / 1024).toFixed(1)} KB` : ''}` : 'no schedule set', 'Back up now', () => backupNow(ctx)),
+    tile('', 'Operators online', onlineOps, `of ${users.length}`,
+      `${liveDevs} device${liveDevs === 1 ? '' : 's'} · ${totals.findings || 0} findings all time`, 'Manage operators', () => location.hash = '#/admin/users'));
+
+  const recent = el('div', { className: 'dashpanel' },
+    el('div', { className: 'dashpanel-h' }, el('h3', {}, 'Recent activity'),
+      el('a', { className: 'dashlink', onclick: () => location.hash = '#/admin/logs' }, `All ${auditResp.total || 0} →`)));
+  const items = auditResp.items || [];
+  if (items.length) for (const a of items) recent.append(el('div', { className: 'dash-act' },
+    el('span', { className: 'amono' }, fmtStamp(a.at).slice(11)),
+    el('strong', { className: 'aud-who' }, a.username || a.display_name || '—'),
+    el('span', { className: 'aud-act' }, auditLabel(a))));
+  else recent.append(el('div', { className: 'muted small', style: 'padding:10px 0' }, 'No activity recorded yet.'));
+
+  const worker = el('div', { className: 'dashpanel' },
+    el('div', { className: 'dashpanel-h' }, el('h3', {}, 'Worker status'),
+      el('a', { className: 'dashlink', onclick: () => location.hash = '#/admin/ranking' }, 'Ranking →')));
+  if (rankRows.length) for (const r of rankRows.slice(0, 6)) {
+    const d = bestDev.get(r.author), st = d ? deviceState(d) : { state: 'offline', label: 'offline' };
+    worker.append(el('div', { className: 'dash-worker' },
+      el('span', { className: 'dw-name' }, el('span', { className: 'statuspill ' + st.state }, el('span', { className: 'sd' })),
+        el('strong', {}, r.author), d ? el('span', { className: 'amono muted' }, d.display_name) : null),
+      el('span', { className: 'amono muted' }, d ? ago(d.last_seen) : '—'),
+      el('span', { className: 'dw-total' }, String(r.findings))));
+  } else worker.append(el('div', { className: 'muted small', style: 'padding:10px 0' }, 'No ranked operators yet.'));
+
+  return [head, tiles, el('div', { className: 'dashgrid' }, recent, worker)];
+}
+const ADMIN_SECTIONS = { overview: adminOverview, users: adminUsers, devices: adminDevices, grading: adminGrading, ranking: adminRanking, logs: adminLogs, backup: adminBackup };
 async function decide(ctx, id, action, name) {
   try {
     await api(`${ctx.base}/requests/${id}/${action}`, { method: 'POST' });

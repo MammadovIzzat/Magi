@@ -521,7 +521,7 @@ checks.push(['admin dashboard: overview, sidebar groups, ranking, logs, template
       { author: "ana", role: "worker", findings: 7, poc: 3, projects: 2, score: 41, types: { web: 4, poc: 3 }, topType: "web", sev: { critical: 2, high: 3, medium: 2, low: 0, info: 0, none: 0 } },
       { author: "bob", role: "editor", findings: 2, poc: 0, projects: 1, score: 4, types: { ad: 2 }, topType: "ad", sev: { critical: 0, high: 0, medium: 1, low: 1, info: 0, none: 0 } }],
       totals: { operators: 2, findings: 9, unattributed: 1 } },
-    "/api/admin/requests": [], "/api/admin/enroll-codes": [],
+    "/api/admin/requests": [{ id: 3, device_name: "kali-vm", device_id: "910b2f33cccc", created_at: "2026-01-02 09:50:00" }], "/api/admin/enroll-codes": [],
     "/api/ungraded": [{ id: 1, title: "Reflected XSS", target_type: "web", project: "Acme Q3", target: "app.x", author: "ana", target_id: 5, project_id: 9 }],
     "/api/admin/users": [{ id: 1, username: "ana", role: "worker", created_at: "2026-01-01", mfa_enabled: 1 }],
     "/api/admin/users/1/tasks": { user: { id: 1, username: "ana", role: "worker", created_at: "2026-01-01", mfa_enabled: 1 },

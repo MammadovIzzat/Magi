@@ -3826,13 +3826,13 @@ async function adminDevices(ctx, A) {
     `${activeDevs.length} connected · ${requests.length} request${requests.length === 1 ? '' : 's'} waiting on you`,
     aBtn('New one-time code', () => mintCodeDialog(ctx), 'gold', 'plus'))];
 
-  // ── Connection requests (amber, attention) ──
-  const reqPanel = el('div', { className: 'atable attn' },
-    el('div', { className: 'attn-bar' },
-      el('span', { className: 'attn-l' }, el('span', { className: 'navdot' }),
-        el('h3', {}, 'Connection requests')),
-      el('span', { className: 'attn-n' }, `${requests.length} waiting`)));
+  // ── Connection requests (amber, attention) — only shown when something is actually waiting ──
   if (requests.length) {
+    const reqPanel = el('div', { className: 'atable attn' },
+      el('div', { className: 'attn-bar' },
+        el('span', { className: 'attn-l' }, el('span', { className: 'navdot' }),
+          el('h3', {}, 'Connection requests')),
+        el('span', { className: 'attn-n' }, `${requests.length} waiting`)));
     for (const r of requests) reqPanel.append(el('div', { className: 'req-row' },
       el('div', { className: 'req-info' },
         el('strong', {}, r.device_name),
@@ -3840,10 +3840,8 @@ async function adminDevices(ctx, A) {
       el('div', { className: 'arow-actions' },
         aBtn('Approve', () => decide(ctx, r.id, 'approve', r.device_name), 'gold'),
         aBtn('Reject', () => decide(ctx, r.id, 'reject', r.device_name), 'danger'))));
-  } else {
-    reqPanel.append(aEmpty('No requests waiting', 'New devices appear here the moment they try to connect.'));
+    out.push(reqPanel);
   }
-  out.push(reqPanel);
 
   // ── one-time code banner (freshly minted, shown once) ──
   const now = Date.now();

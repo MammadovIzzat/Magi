@@ -1123,7 +1123,9 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
   color: var(--text); font-size: 13px; font-family: var(--sans); box-sizing: border-box; }
 .ainput:focus { outline: none; border-color: var(--gold); }
 .ainput::placeholder { color: var(--label); }
-.aselect { flex: none; min-width: 130px; }
+/* selects in the control row must size to content, not the customSelect default width:100%
+   (otherwise each flex item fills the row and the controls stack vertically) */
+.arow-controls .aselect { flex: none; width: auto; min-width: 150px; }
 .rankdates { display: flex; align-items: center; gap: 8px; }
 .rankdates.hidden { display: none; }
 .rankdate { padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--line-2); color: var(--text);

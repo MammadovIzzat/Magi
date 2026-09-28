@@ -882,7 +882,7 @@ app.get('/api/admin/ranking', requireAdmin, (req, res) => {
     const types = Object.entries(e.types).sort((a, b) => b[1] - a[1]);
     return { author: e.author, role: e.role, findings: e.findings, poc: e.poc, score: e.score,
       projects: e.projects.size, types: Object.fromEntries(types), topType: types[0]?.[0] || null, sev: e.sev };
-  }).sort((a, b) => b.findings - a.findings || b.score - a.score || b.projects - a.projects);
+  }).sort((a, b) => b.score - a.score || b.findings - a.findings || b.projects - a.projects);
   res.json({ ranking, totals: { operators: ranking.length, findings: counted, unattributed } });
 });
 

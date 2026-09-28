@@ -552,7 +552,7 @@ checks.push(['admin dashboard: overview, sidebar groups, ranking, logs, template
   location.hash = "#/admin/ranking"; await new Promise(r => setTimeout(r, 700));
   const rankRows = document.querySelectorAll(".rankboard .rank-row").length === 2;
   const sevChips = document.querySelectorAll(".rank-row .sevmix .sevmix-chip").length >= 1;
-  const rankTotal = [...document.querySelectorAll(".rank-row .rank-total")].some(e => /7/.test(e.textContent));
+  const rankTotal = [...document.querySelectorAll(".rank-row .rank-total")].some(e => /41/.test(e.textContent));  // severity-weighted score, not a count
   const rankSelects = document.querySelectorAll(".arow-controls .sel.aselect").length >= 2;  // type + window
   const rsearch = document.querySelector(".arow-controls .ainput");
   if (rsearch) { rsearch.value = "bob"; rsearch.dispatchEvent(new Event("input", { bubbles: true })); await new Promise(r => setTimeout(r, 150)); }

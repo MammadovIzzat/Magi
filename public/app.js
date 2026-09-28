@@ -3925,7 +3925,7 @@ async function adminRanking(ctx, A) {
       el('span', { className: 'rolepill' + (r.role === 'admin' ? ' admin' : '') }, r.role || '—'),
       sevMix(r.sev),
       el('span', { className: 'rank-spacer' }),
-      el('span', { className: 'rank-total' }, String(r.findings))))
+      el('span', { className: 'rank-total', title: 'Severity-weighted score — critical 10 · high 6 · medium 3 · low 1 · info 0' }, String(r.score))))
       : [aEmpty(ranking.length ? 'No operators match' : 'No findings in this window',
         ranking.length ? 'Try a different search.' : 'Findings appear here as operators record them.')]));
   };

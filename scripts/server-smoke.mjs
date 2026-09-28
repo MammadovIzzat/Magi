@@ -467,8 +467,11 @@ check('audit log attributes the write to the worker', audit.status === 200
   && Array.isArray(audit.json?.items) && audit.json.items.some(r => r.username === 'ana' && (r.path || '').includes('/findings')));
 // the log reads as plain-language events, not raw routes; and grading is distinguished from a plain edit
 check('audit log paginates with a total count', Number.isInteger(audit.json?.total) && audit.json.total >= audit.json.items.length);
-check('audit records a readable "Recorded a finding" action', audit.json.items.some(r => r.action === 'Recorded a finding'));
-check('audit distinguishes grading a finding', audit.json.items.some(r => r.action === 'Graded a finding'));
+const auditAll = (await req('GET', '/api/admin/audit?limit=500', { token: enrollA.token, device: dev2 })).json.items || [];
+check('audit records a detailed "Recorded finding …" action with the title', auditAll.some(r => /^Recorded finding “.+”/.test(r.action || '')));
+check('audit distinguishes grading (detailed "Graded finding …")', auditAll.some(r => /^Graded finding “.+”/.test(r.action || '')));
+// detailed context: a target-add names the target and its engagement
+check('audit names the target + engagement on an add', auditAll.some(r => /^Added target “.+” to “.+”/.test(r.action || '')));
 // paging by offset returns a different (older) slice than the first page
 const p1 = await req('GET', '/api/admin/audit?limit=5&offset=0', { token: enrollA.token, device: dev2 });
 const p2 = await req('GET', '/api/admin/audit?limit=5&offset=5', { token: enrollA.token, device: dev2 });

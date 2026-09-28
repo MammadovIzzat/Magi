@@ -293,6 +293,13 @@ function describeAudit(method, path) {
   for (const [m, re, label] of AUDIT_RULES) if (m === method && re.test(p)) return label;
   return `${method} ${p}`;
 }
+// Quote an entity name for a detailed audit line, trimmed so a huge title can't bloat the log.
+const auditName = (s) => '“' + String(s ?? '').trim().slice(0, 80) + '”';
+// The engagement a target/asset/finding belongs to (for "… in <engagement>" context). Best-effort.
+function projectNameOfAsset(assetId) {
+  const r = q(`SELECT p.name FROM assets a JOIN projects p ON p.id=a.project_id WHERE a.id=?`).get(assetId);
+  return r?.name || null;
+}
 app.use('/api', (req, res, next) => {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
   if (req.path.startsWith('/auth/') || req.path === '/enroll') return next(); // no user yet / self-logged
@@ -573,7 +580,7 @@ app.post('/api/change-username', (req, res) => {
   if (name === row.username) return res.status(400).json({ error: 'that is already your username' });
   if (q(`SELECT 1 FROM users WHERE username=? AND id<>?`).get(name, u.id)) return res.status(409).json({ error: 'that username is taken' });
   q(`UPDATE users SET username=? WHERE id=?`).run(name, u.id);
-  writeAudit(req, { id: u.id, username: name }, `changed username from ${row.username} to ${name}`);
+  res.locals.auditAction = `Changed username from ${auditName(row.username)} to ${auditName(name)}`;
   res.json({ ok: true, username: name });
 });
 
@@ -598,7 +605,7 @@ app.post('/api/security/rekey', async (req, res) => {
   }
   try { rekeyDatabase(String(next)); }
   catch (e) { return res.status(500).json({ error: 'could not change the key: ' + e.message }); }
-  writeAudit(req, currentUser(req) || {}, wasEncrypted ? 'changed the database passphrase' : 'encrypted the local database');
+  res.locals.auditAction = wasEncrypted ? 'Changed the database passphrase' : 'Encrypted the local database';
   res.json({ ok: true, encrypted: true });
 });
 
@@ -673,7 +680,7 @@ app.post('/api/admin/requests/:id/approve', requireAdmin, (req, res) => {
   const token = randomBytes(32).toString('hex');
   q(`INSERT INTO devices (id, display_name, token_hash) VALUES (?,?,?)`).run(rq.device_id, rq.device_name, sha256(token));
   q(`UPDATE enroll_requests SET status='approved', token=?, decided_at=datetime('now'), decided_by=? WHERE id=?`).run(token, decidedBy, rq.id);
-  writeAudit(req, req.user, `accepted device “${rq.device_name}”`);
+  res.locals.auditAction = `Approved device ${auditName(rq.device_name)}`;
   res.json({ ok: true, device: rq.device_name });
 });
 app.post('/api/admin/requests/:id/reject', requireAdmin, (req, res) => {
@@ -681,7 +688,7 @@ app.post('/api/admin/requests/:id/reject', requireAdmin, (req, res) => {
   if (!rq) return res.status(404).json({ error: 'no such pending request' });
   q(`UPDATE enroll_requests SET status='rejected', decided_at=datetime('now'), decided_by=? WHERE id=?`)
     .run(req.user.display_name || req.user.username, rq.id);
-  writeAudit(req, req.user, `rejected connection from device “${rq.device_name}”`);
+  res.locals.auditAction = `Rejected connection from device ${auditName(rq.device_name)}`;
   res.json({ ok: true });
 });
 // Mint a single-use code that lets a device connect (it's a device ticket, not tied to a role or
@@ -755,7 +762,7 @@ app.post('/api/admin/users', requireAdmin, (req, res) => {
   if (q(`SELECT 1 FROM users WHERE username=?`).get(username)) return res.status(409).json({ error: 'that username is taken' });
   const r = cleanRole(role);
   const uid = q(`INSERT INTO users (username, pass_hash, role) VALUES (?,?,?)`).run(username, hashPassword(String(password)), r).lastInsertRowid;
-  writeAudit(req, req.user, `created operator ${username} (${r})`);
+  res.locals.auditAction = `Created operator ${auditName(username)} (${r})`;
   res.status(201).json({ id: Number(uid), username, role: r });
 });
 // Lost-phone recovery: clear a user's MFA so they re-enrol at next sign-in. Bumping the epoch
@@ -764,7 +771,7 @@ app.post('/api/admin/users/:id/reset-mfa', requireAdmin, (req, res) => {
   const u = q(`SELECT id, username FROM users WHERE id=?`).get(req.params.id);
   if (!u) return res.status(404).json({ error: 'no such user' });
   q(`UPDATE users SET mfa_enabled=0, mfa_secret=NULL, recovery_hashes=NULL, cred_epoch=cred_epoch+1 WHERE id=?`).run(u.id);
-  writeAudit(req, req.user, `reset MFA for ${u.username}`);
+  res.locals.auditAction = `Reset two-factor for ${auditName(u.username)}`;
   res.json({ ok: true });
 });
 // Admin resets a user's password (e.g. they forgot it). Bumping the epoch forces every device to
@@ -775,7 +782,7 @@ app.post('/api/admin/users/:id/reset-password', requireAdmin, (req, res) => {
   const next = (req.body || {}).password;
   if (!next || String(next).length < 8) return res.status(400).json({ error: 'new password must be at least 8 characters' });
   q(`UPDATE users SET pass_hash=?, cred_epoch=cred_epoch+1 WHERE id=?`).run(hashPassword(String(next)), u.id);
-  writeAudit(req, req.user, `reset the password for ${u.username}`);
+  res.locals.auditAction = `Reset the password for ${auditName(u.username)}`;
   res.json({ ok: true });
 });
 // Change a member's role (admin / editor / worker). Bumping the epoch re-issues their tokens with
@@ -788,7 +795,7 @@ app.post('/api/admin/users/:id/role', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'this is the only admin — promote someone else first' });
   if (role === u.role) return res.json({ ok: true, role });
   q(`UPDATE users SET role=?, cred_epoch=cred_epoch+1 WHERE id=?`).run(role, u.id);
-  writeAudit(req, req.user, `changed ${u.username}'s role from ${u.role} to ${role}`);
+  res.locals.auditAction = `Changed ${auditName(u.username)}'s role from ${u.role} to ${role}`;
   res.json({ ok: true, role });
 });
 // Remove a member entirely (and their devices, via ON DELETE CASCADE). Guards against removing the
@@ -800,7 +807,7 @@ app.delete('/api/admin/users/:id', requireAdmin, (req, res) => {
   if (u.role === 'admin' && q(`SELECT COUNT(*) c FROM users WHERE role='admin'`).get().c <= 1)
     return res.status(400).json({ error: 'cannot remove the only admin' });
   q(`DELETE FROM users WHERE id=?`).run(u.id); // devices/sessions cascade
-  writeAudit(req, req.user, `removed member ${u.username}`);
+  res.locals.auditAction = `Removed operator ${auditName(u.username)}`;
   res.json({ ok: true });
 });
 app.get('/api/admin/devices', requireAdmin, (req, res) => {
@@ -1283,6 +1290,7 @@ app.post('/api/projects', requireEdit, (req, res) => {
   if (!name) return res.status(400).json({ error: 'name required' });
   const info = q(`INSERT INTO projects (name, client, scope, notes, start_date, end_date, priority, assignee) VALUES (?,?,?,?,?,?,?,?)`)
     .run(name, client || null, scope || null, notes || null, cleanDate(start_date), cleanDate(end_date), cleanPriority(priority), cleanAssignee(assignee));
+  res.locals.auditAction = `Created engagement ${auditName(name)}`;
   res.status(201).json(q(`SELECT * FROM projects WHERE id=?`).get(info.lastInsertRowid));
 });
 
@@ -1306,6 +1314,9 @@ app.patch('/api/projects/:id', requireEdit, (req, res) => {
   const keys = Object.keys(sets);
   if (!keys.length) return res.json(p);
   q(`UPDATE projects SET ${keys.map(k => `${k}=?`).join(', ')} WHERE id=?`).run(...keys.map(k => sets[k]), p.id);
+  res.locals.auditAction = 'status' in sets
+    ? `Marked engagement ${auditName(sets.name ?? p.name)} ${sets.status}`
+    : `Updated engagement ${auditName(sets.name ?? p.name)}`;
   res.json(q(`SELECT * FROM projects WHERE id=?`).get(p.id));
 });
 
@@ -1409,15 +1420,17 @@ app.post('/api/projects/:id/targets', async (req, res) => {
   let folder = q(`SELECT id FROM folders WHERE project_id=? AND grp=? ORDER BY id LIMIT 1`).get(p.id, grp);
   if (!folder) folder = { id: Number(q(`INSERT INTO folders (project_id, grp, label) VALUES (?,?,?)`).run(p.id, grp, GROUP_LABEL[grp] || grp).lastInsertRowid) };
   const targetId = createTarget(folder.id, p.id, type, label, metadata || {});
+  res.locals.auditAction = `Added target ${auditName(label)} to ${auditName(q(`SELECT name FROM projects WHERE id=?`).get(p.id)?.name)}`;
   res.status(201).json(assetSummary(q(`SELECT * FROM assets WHERE id=?`).get(targetId)));
 });
 
 // Cascades to assets -> items/findings via the schema's ON DELETE CASCADE.
 app.delete('/api/projects/:id', requireEdit, (req, res) => {
-  const p = q(`SELECT id FROM projects WHERE id=?`).get(req.params.id);
+  const p = q(`SELECT id, name FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'not found' });
   const assets = q(`SELECT COUNT(*) c FROM folders WHERE project_id=?`).get(p.id).c;
   q(`DELETE FROM projects WHERE id=?`).run(p.id);
+  res.locals.auditAction = `Deleted engagement ${auditName(p.name)}`;
   res.json({ ok: true, assets });
 });
 
@@ -1447,6 +1460,7 @@ app.post('/api/projects/:id/assets', async (req, res) => {
   if (!selectableGroups().has(grp)) return res.status(400).json({ error: 'that engagement type is coming soon' });
   if (!label) return res.status(400).json({ error: 'name required' });
   const info = q(`INSERT INTO folders (project_id, grp, label) VALUES (?,?,?)`).run(p.id, grp, label);
+  res.locals.auditAction = `Added ${grp} folder ${auditName(label)} to ${auditName(q(`SELECT name FROM projects WHERE id=?`).get(p.id)?.name)}`;
   res.status(201).json(q(`SELECT * FROM folders WHERE id=?`).get(info.lastInsertRowid));
 });
 
@@ -1470,7 +1484,9 @@ app.delete('/api/assets/:id', async (req, res) => {
   if (!f) return res.status(404).json({ error: 'not found' });
   if (!(await canWorkProject(req, f.project_id))) return res.status(403).json(NO_WORK_PROJECT);
   const targets = q(`SELECT COUNT(*) c FROM assets WHERE folder_id=?`).get(f.id).c;
+  const label = q(`SELECT label FROM folders WHERE id=?`).get(f.id)?.label;
   q(`DELETE FROM folders WHERE id=?`).run(f.id);   // cascades targets -> items/findings
+  res.locals.auditAction = `Deleted target folder ${auditName(label)}`;
   res.json({ ok: true, targets });
 });
 
@@ -1486,6 +1502,7 @@ app.post('/api/assets/:id/targets', async (req, res) => {
   if (t.grp && t.grp !== f.grp) return res.status(400).json({ error: `a ${t.type} target does not belong in a ${f.grp} asset` });
   if (!label) return res.status(400).json({ error: 'identifier required' });
   const id = createTarget(f.id, f.project_id, type, label, metadata || {});
+  res.locals.auditAction = `Added target ${auditName(label)} to ${auditName(q(`SELECT name FROM projects WHERE id=?`).get(f.project_id)?.name)}`;
   res.status(201).json(assetSummary(q(`SELECT * FROM assets WHERE id=?`).get(id)));
 });
 
@@ -1545,12 +1562,14 @@ app.get('/api/assignees', async (req, res) => {
 });
 
 app.delete('/api/targets/:id', async (req, res) => {
-  const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
+  const a = q(`SELECT id, label FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'not found' });
   if (!(await canWorkTarget(req, a.id))) return res.status(403).json(NO_WORK_PROJECT);
   const items = q(`SELECT COUNT(*) c FROM items WHERE asset_id=?`).get(a.id).c;
   const findings = q(`SELECT COUNT(*) c FROM findings WHERE asset_id=?`).get(a.id).c;
+  const proj = projectNameOfAsset(a.id);
   q(`DELETE FROM assets WHERE id=?`).run(a.id);
+  res.locals.auditAction = `Deleted target ${auditName(a.label)}${proj ? ' from ' + auditName(proj) : ''}`;
   res.json({ ok: true, items, findings });
 });
 
@@ -1577,6 +1596,9 @@ app.patch('/api/items/:id', async (req, res) => {
   const payloads = Array.isArray(b.payloads) ? JSON.stringify(b.payloads) : cur.payloads;
   q(`UPDATE items SET status=?, answer=?, title=?, detail=?, group_title=?, kind=?, payloads=? WHERE id=?`)
     .run(status, answer, title, detail, group_title, kind, payloads, req.params.id);
+  // A pure status tick reads as "marked", any other field change as "updated".
+  const onlyStatus = 'status' in b && !['title', 'detail', 'group_title', 'kind', 'answer', 'payloads'].some(k => k in b);
+  res.locals.auditAction = `${onlyStatus ? 'Marked' : 'Updated'} task ${auditName(title)}`;
   res.json(q(`SELECT * FROM items WHERE id=?`).get(req.params.id));
 });
 
@@ -1595,6 +1617,7 @@ app.post('/api/targets/:id/items', async (req, res) => {
     spawns: null, catalog: null, options: '[]', opt_key: null, spawn_type: null, sort: maxSort,
   });
   q(`UPDATE items SET is_custom=1 WHERE id=?`).run(info.lastInsertRowid);
+  res.locals.auditAction = `Added task ${auditName(title)} to ${auditName(q(`SELECT label FROM assets WHERE id=?`).get(req.params.id)?.label)}`;
   res.status(201).json(q(`SELECT * FROM items WHERE id=?`).get(info.lastInsertRowid));
 });
 
@@ -1729,6 +1752,9 @@ app.post('/api/targets/:id/findings', async (req, res) => {
   const info = q(`INSERT INTO findings (asset_id, title, kind, severity, body, refs, fix_status, author, cvss, flagged_to) VALUES (?,?,?,?,?,?,?,?,?,?)`)
     .run(req.params.id, title, kind || 'note', severity, body || null, cleanRefs(refs), cleanFix(fix_status), author, vector, flagged_to ? String(flagged_to).slice(0, 120) : null);
   const row = q(`SELECT * FROM findings WHERE id=?`).get(info.lastInsertRowid);
+  const proj = projectNameOfAsset(req.params.id);
+  const what = kind === 'vuln' ? 'finding' : kind === 'cred' ? 'credential' : 'note';
+  res.locals.auditAction = `Recorded ${what} ${auditName(title)}${proj ? ' in ' + auditName(proj) : ''}`;
   res.status(201).json(row);
 });
 // Other findings in the same engagement, to link as an attack chain (or a retest reference).
@@ -1796,12 +1822,15 @@ app.patch('/api/findings/:id', async (req, res) => {
   // Grading and editing share this route; label the audit entry by what actually happened so the
   // activity log can say "Graded a finding" distinctly from a plain edit.
   const graded = editor && (('severity' in b) || ('cvss' in b) || ('duplicate' in b) || ('needs_improvement' in b));
-  res.locals.auditAction = graded ? 'Graded a finding' : 'Edited a finding';
+  const fTitle = b.title ?? cur.title, fProj = projectNameOfAsset(cur.asset_id);
+  res.locals.auditAction = `${graded ? 'Graded' : 'Edited'} finding ${auditName(fTitle)}${fProj ? ' in ' + auditName(fProj) : ''}`;
   res.json(q(`SELECT * FROM findings WHERE id=?`).get(cur.id));
 });
 
 app.delete('/api/findings/:id', (req, res) => {
+  const f = q(`SELECT title, asset_id FROM findings WHERE id=?`).get(req.params.id);
   q(`DELETE FROM findings WHERE id=?`).run(req.params.id);
+  if (f) { const proj = projectNameOfAsset(f.asset_id); res.locals.auditAction = `Deleted finding ${auditName(f.title)}${proj ? ' in ' + auditName(proj) : ''}`; }
   res.json({ ok: true });
 });
 
@@ -1823,6 +1852,8 @@ app.post('/api/findings/move', async (req, res) => {
   const upd = q(`UPDATE findings SET asset_id=? WHERE id=?`);
   let moved = 0;
   for (const f of rows) if (f.asset_id !== dest.id) { upd.run(dest.id, f.id); moved++; }
+  const destLabel = q(`SELECT label FROM assets WHERE id=?`).get(dest.id)?.label;
+  res.locals.auditAction = `Moved ${moved} finding${moved === 1 ? '' : 's'} to ${auditName(destLabel)}`;
   res.json({ ok: true, moved });
 });
 

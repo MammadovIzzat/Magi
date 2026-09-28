@@ -3919,7 +3919,7 @@ async function adminLogs(ctx, A) {
   const search = el('input', { className: 'ainput', placeholder: 'Filter by user or action…', autocomplete: 'off' });
   const userSel = customSelect({ className: 'aselect', value: LOG_USER, options: [{ value: '', label: 'All users' }, ...actors.map(u => ({ value: u, label: u }))] });
   userSel.addEventListener('change', () => { LOG_USER = userSel.value; paint(); });
-  const sizeSel = customSelect({ className: 'aselect', value: String(LOG_SIZE), options: [50, 100, 200, 500].map(n => ({ value: String(n), label: `${n} / page` })) });
+  const sizeSel = customSelect({ className: 'aselect', value: String(LOG_SIZE), options: [20, 50, 100, 200, 500].map(n => ({ value: String(n), label: `${n} / page` })) });
   sizeSel.addEventListener('change', () => { LOG_SIZE = Number(sizeSel.value) || 50; LOG_OFFSET = 0; renderAdmin('logs'); });
   const controls = el('div', { className: 'arow-controls' }, search, userSel, sizeSel);
 

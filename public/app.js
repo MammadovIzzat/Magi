@@ -243,7 +243,7 @@ function modal(opts) {
   body.append(errEl);
   // Esc closes the dialog — but not while an image lightbox is open on top of it (that Esc closes
   // the lightbox instead; the modal's own listener fires first, so it must yield here).
-  const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('.lightbox')) { e.preventDefault(); close(); } };
+  const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('.lightbox, .fcheck')) { e.preventDefault(); close(); } };
   const close = () => { document.removeEventListener('keydown', onKey, true); root.replaceChildren(); };
   const x = el('button', { type: 'button', className: 'modal-x', title: 'Close', onclick: close }, icon('x'));
   const submit = el('button', { type: 'submit', className: 'btn ' + (danger ? 'dangerfill' : 'gold') }, cta);
@@ -1042,7 +1042,7 @@ function subdomainsModal(targets, projectName) {
   const asJson = () => JSON.stringify(all.map(({ host, target, type, findings }) => ({ host, target, type, findings })), null, 2);
 
   const root = $('#modalRoot');
-  const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('.lightbox')) { e.preventDefault(); close(); } };
+  const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('.lightbox, .fcheck')) { e.preventDefault(); close(); } };
   const close = () => { document.removeEventListener('keydown', onKey, true); root.replaceChildren(); };
 
   const countEl = el('span', { className: 'muted small' });
@@ -1959,7 +1959,7 @@ function notebookEditor(id, initialMd, editable, opts = {}) {
 async function openCreds(id) {
   const root = $('#modalRoot');
   let dirty = false;
-  const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('.lightbox')) { e.preventDefault(); close(); } };
+  const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('.lightbox, .fcheck')) { e.preventDefault(); close(); } };
   const close = () => { document.removeEventListener('keydown', onKey, true); root.replaceChildren(); if (dirty) renderTarget(id); };
   const bodyEl = el('div', { className: 'modal-body creds-pop' });
   const panel = el('div', { className: 'modal wide' },
@@ -2002,7 +2002,7 @@ async function openCreds(id) {
 async function openChecklist(id) {
   const root = $('#modalRoot');
   let dirty = false;
-  const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('.lightbox')) { e.preventDefault(); close(); } };
+  const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('.lightbox, .fcheck')) { e.preventDefault(); close(); } };
   const close = () => { document.removeEventListener('keydown', onKey, true); root.replaceChildren(); if (dirty) renderTarget(id); };
   const bodyEl = el('div', { className: 'modal-body checklist-pop' });
   const panel = el('div', { className: 'modal wide checklist-modal' },
@@ -2427,9 +2427,10 @@ function findingCard(f, id, after, opts = {}) {
   for (const im of (f.attachments || [])) {
     const thumb = attachmentImg(im.id, { title: im.filename, loading: 'lazy' });
     thumb.onclick = (e) => { e.stopPropagation(); openLightbox(im, f.attachments); };
-    const dl = el('button', { className: 'shotdl', title: 'Download image', onclick: (e) => { e.stopPropagation(); downloadAttachment(im); } }, icon('down', 10));
-    const x = el('button', { className: 'shotx', title: 'Remove image', onclick: async (e) => { e.stopPropagation(); await api('/attachments/' + im.id, { method: 'DELETE' }); after(); } }, '✕');
-    shots.append(el('span', { className: 'f-shot' }, thumb, dl, x));
+    const extra = opts.readonly ? [] : [
+      el('button', { className: 'shotdl', title: 'Download image', onclick: (e) => { e.stopPropagation(); downloadAttachment(im); } }, icon('down', 10)),
+      el('button', { className: 'shotx', title: 'Remove image', onclick: async (e) => { e.stopPropagation(); await api('/attachments/' + im.id, { method: 'DELETE' }); after(); } }, '✕')];
+    shots.append(el('span', { className: 'f-shot' }, thumb, ...extra));
   }
   const links = (f.links || []).length ? el('div', { className: 'f-links' }, el('span', { className: 'muted' }, 'chains → '),
     ...f.links.flatMap((l, i) => [i ? el('span', { className: 'muted' }, ', ') : null, el('span', { className: 'chainlink', title: l.target }, l.title)].filter(Boolean))) : null;
@@ -2437,21 +2438,24 @@ function findingCard(f, id, after, opts = {}) {
   const card = el('div', { className: 'finding sev-' + (f.severity || 'info') + (f.in_report ? ' in-report' : '')
       + (f.needs_improvement ? ' needs-improve' : '') + (mineToFix ? ' mine-improve' : '')
       + (f.duplicate ? ' is-dup' : '')
+      + (opts.readonly ? ' ro' : '')
       + (opts.selectable ? ' pickable' : '') + (opts.selected ? ' picked' : ''),
-    title: opts.selectable ? 'Click to select / deselect' : 'Click to open' },
+    title: opts.selectable ? 'Click to select / deselect' : (opts.readonly ? '' : 'Click to open') },
     el('div', { className: 'f-top' },
       opts.selectable ? el('span', { className: 'f-pick', 'aria-hidden': 'true' }, opts.selected ? '☑' : '☐') : null,
       f.duplicate ? el('span', { className: 'f-dup', title: 'Duplicate — not counted toward findings or the ranking' }, 'dup') : null,
       // For a vulnerability a grader (admin/editor) can set/change its severity right here — the chip
       // is the button, so it works in a standalone install too, with no admin page needed.
-      (f.kind === 'vuln' && isEditor())
+      (f.kind === 'vuln' && isEditor() && !opts.readonly)
         ? el('button', { className: 'f-sev grade' + (f.severity ? ' sev-' + f.severity : ' none'), title: 'Set severity / CVSS',
             onclick: (e) => { e.stopPropagation(); gradeDialog(f, after); } }, f.severity || 'set severity')
-        : (f.severity ? el('span', { className: 'f-sev' }, f.severity) : null),
-      f.fix_status ? el('span', { className: 'f-fix ' + f.fix_status }, fixLabel(f.fix_status)) : el('span', { className: 'f-kind' }, f.kind),
+        : (f.severity ? el('span', { className: 'f-sev sev-' + f.severity }, f.severity) : null),
+      // The kind is always a vulnerability here (notes/creds live in the notebook & creds popup), so
+      // there's no "VULN" tag — only a retest fix-status label when present.
+      f.fix_status ? el('span', { className: 'f-fix ' + f.fix_status }, fixLabel(f.fix_status)) : null,
       f.needs_improvement ? el('span', { className: 'f-improve' }, 'needs improvement') : null,
-      f.kind === 'vuln' ? reportTick(f, after) : null,   // "written into the report" is a vuln thing; notes/creds don't get it
-      tools),
+      (f.kind === 'vuln' && !opts.readonly) ? reportTick(f, after) : null,   // "written into the report" tick — not in the read-only reference view
+      opts.readonly ? null : tools),
     el('div', { className: 'f-title' }, f.title),
     (f.author || f.created_at) ? el('div', { className: 'f-by', title: 'Recorded ' + (f.created_at || '') },
       f.author ? avatarSm(f.author) : null,
@@ -2463,7 +2467,7 @@ function findingCard(f, id, after, opts = {}) {
     (f.attachments || []).length ? shots : null);
   card.onclick = opts.selectable
     ? (e) => { if (!e.target.closest('.f-tools')) opts.onToggle && opts.onToggle(); }
-    : () => findingDetail(f, id, after);
+    : (opts.readonly ? null : () => findingDetail(f, id, after));
   return card;
 }
 // Full, readable view of one finding (opened by clicking its card). Read-only, with an Edit CTA.
@@ -2761,6 +2765,52 @@ function lightbox(arr, idx) {
   document.body.append(wrap);
   document.addEventListener('keydown', onKey, true);
   show();
+}
+
+// A stacked, searchable, read-only list of an engagement's vulnerabilities — opened from the grade
+// dialog's "Check findings" so a grader can see if a finding is already reported (a dupe) without
+// navigating away. Its own overlay (above the modal, like the lightbox), so closing it leaves the
+// grade dialog intact.
+async function findingsCheckPopup(projectId) {
+  // Esc closes the popup — unless a lightbox (a screenshot) is open on top, then it closes that first.
+  const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('.lightbox')) { e.preventDefault(); e.stopImmediatePropagation(); close(); } };
+  const close = () => { root.remove(); document.removeEventListener('keydown', onKey, true); };
+  const countEl = el('span', { className: 'muted small' });
+  const listEl = el('div', { className: 'pf-list fcheck-list' });
+  const search = el('input', { className: 'searchbox', type: 'search', placeholder: 'Search findings…', autocomplete: 'off', spellcheck: false });
+  const sortSel = customSelect({ className: 'evsort', value: 'sev', options: [
+    { value: 'sev', label: 'Severity' }, { value: 'new', label: 'Newest' }, { value: 'title', label: 'Title' }] });
+  let all = [];
+  const paint = () => {
+    const q = search.value.trim().toLowerCase();
+    const rows = (q ? all.filter(f => `${f.title} ${f.target} ${f.body || ''}`.toLowerCase().includes(q)) : all.slice());
+    const s = sortSel.value;
+    if (s === 'sev') rows.sort((a, b) => (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9) || (a.created_at < b.created_at ? 1 : -1));
+    else if (s === 'title') rows.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+    else rows.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+    countEl.textContent = all.length ? `${rows.length}${q ? ' of ' + all.length : ''} finding${all.length === 1 ? '' : 's'}` : 'no findings';
+    // Same layout as the engagement findings page (target header + the finding card), but read-only:
+    // no "Mark done", grade or edit controls — it's a reference view stacked on the grade dialog.
+    listEl.replaceChildren(...(rows.length ? rows.map(f => el('div', { className: 'pf-item' },
+      el('div', { className: 'pf-target' }, codeBadge(f.target_type), el('span', { className: 'pf-tname' }, f.target)),
+      findingCard(f, f.target_id, () => {}, { readonly: true })))
+      : [el('div', { className: 'pmeta', style: 'padding:16px 2px' }, all.length ? 'No findings match that search.' : 'No vulnerabilities recorded in this engagement yet.')]));
+  };
+  search.oninput = paint;
+  sortSel.addEventListener('change', paint);
+  const panel = el('div', { className: 'modal wide fcheck-panel', onclick: (e) => e.stopPropagation() },
+    el('div', { className: 'modal-head' }, el('span', { className: 'modal-kicker' }, 'Findings in this engagement'),
+      el('button', { type: 'button', className: 'modal-x', title: 'Close', onclick: close }, icon('x'))),
+    el('div', { className: 'modal-body fcheck-body' },
+      el('div', { className: 'fcheck-bar' }, countEl),
+      el('div', { className: 'evfilter' }, el('div', { className: 'evrow' }, search, sortSel)),
+      listEl));
+  const root = el('div', { className: 'fcheck', onclick: close }, panel);
+  document.body.append(root);
+  document.addEventListener('keydown', onKey, true);
+  search.focus();
+  try { all = (await api('/projects/' + projectId + '/findings')).filter(f => f.kind === 'vuln'); } catch (e) { toast(e.message); }
+  paint();
 }
 
 function download(body, filename, mime) {
@@ -3790,11 +3840,18 @@ function gradeDialog(f, onDone) {
         el('span', { className: 'kicker' }, 'Sent back'), el('div', {}, f.review_note)));
       const sevSel = field(b, 'Severity', 'severity', { value: f.severity || 'medium', options: SEVERITIES.filter(s => s.value) });
       b.append(cvssSection(sevSel, f.cvss || null));
-      // Mark as a duplicate: it keeps its severity but stops counting toward the engagement's findings
-      // and the operator ranking (so re-reports of the same issue don't inflate the numbers).
+      // Mark as a duplicate (keeps its severity, doesn't count). A "Check findings" button opens the
+      // engagement's findings in a searchable popup so you can verify it's a dupe without leaving here.
       const dupCb = el('input', { type: 'checkbox', name: 'duplicate' }); dupCb.checked = !!f.duplicate;
-      b.append(el('label', { className: 'dupe-opt' }, dupCb,
-        el('span', {}, 'Duplicate — keeps its severity, but isn’t counted toward findings or the ranking')));
+      const openCheck = async () => {
+        let pid = f.project_id;
+        if (!pid) { const tid = f.asset_id || f.target_id; if (tid) { try { pid = (await api('/targets/' + tid)).folder?.project_id; } catch {} } }
+        if (!pid) return toast('Could not find this engagement');
+        findingsCheckPopup(pid);
+      };
+      b.append(el('div', { className: 'dupe-opt' },
+        el('label', { className: 'dupe-lbl' }, dupCb, el('span', {}, 'Duplicate')),
+        el('button', { type: 'button', className: 'btn line sm', title: 'Search this engagement’s findings to see if it’s already reported', onclick: openCheck }, icon('globe', 12), 'Check findings')));
       // Instead of grading, a reviewer can send it back to the finder to improve, with a note.
       b.append(el('div', { className: 'srule', style: 'margin-top:16px' }, el('span', { className: 'kicker' }, 'Or send back'), el('span', { className: 'rule' })));
       const rnote = field(b, 'What to improve (shown to the finder)', 'review_note', { textarea: true, value: f.review_note || '', ph: 'e.g. add the request/response, confirm impact, attach a screenshot' });

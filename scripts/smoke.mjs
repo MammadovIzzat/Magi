@@ -395,6 +395,13 @@ checks.push(['grade dialog Duplicate toggle marks a finding', await ev(`
     card.querySelector(".f-sev.grade").click(); await new Promise(r => setTimeout(r, 300));
     const dupBox = document.querySelector(".modal input[name=duplicate]");
     if (!dupBox) return false;
+    // "Check findings" opens a searchable findings popup on top; closing it leaves the grade dialog up
+    [...document.querySelectorAll(".dupe-opt button")].find(b => /Check findings/.test(b.textContent))?.click();
+    await new Promise(r => setTimeout(r, 500));
+    const checkOpen = !!document.querySelector(".fcheck .fcheck-list") && !!document.querySelector(".fcheck .searchbox") && !!document.querySelector(".fcheck .evsort");
+    document.querySelector(".fcheck .modal-x")?.click(); await new Promise(r => setTimeout(r, 200));
+    const gradeStillUp = !!document.querySelector(".modal input[name=duplicate]");
+    if (!checkOpen || !gradeStillUp) return false;
     dupBox.checked = true;
     document.querySelector(".modal .actions .btn.gold").click(); await new Promise(r => setTimeout(r, 700));
     const saved = (await (await fetch("/api/targets/" + web.id)).json()).findings.find(x => x.id === v.id);

@@ -718,8 +718,18 @@ button.f-sev.grade.none:hover { color: var(--gold); border-color: var(--gold); }
 /* duplicate finding: a purple badge + a purple line (keeps its severity, doesn't count) */
 .f-dup { font-family: var(--mono); font-size: 8.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--purple); background: var(--purple-bg); border: 1px solid var(--purple); border-radius: 3px; padding: 2px 5px; flex: none; }
 .finding.is-dup { opacity: .82; border-left-color: var(--purple); }
-.dupe-opt { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; cursor: pointer; font-size: 12.5px; color: var(--muted-2); line-height: 1.5; }
-.dupe-opt input { flex: none; margin-top: 2px; }
+.dupe-opt { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
+.dupe-lbl { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: var(--text); }
+.dupe-lbl input { flex: none; }
+/* stacked, searchable findings list (grade dialog → "Check findings") — above the modal overlay */
+.fcheck { position: fixed; inset: 0; z-index: 75; background: rgba(4,5,9,.62); display: flex; align-items: flex-start; justify-content: center; padding: 46px 16px; overflow-y: auto; }
+.fcheck-panel { max-height: 80vh; display: flex; flex-direction: column; overflow: hidden; }
+.fcheck-body { display: flex; flex-direction: column; gap: 8px; overflow: hidden; min-height: 0; }
+.fcheck-bar { display: flex; align-items: center; }
+.fcheck-list { overflow-y: auto; min-height: 0; }               /* renders .pf-item cards like the findings page */
+.fcheck .pf-target { cursor: default; }                         /* the target header is a static label here */
+/* a read-only finding card (the check popup): no hover/pointer, no tools */
+.finding.ro { cursor: default; }
 .f-improve-note { display: flex; align-items: flex-start; gap: 6px; margin-top: 6px; padding: 7px 9px;
   background: var(--gold-wash); border: 1px solid var(--gold); font-size: 12px; color: var(--gold-text); }
 .improve-note { margin: 10px 0; padding: 10px 12px; background: var(--gold-wash); border: 1px solid var(--gold); }

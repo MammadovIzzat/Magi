@@ -465,8 +465,12 @@ async function route() {
 window.addEventListener('hashchange', route);
 // Replay the "open" animation on genuine navigation only. Auto-refreshes (live sync, admin poll)
 // re-render without a hashchange, so they never re-trigger it — the view just updates in place.
-window.addEventListener('hashchange', () => {
+// Moving between admin sub-pages keeps the persistent tab bar, so it must NOT replay (that would
+// flash the whole view/bar on every tab click).
+window.addEventListener('hashchange', (e) => {
   const v = $('#view'); if (!v) return;
+  const isAdmin = (u) => /#\/admin(\/|$)/.test(u || '');
+  if (isAdmin(e.oldURL) && isAdmin(e.newURL)) return;
   v.classList.remove('nav-in'); void v.offsetWidth; v.classList.add('nav-in');
 });
 $('#homeBtn').onclick = () => location.hash = '';
@@ -3542,25 +3546,43 @@ async function renderAdmin(section) {
   const view = $('#view');
   const same = view.dataset.adminSection === section && !!view.querySelector('.admbody'); // a live-refresh of the same page
   const savedY = same ? view.scrollTop : 0;
-  // The tab nav is a full-width secondary bar directly under the top bar (not buried under a title).
-  const shell = (content) => el('div', { className: 'admwrap' },
-    el('nav', { className: 'admtabs adminbar' }, ...ADMIN_TAB_LIST.map(t =>
-      el('a', { className: 'admtab' + (t.key === section ? ' on' : ''), href: t.href || ('#/admin/' + t.key) },
-        t.label,
-        (t.key === 'devices' && ADMIN_PENDING) ? el('span', { className: 'tabcount' }, String(ADMIN_PENDING)) : null,
-        (t.key === 'grading' && ADMIN_UNGRADED) ? el('span', { className: 'tabcount' }, String(ADMIN_UNGRADED)) : null))),
-    el('div', { className: 'page' }, el('div', { className: 'admbody' }, ...(Array.isArray(content) ? content : [content]))));
-  if (!same) { view.replaceChildren(shell(el('div', { className: 'empty' }, 'Loading…'))); view.dataset.adminSection = section; }
+  // The tab nav is a full-width secondary bar directly under the top bar. It's built ONCE and reused
+  // across section switches — only the active tab, the counts, and the body swap — so clicking a tab
+  // never rebuilds (flickers) the whole view.
+  const tabHtml = (t) => el('a', { className: 'admtab' + (t.key === section ? ' on' : ''), href: t.href || ('#/admin/' + t.key) },
+    t.label,
+    (t.key === 'devices' && ADMIN_PENDING) ? el('span', { className: 'tabcount' }, String(ADMIN_PENDING)) : null,
+    (t.key === 'grading' && ADMIN_UNGRADED) ? el('span', { className: 'tabcount' }, String(ADMIN_UNGRADED)) : null);
+  let body = view.querySelector('.admwrap .admbody');
+  if (!body) {
+    // fresh entry into the admin area — build the shell once
+    const nav = el('nav', { className: 'admtabs adminbar' }, ...ADMIN_TAB_LIST.map(tabHtml));
+    body = el('div', { className: 'admbody' });
+    view.replaceChildren(el('div', { className: 'admwrap' }, nav, el('div', { className: 'page' }, body)));
+  } else {
+    // already on an admin page: refresh the tab bar in place (active state + counts), keep the DOM
+    const nav = view.querySelector('.admtabs.adminbar');
+    ADMIN_TAB_LIST.forEach((t, i) => {
+      const a = nav.children[i]; if (!a) return;
+      a.classList.toggle('on', t.key === section);
+      const n = (t.key === 'devices' && ADMIN_PENDING) ? ADMIN_PENDING : (t.key === 'grading' && ADMIN_UNGRADED) ? ADMIN_UNGRADED : 0;
+      let badge = a.querySelector('.tabcount');
+      if (n) { if (!badge) { badge = el('span', { className: 'tabcount' }); a.append(badge); } badge.textContent = String(n); }
+      else if (badge) badge.remove();
+    });
+  }
+  if (!same) body.replaceChildren(el('div', { className: 'empty' }, 'Loading…'));
+  view.dataset.adminSection = section;
 
   const A = (p, o) => api(ctx.base + p, { ...o, timeout: 8000 });
   let nodes;
   try { nodes = await ADMIN_SECTIONS[section](ctx, A); }
   catch (e) {
     if (same) return; // a failed refresh — keep what's shown, retry next tick
-    view.replaceChildren(shell(el('div', { className: 'empty' }, 'Could not load: ' + e.message + '. Check the connection, then press Refresh.')));
+    body.replaceChildren(el('div', { className: 'empty' }, 'Could not load: ' + e.message + '. Check the connection, then press Refresh.'));
     return;
   }
-  view.replaceChildren(shell(nodes));
+  body.replaceChildren(...(Array.isArray(nodes) ? nodes : [nodes]));
   view.dataset.adminSection = section;
   if (same) view.scrollTop = savedY; // stay where the reader was on a live-refresh
   // Only the Devices page live-refreshes (connection requests are time-sensitive); it won't yank the view

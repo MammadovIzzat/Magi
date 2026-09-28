@@ -469,8 +469,11 @@ window.addEventListener('hashchange', route);
 // flash the whole view/bar on every tab click).
 window.addEventListener('hashchange', (e) => {
   const v = $('#view'); if (!v) return;
-  const isAdmin = (u) => /#\/admin(\/|$)/.test(u || '');
-  if (isAdmin(e.oldURL) && isAdmin(e.newURL)) return;
+  // Admin sections share a persistent shell (sidebar + body). The template editor is one of those
+  // sections when connected, so treat #/editor and #/group as admin-ish too — moving between any of
+  // them must NOT replay the open animation (that would flash the whole panel, sidebar included).
+  const adminish = (u) => /#\/(admin(\/|$)|editor(\/|$)|group\/)/.test(u || '') && !!adminCtx();
+  if (adminish(e.oldURL) && adminish(e.newURL)) return;
   v.classList.remove('nav-in'); void v.offsetWidth; v.classList.add('nav-in');
 });
 $('#homeBtn').onclick = () => location.hash = '';
@@ -2895,12 +2898,22 @@ function importProjectFile() {
 
 // ---------- template library ----------
 async function renderEditor(type) {
+  // Connected installs reach templates from the Admin panel: Templates is an admin SECTION, so the
+  // left sidebar stays put and the editor fills the panel body (not a separate page that hides it).
+  // A local install reaches it from the top bar, so it's a standalone 'library' page.
+  const inAdmin = !!adminCtx();
+  let body = null;
+  if (inAdmin) {
+    setRail(null);
+    body = ensureAdminShell('templates');
+    if ($('#view').dataset.adminSection !== 'templates') body.replaceChildren(el('div', { className: 'empty' }, 'Loading…'));
+    $('#view').dataset.adminSection = 'templates';
+    clearTimeout(window.__adminPoll); // leaving any Devices live-poll behind
+  }
   const types = await api('/templates');
   const active = type || types[0]?.type;
   setRail(null);
-  // Connected installs reach templates from the Admin panel, so the trail (and back button) return
-  // there; a local install reaches it from the top bar, so it's a standalone 'library' page.
-  setCrumbs(adminCtx()
+  setCrumbs(inAdmin
     ? [{ label: 'admin', go: () => location.hash = '/admin' }, { label: 'templates' }]
     : [{ label: 'library' }]);
   topActions(
@@ -2988,11 +3001,13 @@ async function renderEditor(type) {
         el('div', { className: 'd' }, 'No follow-up checklists or catalogs for this type yet.'))));
   }
 
-  $('#view').replaceChildren(el('div', { className: 'page' },
+  const inner = el('div', { className: 'page tpl-page tpl-lib' },
     el('div', { className: 'kicker' }, 'Library'),
     el('h1', {}, 'Checklist templates'),
     el('p', { className: 'lede' }, 'Every new target is seeded from its asset type. Edit once — every future engagement inherits it. Existing targets are never changed.'),
-    el('div', { className: 'tpl-layout' }, side, panel)));
+    el('div', { className: 'tpl-layout' }, side, panel));
+  if (inAdmin) body.replaceChildren(inner);
+  else $('#view').replaceChildren(inner);
 }
 
 function newType() {
@@ -3124,6 +3139,14 @@ function groupModal(type) {
 }
 
 async function renderGroup(id) {
+  const inAdmin = !!adminCtx();
+  let body = null;
+  if (inAdmin) {
+    setRail(null);
+    body = ensureAdminShell('templates');
+    $('#view').dataset.adminSection = 'templates';
+    clearTimeout(window.__adminPoll);
+  }
   const g = await api('/tpl-groups/' + id);
   setRail(null);
   setCrumbs([
@@ -3158,11 +3181,13 @@ async function renderGroup(id) {
   }
   if (!g.items.length) panel.append(el('div', { className: 'empty', style: 'border:0' }, 'No items yet.'));
 
-  $('#view').replaceChildren(el('div', { className: 'page' },
+  const inner = el('div', { className: 'page tpl-page' },
     el('div', { className: 'kicker' }, g.kind === 'spawn' ? 'Follow-up checklist' : 'Catalog entry'),
     el('h1', {}, g.title),
     el('p', { className: 'lede' }, wiring),
-    panel));
+    panel);
+  if (inAdmin) body.replaceChildren(inner);
+  else $('#view').replaceChildren(inner);
 }
 function editGroup(g) {
   modal({
@@ -3532,23 +3557,13 @@ const admCard = (title, sub) => el('div', { className: 'setcard' },
 const admRow = (info, ...actions) => el('div', { className: 'reqrow' },
   el('div', { className: 'reqinfo' }, ...info), el('div', { className: 'reqactions' }, ...actions.filter(Boolean)));
 
-async function renderAdmin(section) {
-  const ctx = adminCtx();
-  if (!ctx) { location.hash = '/settings'; return; } // not an admin here
-  if (!section) section = (location.hash.match(/^#\/admin\/(\w+)/) || [])[1] || 'users';
-  if (!ADMIN_SECTIONS[section]) section = 'users';
-  setRail(null);
-  setCrumbs([{ label: 'admin', go: () => location.hash = '/admin' }, { label: section }]); // top-level area + its page
-  const acts = [el('button', { className: 'btn', onclick: () => renderAdmin(section) }, icon('down', 12), el('span', { className: 'lbl' }, 'Refresh'))];
-  if (section === 'devices') acts.push(el('button', { className: 'btn gold', onclick: () => mintCodeDialog(ctx) }, icon('plus', 12), el('span', { className: 'lbl' }, 'New code')));
-  topActions(...acts);
-
+// The admin panel is a full-width dashboard: a left sidebar of sections + a wide content area.
+// The shell is built ONCE and reused across section switches — only the active item, the counts,
+// and the body swap — so clicking a section never rebuilds (flickers) the whole view. Returns the
+// `.admbody` content element for the caller to fill. Shared by renderAdmin and the template editor
+// (Templates is a section too), so the sidebar stays put while editing checklist templates.
+function ensureAdminShell(section) {
   const view = $('#view');
-  const same = view.dataset.adminSection === section && !!view.querySelector('.admbody'); // a live-refresh of the same page
-  const savedY = same ? view.scrollTop : 0;
-  // The admin panel is a full-width dashboard: a left sidebar of sections + a wide content area.
-  // The shell is built ONCE and reused across section switches — only the active item, the counts,
-  // and the body swap — so clicking a section never rebuilds (flickers) the whole view.
   const badgeFor = (t) => (t.key === 'devices' && ADMIN_PENDING) ? ADMIN_PENDING : (t.key === 'grading' && ADMIN_UNGRADED) ? ADMIN_UNGRADED : 0;
   const navHtml = (t) => el('a', { className: 'adminnav' + (t.key === section ? ' on' : ''), href: t.href || ('#/admin/' + t.key) },
     icon(t.icon || 'gear', 15),
@@ -3573,6 +3588,24 @@ async function renderAdmin(section) {
       else if (badge) badge.remove();
     });
   }
+  return body;
+}
+
+async function renderAdmin(section) {
+  const ctx = adminCtx();
+  if (!ctx) { location.hash = '/settings'; return; } // not an admin here
+  if (!section) section = (location.hash.match(/^#\/admin\/(\w+)/) || [])[1] || 'users';
+  if (!ADMIN_SECTIONS[section]) section = 'users';
+  setRail(null);
+  setCrumbs([{ label: 'admin', go: () => location.hash = '/admin' }, { label: section }]); // top-level area + its page
+  const acts = [el('button', { className: 'btn', onclick: () => renderAdmin(section) }, icon('down', 12), el('span', { className: 'lbl' }, 'Refresh'))];
+  if (section === 'devices') acts.push(el('button', { className: 'btn gold', onclick: () => mintCodeDialog(ctx) }, icon('plus', 12), el('span', { className: 'lbl' }, 'New code')));
+  topActions(...acts);
+
+  const view = $('#view');
+  const same = view.dataset.adminSection === section && !!view.querySelector('.admbody'); // a live-refresh of the same page
+  const savedY = same ? view.scrollTop : 0;
+  const body = ensureAdminShell(section);
   if (!same) body.replaceChildren(el('div', { className: 'empty' }, 'Loading…'));
   view.dataset.adminSection = section;
 
@@ -3725,25 +3758,55 @@ async function adminDevices(ctx, A) {
 }
 
 // Logs page: the full audit trail (kept in the database), newest first, with a quick filter.
+// A log row's plain-language action. The server now stores a readable phrase ("Recorded a finding"),
+// so we show it as-is; legacy rows were stored as "METHOD /path", which we fold into a short verb +
+// entity so the whole trail reads uniformly.
+const AUDIT_ENTITY = { findings: 'a finding', projects: 'an engagement', targets: 'a target',
+  items: 'a checklist task', assets: 'a target folder', templates: 'a template', 'tpl-items': 'a template item',
+  attachments: 'a screenshot', devices: 'a device', users: 'an operator', 'enroll-codes': 'an enrollment code' };
+function auditLabel(a) {
+  const act = a.action || '';
+  if (act && !/^(GET|POST|PATCH|PUT|DELETE)\b/.test(act)) return act; // server already made it readable
+  const method = (a.method || act.split(' ')[0] || '').toUpperCase();
+  const path = a.path || act.replace(/^\S+\s+/, '');
+  const verb = method === 'POST' ? 'Added' : method === 'DELETE' ? 'Removed' : (method === 'PATCH' || method === 'PUT') ? 'Updated' : method || 'Did';
+  const seg = path.replace(/^\/api/, '').split('?')[0].split('/').filter(Boolean)[0] || '';
+  return `${verb} ${AUDIT_ENTITY[seg] || seg || 'a record'}`;
+}
+// Activity log: every recorded action, newest first, paged. The reader picks a page size
+// (50/100/200/500) and walks pages; the search filters the current page.
+let LOG_SIZE = 50, LOG_OFFSET = 0;
 async function adminLogs(ctx, A) {
-  const audit = await A('/audit?limit=500');
-  const card = admCard('Activity log', `${audit.length} most recent`);
-  if (!audit.length) { card.append(el('p', { className: 'muted' }, 'Nothing recorded yet.')); return [card]; }
+  const { items = [], total = 0 } = await A(`/audit?limit=${LOG_SIZE}&offset=${LOG_OFFSET}`);
+  if (LOG_OFFSET && !items.length) { LOG_OFFSET = 0; return adminLogs(ctx, A); } // fell off the end (rows removed) → snap back
+  const card = admCard('Activity log', total ? `${total} event${total === 1 ? '' : 's'} recorded` : 'nothing yet');
+  if (!total) { card.append(el('p', { className: 'muted' }, 'Nothing recorded yet.')); return [card]; }
+
+  const search = el('input', { className: 'audsearch', placeholder: 'Filter this page by user or action…', autocomplete: 'off' });
+  const sizeSel = customSelect({ className: 'logsize', value: String(LOG_SIZE), options: [50, 100, 200, 500].map(n => ({ value: String(n), label: `${n} / page` })) });
+  sizeSel.addEventListener('change', () => { LOG_SIZE = Number(sizeSel.value) || 50; LOG_OFFSET = 0; renderAdmin('logs'); });
+  card.append(el('div', { className: 'log-controls' }, search, sizeSel));
+
   const list = el('div', { className: 'auditlist' });
-  const paint = (q) => {
-    const needle = q.trim().toLowerCase();
-    list.replaceChildren(...audit
-      .filter(a => !needle || `${a.display_name || ''} ${a.username || ''} ${a.action || ''} ${a.method} ${a.path}`.toLowerCase().includes(needle))
-      .map(a => el('div', { className: 'auditrow' },
-        el('span', { className: 'muted small' }, new Date(a.at).toLocaleString()),
-        el('span', { className: 'aud-who' }, ` ${a.display_name || a.username || '—'} `),
-        el('span', { className: 'muted' }, a.action || `${a.method} ${a.path}`))));
-    if (!list.childNodes.length) list.append(el('p', { className: 'muted small' }, 'No entries match.'));
+  const paint = (query) => {
+    const needle = (query || '').trim().toLowerCase();
+    const rows = items.filter(a => !needle || `${a.display_name || ''} ${a.username || ''} ${auditLabel(a)} ${a.method} ${a.path}`.toLowerCase().includes(needle));
+    list.replaceChildren(...rows.map(a => el('div', { className: 'auditrow' },
+      el('span', { className: 'muted small aud-when' }, new Date(a.at).toLocaleString()),
+      el('span', { className: 'aud-who' }, ` ${a.display_name || a.username || '—'} `),
+      el('span', { className: 'aud-act', title: `${a.method} ${a.path}` }, auditLabel(a)))));
+    if (!rows.length) list.append(el('p', { className: 'muted small' }, 'No entries on this page match.'));
   };
-  const search = el('input', { className: 'audsearch', placeholder: 'Filter by user or action…', oninput: (e) => paint(e.target.value) });
-  card.append(search, list);
+  search.oninput = (e) => paint(e.target.value);
+  card.append(list);
   paint('');
-  card.append(el('p', { className: 'muted small', style: 'margin-top:8px' }, 'The full trail is kept in the database; this shows the most recent 500.'));
+
+  // Pager: newest-first, so "Newer" walks toward offset 0 and "Older" walks deeper.
+  const from = LOG_OFFSET + 1, to = Math.min(LOG_OFFSET + LOG_SIZE, total);
+  card.append(el('div', { className: 'log-pager' },
+    el('button', { className: 'btn sm', disabled: LOG_OFFSET <= 0, onclick: () => { LOG_OFFSET = Math.max(0, LOG_OFFSET - LOG_SIZE); renderAdmin('logs'); } }, icon('right', 11), 'Newer'),
+    el('span', { className: 'muted small' }, `${from}–${to} of ${total}`),
+    el('button', { className: 'btn sm', disabled: to >= total, onclick: () => { LOG_OFFSET += LOG_SIZE; renderAdmin('logs'); } }, 'Older', icon('right', 11))));
   return [card];
 }
 
@@ -3770,78 +3833,77 @@ async function adminBackup(ctx, A) {
   return [bcard];
 }
 
-// Severity mix chips (Critical/High/Medium/Low), only the non-zero bands.
-const SEV_ABBR = [['critical', 'C'], ['high', 'H'], ['medium', 'M'], ['low', 'L']];
-function sevChips(sev) {
-  const chips = SEV_ABBR.filter(([k]) => sev?.[k]).map(([k, ab]) => el('span', { className: 'sevchip sev-' + k, title: k }, `${ab} ${sev[k]}`));
-  return chips.length ? el('span', { className: 'sevchips' }, ...chips) : el('span', { className: 'muted small' }, '—');
-}
-// Ranking page: who is producing, attributed by findings.author. Sorted by a severity-weighted
-// score (an admin/editor's grade on a worker's finding lifts that worker), with a PoC-leaders strip.
-// Credits are durable — deleting an old engagement does not lower anyone's numbers.
-let RANK_VIEW = 'findings'; // 'findings' (severity-weighted score) | 'poc' (proof-of-concept leaders)
-async function adminRanking(ctx, A) {
-  const { ranking = [], totals = {} } = await A('/ranking');
-  const nodes = [];
-  const head = admCard('Operator ranking',
-    `${totals.operators || 0} operator${totals.operators === 1 ? '' : 's'} · ${totals.findings || 0} finding${totals.findings === 1 ? '' : 's'}`);
-  head.append(el('p', { className: 'muted small' },
-    'Ranked live over the current findings — grading, deleting or marking a finding duplicate updates these numbers at once.'));
-  if (totals.unattributed) head.append(el('p', { className: 'muted small' },
-    `${totals.unattributed} finding${totals.unattributed === 1 ? '' : 's'} recorded before attribution existed aren’t counted.`));
-  nodes.push(head);
-
-  // Sub-nav under the admin tab bar: Findings (detailed table) · PoC (leaderboard).
-  nodes.push(el('nav', { className: 'admsub' },
-    ...[['findings', 'Findings'], ['poc', 'PoC']].map(([v, l]) =>
-      el('button', { className: 'admsub-tab' + (RANK_VIEW === v ? ' on' : ''), onclick: () => { RANK_VIEW = v; renderAdmin('ranking'); } }, l))));
-
-  if (!ranking.length) { nodes.push(el('p', { className: 'muted', style: 'padding:4px 2px' }, 'No attributed findings yet — as operators record findings, they’ll rank here.')); return nodes; }
-
-  if (RANK_VIEW === 'poc') {
-    const rows = ranking.filter(r => r.poc > 0).sort((a, b) => b.poc - a.poc || b.score - a.score);
-    const board = el('div', { className: 'setcard' });
-    board.append(el('div', { className: 'setcard-hd rank-hd' }, el('h3', {}, 'PoC leaderboard'),
-      el('span', { style: 'flex:1' }), el('span', { className: 'muted small' }, 'proof-of-concept findings proven')));
-    const table = el('div', { className: 'ranktable' });
-    if (!rows.length) table.append(el('p', { className: 'muted', style: 'padding:8px 2px' }, 'No PoC findings recorded yet.'));
-    rows.forEach((r, i) => table.append(el('div', { className: 'rankrow' + (i === 0 ? ' top' : '') },
-      el('span', { className: 'rank-n' }, String(i + 1)),
-      el('div', { className: 'rank-main' },
-        el('div', { className: 'rank-op' }, el('strong', {}, r.author), r.role ? el('span', { className: 'pill' }, r.role) : null),
-        el('div', { className: 'rank-meta' }, `${r.poc} PoC finding${r.poc === 1 ? '' : 's'} · ${r.projects} target${r.projects === 1 ? '' : 's'}`)),
-      el('span', { className: 'rank-score' }, String(r.poc)))));
-    board.append(table);
-    nodes.push(board);
-    return nodes;
+// Ranking page: who is producing, attributed by findings.author. One control row (Findings/PoC view ·
+// time window · operator search) over a per-operator table of finding types and totals. Computed live
+// over the current findings, so a re-graded severity, a delete or a duplicate mark reflects at once.
+let RANK_VIEW = 'findings'; // 'findings' (all vulns) | 'poc' (proof-of-concept only)
+let RANK_WIN = 'all';       // 'all' | '24h' | '7d' | '30d' | 'custom'
+let RANK_FROM = '', RANK_TO = ''; // custom range (YYYY-MM-DD), used when RANK_WIN === 'custom'
+const RANK_WINS = [['all', 'All time'], ['24h', 'Last 24h'], ['7d', 'Last 7 days'], ['30d', 'Last 30 days'], ['custom', 'Custom range…']];
+// Resolve the current window to absolute epoch-ms bounds the server filters findings by.
+function rankWindowParams() {
+  const now = Date.now(), DAY = 864e5;
+  if (RANK_WIN === '24h') return { from: now - DAY };
+  if (RANK_WIN === '7d') return { from: now - 7 * DAY };
+  if (RANK_WIN === '30d') return { from: now - 30 * DAY };
+  if (RANK_WIN === 'custom') {
+    const p = {};
+    const a = Date.parse(RANK_FROM + 'T00:00:00'); if (RANK_FROM && Number.isFinite(a)) p.from = a;
+    const b = Date.parse(RANK_TO + 'T23:59:59'); if (RANK_TO && Number.isFinite(b)) p.to = b;
+    return p;
   }
+  return {};
+}
+// Finding-type chips (web/api/ad/…): the type badge + how many of that type the operator found.
+function rankTypeChips(types) {
+  const ent = Object.entries(types || {});
+  if (!ent.length) return [el('span', { className: 'muted small' }, '—')];
+  return ent.map(([t, n]) => el('span', { className: 'rtype' }, codeBadge(t), String(n)));
+}
+async function adminRanking(ctx, A) {
+  const p = rankWindowParams();
+  const qs = Object.entries(p).map(([k, v]) => `${k}=${v}`).join('&');
+  const { ranking = [], totals = {} } = await A('/ranking' + (qs ? '?' + qs : ''));
 
-  // Findings — a detailed enumeration table: per-operator counts for the last 24h / 7d / 30d and the
-  // total, plus the severity-weighted score. Ranked by score, searchable by username.
   const card = el('div', { className: 'setcard' });
-  card.append(el('div', { className: 'setcard-hd rank-hd' }, el('h3', {}, 'Findings by operator'),
-    el('span', { style: 'flex:1' }), el('span', { className: 'muted small' }, 'score weights severity, not volume')));
-  const search = el('input', { className: 'searchbox', type: 'search', placeholder: 'Search operator…', autocomplete: 'off' });
+
+  // One control row: Findings/PoC segment · time-window select (with custom date range) · operator search.
+  const seg = el('div', { className: 'admsub rank-seg' },
+    ...[['findings', 'Findings'], ['poc', 'PoC']].map(([v, l]) =>
+      el('button', { className: 'admsub-tab' + (RANK_VIEW === v ? ' on' : ''), onclick: () => { RANK_VIEW = v; renderAdmin('ranking'); } }, l)));
+  const winSel = customSelect({ className: 'rankwin', value: RANK_WIN, options: RANK_WINS.map(([v, l]) => ({ value: v, label: l })) });
+  winSel.addEventListener('change', () => { RANK_WIN = winSel.value; renderAdmin('ranking'); });
+  const fromIn = el('input', { className: 'rankdate', type: 'date', value: RANK_FROM, title: 'From', onchange: (e) => { RANK_FROM = e.target.value; renderAdmin('ranking'); } });
+  const toIn = el('input', { className: 'rankdate', type: 'date', value: RANK_TO, title: 'To', onchange: (e) => { RANK_TO = e.target.value; renderAdmin('ranking'); } });
+  const dates = el('div', { className: 'rankdates' + (RANK_WIN === 'custom' ? '' : ' hidden') }, fromIn, el('span', { className: 'muted small' }, '→'), toIn);
+  const search = el('input', { className: 'searchbox rank-search', type: 'search', placeholder: 'Search operator…', autocomplete: 'off' });
+  card.append(el('div', { className: 'rank-controls' }, seg, winSel, dates, search,
+    el('span', { className: 'rank-count muted small' }, `${totals.operators || 0} operator${totals.operators === 1 ? '' : 's'} · ${totals.findings || 0} finding${totals.findings === 1 ? '' : 's'}`)));
+
   const tbl = el('div', { className: 'enumtable' });
+  const isPoc = RANK_VIEW === 'poc';
+  const totalOf = (r) => isPoc ? r.poc : r.findings;
   const paint = () => {
-    const q = search.value.trim().toLowerCase();
-    const shown = q ? ranking.filter(r => r.author.toLowerCase().includes(q)) : ranking;
+    const query = search.value.trim().toLowerCase();
+    let list = isPoc ? ranking.filter(r => r.poc > 0).sort((a, b) => b.poc - a.poc || b.findings - a.findings) : ranking.slice();
+    const shown = query ? list.filter(r => r.author.toLowerCase().includes(query)) : list;
     tbl.replaceChildren(
       el('div', { className: 'enum-head' },
         el('span', { className: 'enum-op' }, 'Operator'),
-        el('span', {}, '24h'), el('span', {}, '7d'), el('span', {}, '30d'), el('span', {}, 'Total'), el('span', {}, 'Score')),
-      ...(shown.length ? shown.map(r => el('div', { className: 'enum-row' + (ranking.indexOf(r) === 0 ? ' top' : '') },
-        el('span', { className: 'enum-op' }, el('span', { className: 'enum-n' }, String(ranking.indexOf(r) + 1)),
+        el('span', { className: 'enum-types' }, 'Finding types'),
+        el('span', {}, isPoc ? 'PoC' : 'Total')),
+      ...(shown.length ? shown.map((r, i) => el('div', { className: 'enum-row' + (i === 0 ? ' top' : '') },
+        el('span', { className: 'enum-op' }, el('span', { className: 'enum-n' }, String(i + 1)),
           el('strong', {}, r.author), r.role ? el('span', { className: 'pill' }, r.role) : null),
-        el('span', {}, String(r.day)), el('span', {}, String(r.week)), el('span', {}, String(r.month)),
-        el('span', { className: 'enum-total' }, String(r.findings)), el('span', { className: 'enum-score' }, String(r.score))))
-        : [el('div', { className: 'muted', style: 'padding:12px 4px' }, 'No operators match.')]));
+        el('span', { className: 'enum-types' }, ...rankTypeChips(isPoc ? (r.types.poc ? { poc: r.types.poc } : r.types) : r.types)),
+        el('span', { className: 'enum-total' }, String(totalOf(r)))))
+        : [el('div', { className: 'muted', style: 'padding:12px 4px' },
+          ranking.length ? 'No operators match.' : 'No findings in this window yet.')]));
   };
   search.oninput = paint;
-  card.append(search, tbl);
+  card.append(tbl);
   paint();
-  nodes.push(card);
-  return nodes;
+  return [card];
 }
 
 // Grading queue: vulnerabilities recorded without a severity yet. Served locally (from the synced

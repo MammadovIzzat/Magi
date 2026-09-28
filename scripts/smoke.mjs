@@ -525,7 +525,11 @@ checks.push(['admin tabs + ranking page paint', await ev(`
     "/api/admin/users/1/tasks": { user: { id: 1, username: "ana", role: "worker", created_at: "2026-01-01", mfa_enabled: 1 },
       projects: [{ id: 9, name: "Acme Q3", status: "active" }],
       targets: [{ id: 5, type: "web", label: "https://app.x", project: "Acme Q3", total: 10, handled: 10, flags: 0, findings: 2, done: true }], authored: 3 },
-    "/api/admin/devices": [], "/api/admin/audit": [], "/api/admin/backup": { config: {}, backups: [] },
+    "/api/admin/devices": [], "/api/admin/backup": { config: {}, backups: [] },
+    "/api/admin/audit": { total: 3, items: [
+      { at: "2026-01-02 10:00:00", username: "ana", display_name: "Ana", method: "POST", path: "/targets/5/findings", action: "Recorded a finding" },
+      { at: "2026-01-02 09:00:00", username: "bob", display_name: "Bob", method: "PATCH", path: "/findings/9", action: "Graded a finding" },
+      { at: "2026-01-01 08:00:00", username: "ana", display_name: "Ana", method: "DELETE", path: "/projects/2", action: "Deleted an engagement" }] },
   };
   window.fetch = (u, o) => {
     const p = (typeof u === "string" ? u : u.url || "").split("?")[0];
@@ -536,13 +540,16 @@ checks.push(['admin tabs + ranking page paint', await ev(`
   location.hash = "#/admin/ranking"; await new Promise(r => setTimeout(r, 1000));
   // the admin panel is a full-width dashboard with a left sidebar of sections
   const adminBar = !!document.querySelector(".adminlayout .adminside .adminnavs");
-  // Findings sub-tab shows the detailed enumeration table (24h/7d/30d/total/score), searchable
-  const subnav = document.querySelectorAll(".admsub .admsub-tab").length === 2;
+  // Findings/PoC is a segment in the control row, next to the time-window select and the search
+  const subnav = document.querySelectorAll(".rank-controls .admsub.rank-seg .admsub-tab").length === 2;
+  const hasWindow = !!document.querySelector(".rank-controls .rankwin");
   const enumRows = document.querySelectorAll(".enumtable .enum-row").length;
-  const hasWindows = /24h/.test(document.querySelector(".enum-head")?.textContent || "") && /30d/.test(document.querySelector(".enum-head")?.textContent || "");
-  const hasScore = [...document.querySelectorAll(".enum-row .enum-score")].some(e => /41/.test(e.textContent));
-  // filtering the enum table by username narrows the rows
-  const searchBox = document.querySelector(".admbody .setcard .searchbox");
+  // the table shows finding-type chips and a total (ana: 7), no time-window columns, no score column
+  const hasTypes = document.querySelectorAll(".enum-row .enum-types .rtype").length >= 1;
+  const hasTotal = [...document.querySelectorAll(".enum-row .enum-total")].some(e => /7/.test(e.textContent));
+  const noWindows = !/24h|30d/.test(document.querySelector(".enum-head")?.textContent || "");
+  // filtering the table by username narrows the rows
+  const searchBox = document.querySelector(".rank-controls .searchbox");
   if (searchBox) { searchBox.value = "bob"; searchBox.dispatchEvent(new Event("input", { bubbles: true })); await new Promise(r => setTimeout(r, 150)); }
   const filtered = !searchBox || document.querySelectorAll(".enumtable .enum-row").length === 1;
   if (searchBox) { searchBox.value = ""; searchBox.dispatchEvent(new Event("input", { bubbles: true })); await new Promise(r => setTimeout(r, 100)); }
@@ -565,8 +572,17 @@ checks.push(['admin tabs + ranking page paint', await ev(`
   location.hash = "#/admin/devices"; await new Promise(r => setTimeout(r, 700));
   const devicesText = document.querySelector(".admbody")?.textContent || "";
   const devicesHasCodesAndRequests = /connection requests/i.test(devicesText) && /one-time codes/i.test(devicesText);
+  // Logs: readable actions (not raw routes) + page-size control + pager
+  location.hash = "#/admin/logs"; await new Promise(r => setTimeout(r, 700));
+  const logText = document.querySelector(".admbody")?.textContent || "";
+  const logsReadable = /Recorded a finding/.test(logText) && /Graded a finding/.test(logText) && !/POST \\/targets/.test(logText);
+  const logsControls = !!document.querySelector(".log-controls .sel.logsize") && !!document.querySelector(".log-pager") && /of 3/.test(logText);
+  // Templates opens INSIDE the admin panel — the sidebar stays, the editor fills the body
+  location.hash = "#/editor"; await new Promise(r => setTimeout(r, 900));
+  const tplInPanel = !!document.querySelector(".adminlayout .adminside") && !!document.querySelector(".adminlayout .admbody .tpl-layout");
+  const tplActive = /templates/i.test(document.querySelector(".adminnav.on")?.textContent || "");
   window.fetch = real;
-  return adminBar && subnav && enumRows === 2 && hasWindows && hasScore && filtered && tabs === 7 && activeIsRanking && usersActive && usersHasCreate && udOk && tplTabOk && devicesHasCodesAndRequests`)]);
+  return adminBar && subnav && hasWindow && enumRows === 2 && hasTypes && hasTotal && noWindows && filtered && tabs === 7 && activeIsRanking && usersActive && usersHasCreate && udOk && tplTabOk && devicesHasCodesAndRequests && logsReadable && logsControls && tplInPanel && tplActive`)]);
 // Responsive top bar: at a narrow (phone-ish) width the page actions must not spill out of the bar —
 // the bar stays inside the window and the account badge remains on screen (actions scroll within).
 await cdp('Emulation.setDeviceMetricsOverride', { width: 480, height: 800, deviceScaleFactor: 1, mobile: false });

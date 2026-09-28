@@ -1099,24 +1099,41 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 }
 .adminlayout .admbody { flex: 1; min-width: 0; padding: 26px 30px 80px; }
 .adminlayout .setcard { max-width: none; }  /* fill the wide panel — no more narrow centered card */
-/* ranking sub-nav (Findings / PoC) */
+/* the checklist-template editor renders as a section here, so drop the standalone-page framing */
+.adminlayout .admbody .page { max-width: none; margin: 0; padding: 0; }
+.adminlayout .admbody .tpl-lib > .kicker,
+.adminlayout .admbody .tpl-lib > h1,
+.adminlayout .admbody .tpl-lib > .lede { display: none; }
+/* ranking view segment (Findings / PoC) */
 .admsub { display: flex; gap: 6px; margin: 2px 0 14px; }
 .admsub-tab { background: none; border: 1px solid var(--line-3); border-radius: 999px; padding: 5px 14px;
   font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); cursor: pointer; }
 .admsub-tab:hover { color: var(--text); border-color: var(--line-hi); }
 .admsub-tab.on { color: var(--gold); border-color: var(--gold); background: var(--gold-wash); }
-/* per-operator enumeration table (24h / 7d / 30d / total / score) */
-.enumtable { display: flex; flex-direction: column; margin-top: 12px; }
-.enum-head, .enum-row { display: grid; grid-template-columns: 1fr 52px 52px 52px 56px 60px; gap: 8px; align-items: center; padding: 9px 8px; }
+/* ranking control row: view segment · time window · custom dates · operator search · counts */
+.rank-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.rank-controls .admsub.rank-seg { margin: 0; }
+.rank-controls .rankwin { min-width: 150px; }
+.rank-controls .searchbox.rank-search { width: auto; flex: 1; min-width: 160px; margin: 0; }
+.rankdates { display: flex; align-items: center; gap: 8px; }
+.rankdates.hidden { display: none; }
+.rankdate { padding: 7px 10px; border-radius: 6px; background: var(--bg); border: 1px solid var(--line-3);
+  color: var(--text); font-size: 12.5px; font-family: var(--mono); color-scheme: dark; }
+.rankdate:focus { outline: none; border-color: var(--gold); }
+.rank-count { margin-left: auto; white-space: nowrap; }
+/* per-operator table: operator · finding types · total */
+.enumtable { display: flex; flex-direction: column; margin-top: 14px; }
+.enum-head, .enum-row { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 2fr) 64px; gap: 10px; align-items: center; padding: 10px 8px; }
 .enum-head { font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--label); border-bottom: 1px solid var(--line); }
-.enum-head span:not(.enum-op), .enum-row span:not(.enum-op) { text-align: right; font-family: var(--mono); font-size: 12.5px; color: var(--muted-2); }
+.enum-head > span:last-child, .enum-row > .enum-total { text-align: right; font-family: var(--mono); }
 .enum-row { border-bottom: 1px solid var(--line); }
 .enum-row.top { background: var(--gold-wash); }
 .enum-op { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .enum-op strong { font-size: 13px; color: var(--fg); }
 .enum-n { font-family: var(--mono); font-size: 10px; color: var(--muted-3); width: 18px; flex: none; }
-.enum-row .enum-total { color: var(--text); }
-.enum-row .enum-score { color: var(--gold); font-weight: 600; }
+.enum-types { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.rtype { display: inline-flex; align-items: center; gap: 4px; font-family: var(--mono); font-size: 11px; color: var(--muted-2); }
+.enum-row .enum-total { color: var(--gold); font-weight: 600; font-size: 13px; }
 .admbody { display: flex; flex-direction: column; gap: 16px; }
 /* Narrow screens: fold the sidebar into a scrollable row of sections above the content. */
 @media (max-width: 860px) {
@@ -1134,6 +1151,10 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 }
 
 /* Logs: quick client-side filter over the audit trail. */
+/* Activity log: a search + page-size row above the list, a pager below it. */
+.log-controls { display: flex; align-items: center; gap: 10px; margin: 2px 0 10px; }
+.log-controls .audsearch { flex: 1; margin: 0; }
+.log-controls .logsize { min-width: 120px; flex: none; }
 .audsearch {
   width: 100%; box-sizing: border-box; margin: 2px 0 10px; padding: 8px 11px;
   background: var(--bg); border: 1px solid var(--line-3); color: var(--text); font-size: 12.5px;
@@ -1142,44 +1163,11 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 .audsearch:focus { outline: none; border-color: var(--gold); }
 .audsearch::placeholder { color: var(--muted-3); }
 .auditlist { max-height: 60vh; overflow-y: auto; }
-
-/* Ranking leaderboard. */
-.rank-hd { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.rank-toggle { display: inline-flex; }
-.rank-tab {
-  padding: 5px 11px; margin-left: -1px; background: none; border: 1px solid var(--line-2);
-  font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); cursor: pointer;
-}
-.rank-tab:first-child { margin-left: 0; }
-.rank-tab.on { background: var(--row-sel); border-color: var(--line-hi); color: var(--fg); }
-.ranktable { display: flex; flex-direction: column; margin-top: 4px; }
-.rankrow {
-  display: flex; align-items: center; gap: 12px; padding: 12px 12px; margin: 0 -12px;
-  border-top: 1px solid var(--line-faint); transition: background .12s;
-}
-.rankrow:first-of-type { border-top: 0; }
-.rankrow:hover { background: var(--row-hover); }
-.rankrow.top { background: var(--gold-wash); }
-.rankrow strong { color: var(--fg); font-weight: 600; }
-.rank-n {
-  flex: none; width: 26px; height: 26px; display: grid; place-items: center;
-  border: 1px solid var(--line-2); font-family: var(--mono); font-size: 11px; color: var(--fg-2);
-}
-.rankrow.top .rank-n { border-color: var(--gold); color: var(--gold); font-weight: 700; }
-.rank-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.rank-op { display: flex; align-items: center; gap: 7px; min-width: 0; flex-wrap: wrap; }
-.rank-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); }
-.rank-focus { display: inline-flex; }
-.rank-score { flex: none; font-family: var(--display); font-weight: 700; font-size: 20px; color: var(--gold); }
-.rankrow.top .rank-score { color: var(--gold-hi); }
-/* severity mix chips */
-.sevchips { display: flex; flex-wrap: wrap; gap: 4px; }
-.sevchip { font-family: var(--mono); font-size: 9.5px; padding: 1px 5px; border: 1px solid var(--line-3); color: var(--text); white-space: nowrap; }
-.sevchip.sev-critical { border-color: var(--red); color: var(--red); }
-.sevchip.sev-high { border-color: var(--red); color: var(--red); }
-.sevchip.sev-medium { border-color: var(--gold); color: var(--gold); }
-.sevchip.sev-low { border-color: var(--sev-low); color: var(--sev-low); }
-.sevchip.sev-info { border-color: var(--sev-info); color: var(--sev-info); }
+.auditrow .aud-when { flex: none; }
+.auditrow .aud-act { color: var(--text); }
+.log-pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 12px; }
+.log-pager .btn[disabled] { opacity: .4; pointer-events: none; }
+.log-pager .btn.sm:first-child svg { transform: rotate(180deg); }
 
 /* CVSS grading control in the finding editor (graders only): a button + a live score pill. */
 .cvss-row { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; flex-wrap: wrap; }

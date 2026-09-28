@@ -225,13 +225,81 @@ function writeAudit(req, u, action) {
       u?.device_id ?? null, req.method, req.path, action || null);
   } catch { /* auditing must never break a request */ }
 }
+// Turn a mutation's method+path into a plain-language action for the activity log ("Recorded a
+// finding", "Deleted an engagement", …) so the log reads as events, not routes. Unmapped routes fall
+// back to "METHOD /path" so a new endpoint still logs legibly. A few handlers refine this further via
+// res.locals.auditAction (e.g. grading vs. editing a finding, which share one route).
+const AUDIT_RULES = [
+  ['POST', /^\/targets\/[^/]+\/findings$/, 'Recorded a finding'],
+  ['DELETE', /^\/findings\/[^/]+$/, 'Deleted a finding'],
+  ['PATCH', /^\/findings\/[^/]+$/, 'Updated a finding'],
+  ['POST', /^\/findings\/move$/, 'Moved a finding'],
+  ['POST', /^\/findings\/[^/]+\/attachments$/, 'Added a screenshot'],
+  ['DELETE', /^\/attachments\/[^/]+$/, 'Removed a screenshot'],
+  ['POST', /^\/targets\/[^/]+\/notebook-images$/, 'Uploaded an image'],
+  ['PATCH', /^\/targets\/[^/]+\/notebook$/, 'Edited target notes'],
+  ['POST', /^\/targets\/[^/]+\/items$/, 'Added a checklist task'],
+  ['POST', /^\/targets\/[^/]+\/mark$/, 'Updated checklist tasks'],
+  ['PATCH', /^\/items\/[^/]+$/, 'Updated a checklist task'],
+  ['DELETE', /^\/items\/[^/]+$/, 'Deleted a checklist task'],
+  ['POST', /^\/items\/[^/]+\/spawn$/, 'Spawned a follow-up checklist'],
+  ['POST', /^\/items\/[^/]+\/spawn-target$/, 'Spawned a target'],
+  ['POST', /^\/items\/[^/]+\/select$/, 'Added catalog tasks'],
+  ['POST', /^\/projects$/, 'Created an engagement'],
+  ['POST', /^\/projects\/import$/, 'Imported an engagement'],
+  ['PATCH', /^\/projects\/[^/]+\/assignee$/, 'Changed engagement assignees'],
+  ['PATCH', /^\/projects\/[^/]+\/overview$/, 'Edited the engagement overview'],
+  ['PATCH', /^\/projects\/[^/]+$/, 'Updated an engagement'],
+  ['DELETE', /^\/projects\/[^/]+$/, 'Deleted an engagement'],
+  ['POST', /^\/projects\/[^/]+\/targets$/, 'Added a target'],
+  ['POST', /^\/projects\/[^/]+\/assets$/, 'Added a target folder'],
+  ['DELETE', /^\/assets\/[^/]+$/, 'Deleted a target folder'],
+  ['POST', /^\/assets\/[^/]+\/targets$/, 'Added a target'],
+  ['DELETE', /^\/targets\/[^/]+$/, 'Deleted a target'],
+  ['POST', /^\/templates$/, 'Created an asset type'],
+  ['POST', /^\/templates\/[^/]+\/reset$/, 'Restored template defaults'],
+  ['POST', /^\/templates\/[^/]+\/items$/, 'Added a template item'],
+  ['POST', /^\/templates\/[^/]+\/groups$/, 'Added a template group'],
+  ['POST', /^\/templates\/import$/, 'Imported templates'],
+  ['PATCH', /^\/templates\/[^/]+$/, 'Edited an asset type'],
+  ['DELETE', /^\/templates\/[^/]+$/, 'Deleted an asset type'],
+  ['PATCH', /^\/tpl-items\/[^/]+$/, 'Edited a template item'],
+  ['DELETE', /^\/tpl-items\/[^/]+$/, 'Deleted a template item'],
+  ['PATCH', /^\/tpl-groups\/[^/]+$/, 'Renamed a template group'],
+  ['DELETE', /^\/tpl-groups\/[^/]+$/, 'Deleted a template group'],
+  ['POST', /^\/tpl-groups\/[^/]+\/items$/, 'Added a template group item'],
+  ['PATCH', /^\/tpl-group-items\/[^/]+$/, 'Edited a template group item'],
+  ['DELETE', /^\/tpl-group-items\/[^/]+$/, 'Deleted a template group item'],
+  ['POST', /^\/change-password$/, 'Changed their password'],
+  ['POST', /^\/change-username$/, 'Changed their username'],
+  ['POST', /^\/security\/rekey$/, 'Re-keyed the workspace'],
+  ['POST', /^\/admin\/users$/, 'Created an operator'],
+  ['POST', /^\/admin\/users\/[^/]+\/reset-mfa$/, 'Reset an operator’s two-factor'],
+  ['POST', /^\/admin\/users\/[^/]+\/reset-password$/, 'Reset an operator’s password'],
+  ['POST', /^\/admin\/users\/[^/]+\/role$/, 'Changed an operator’s role'],
+  ['DELETE', /^\/admin\/users\/[^/]+$/, 'Removed an operator'],
+  ['POST', /^\/admin\/requests\/[^/]+\/approve$/, 'Approved a device'],
+  ['POST', /^\/admin\/requests\/[^/]+\/reject$/, 'Rejected a device request'],
+  ['POST', /^\/admin\/enroll-codes$/, 'Minted an enrollment code'],
+  ['DELETE', /^\/admin\/enroll-codes(\/[^/]+)?$/, 'Revoked an enrollment code'],
+  ['DELETE', /^\/admin\/devices\/[^/]+$/, 'Revoked a device'],
+  ['POST', /^\/admin\/backup\/config$/, 'Updated the backup schedule'],
+  ['POST', /^\/admin\/backup\/now$/, 'Ran a backup'],
+  ['POST', /^\/admin\/backup\/restore(-upload)?$/, 'Restored from a backup'],
+  ['POST', /^\/auth\/logout$/, 'Signed out'],
+];
+function describeAudit(method, path) {
+  const p = String(path || '').replace(/^\/api/, '').split('?')[0].replace(/\/+$/, '') || '/';
+  for (const [m, re, label] of AUDIT_RULES) if (m === method && re.test(p)) return label;
+  return `${method} ${p}`;
+}
 app.use('/api', (req, res, next) => {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
   if (req.path.startsWith('/auth/') || req.path === '/enroll') return next(); // no user yet / self-logged
   if (req.path.startsWith('/sync/')) return next(); // replication carries its own per-row attribution
   const u = currentUser(req);
   if (u?.device_id) { try { q(`UPDATE devices SET last_seen=datetime('now') WHERE id=?`).run(u.device_id); } catch { /* ignore */ } }
-  res.on('finish', () => { if (res.statusCode < 400) writeAudit(req, u, `${req.method} ${req.path}`); });
+  res.on('finish', () => { if (res.statusCode < 400) writeAudit(req, u, res.locals.auditAction || describeAudit(req.method, req.path)); });
   next();
 });
 
@@ -751,53 +819,62 @@ app.delete('/api/admin/devices/:id', requireAdmin, (req, res) => {
   const r = q(`UPDATE devices SET revoked=1 WHERE id=?`).run(req.params.id);
   res.json({ ok: true, revoked: r.changes });
 });
-// The "who is where" view: recent activity across the whole server.
+// The "who is where" view: activity across the whole server, newest first. Paged — the client picks
+// a page size (50/100/200/500) and walks pages by offset; `total` lets it show "X–Y of N".
 app.get('/api/admin/audit', requireAdmin, (req, res) => {
-  const limit = Math.min(1000, Math.max(1, Math.floor(Number(req.query.limit) || 200)));
-  res.json(q(`SELECT at, username, display_name, device_id, method, path, action
-    FROM audit ORDER BY id DESC LIMIT ?`).all(limit));
+  const limit = Math.min(500, Math.max(1, Math.floor(Number(req.query.limit) || 50)));
+  const offset = Math.max(0, Math.floor(Number(req.query.offset) || 0));
+  const total = q(`SELECT COUNT(*) c FROM audit`).get().c;
+  const items = q(`SELECT at, username, display_name, device_id, method, path, action
+    FROM audit ORDER BY id DESC LIMIT ? OFFSET ?`).all(limit, offset);
+  res.json({ items, total });
 });
 
 // Worker ranking: how much each operator has produced, so a lead can see who is finding things.
 // Computed LIVE over the current findings — attribution is findings.author, joined to its asset for
 // the target TYPE (web/api/ad/poc/…) and engagement. So a re-graded severity, a deleted finding or a
 // duplicate mark is reflected at once (no durable ledger). Duplicates and unattributed vulns don't
-// count. Weight per severity so the score rewards impact, not volume, and per-operator day/week/month
-// counts drive the detailed enumeration table.
+// count. Weight per severity so the score rewards impact, not volume.
+//
+// A time window is optional: `from`/`to` are absolute epoch-ms bounds on the finding's created_at.
+// The client uses them for "last 24h / 7d / 30d" or a custom date range; absent means all-time.
 const SEV_WEIGHT = { critical: 10, high: 6, medium: 3, low: 1, info: 0 };
 app.get('/api/admin/ranking', requireAdmin, (req, res) => {
   const rows = q(`SELECT f.author, a.type AS type, a.project_id AS project_id, f.severity, f.created_at
     FROM findings f JOIN assets a ON a.id=f.asset_id
-    WHERE f.kind='vuln' AND f.duplicate=0 AND f.author IS NOT NULL AND f.author <> ''`).all();
+    WHERE f.kind='vuln' AND f.duplicate=0`).all();
   const roles = {};
   for (const u of q(`SELECT username, role FROM users`).all()) roles[u.username] = u.role;
-  const now = Date.now(), DAY = 864e5;
-  const ageOf = (s) => { const d = Date.parse(String(s || '').replace(' ', 'T') + 'Z'); return Number.isFinite(d) ? now - d : Infinity; };
+  const fromMs = Number(req.query.from), toMs = Number(req.query.to);
+  const tOf = (s) => { const d = Date.parse(String(s || '').replace(' ', 'T') + 'Z'); return Number.isFinite(d) ? d : NaN; };
+  const inWindow = (s) => {
+    const t = tOf(s);
+    if (Number.isFinite(fromMs) && !(t >= fromMs)) return false;
+    if (Number.isFinite(toMs) && !(t <= toMs)) return false;
+    return true;
+  };
   const by = new Map();
+  let counted = 0, unattributed = 0;
   for (const r of rows) {
+    if (!inWindow(r.created_at)) continue;
+    if (!r.author) { unattributed++; continue; }
+    counted++;
     let e = by.get(r.author);
     if (!e) { e = { author: r.author, role: roles[r.author] || null, findings: 0, poc: 0, score: 0,
-      projects: new Set(), types: {}, sev: { critical: 0, high: 0, medium: 0, low: 0, info: 0, none: 0 },
-      day: 0, week: 0, month: 0 }; by.set(r.author, e); }
+      projects: new Set(), types: {}, sev: { critical: 0, high: 0, medium: 0, low: 0, info: 0, none: 0 } }; by.set(r.author, e); }
     e.findings++;
     if (r.type === 'poc') e.poc++;
     if (r.project_id != null) e.projects.add(r.project_id);
     if (r.type) e.types[r.type] = (e.types[r.type] || 0) + 1;
     e.sev[(r.severity && r.severity in e.sev) ? r.severity : 'none']++;
     e.score += SEV_WEIGHT[r.severity] ?? 0;
-    const age = ageOf(r.created_at);
-    if (age <= DAY) e.day++;
-    if (age <= 7 * DAY) e.week++;
-    if (age <= 30 * DAY) e.month++;
   }
   const ranking = [...by.values()].map(e => {
     const types = Object.entries(e.types).sort((a, b) => b[1] - a[1]);
     return { author: e.author, role: e.role, findings: e.findings, poc: e.poc, score: e.score,
-      projects: e.projects.size, types: Object.fromEntries(types), topType: types[0]?.[0] || null, sev: e.sev,
-      day: e.day, week: e.week, month: e.month };
-  }).sort((a, b) => b.score - a.score || b.findings - a.findings || b.projects - a.projects);
-  const unattributed = q(`SELECT COUNT(*) c FROM findings WHERE kind='vuln' AND duplicate=0 AND (author IS NULL OR author='')`).get().c;
-  res.json({ ranking, totals: { operators: ranking.length, findings: rows.length, unattributed } });
+      projects: e.projects.size, types: Object.fromEntries(types), topType: types[0]?.[0] || null, sev: e.sev };
+  }).sort((a, b) => b.findings - a.findings || b.score - a.score || b.projects - a.projects);
+  res.json({ ranking, totals: { operators: ranking.length, findings: counted, unattributed } });
 });
 
 // ---- replication: clients pull server changes and push their own ----
@@ -1714,6 +1791,10 @@ app.patch('/api/findings/:id', async (req, res) => {
     'refs' in b ? cleanRefs(b.refs) : cur.refs,
     'fix_status' in b ? cleanFix(b.fix_status) : cur.fix_status,
     'in_report' in b ? (b.in_report ? 1 : 0) : cur.in_report, vector, ni, note, flaggedTo, dup, cur.id);
+  // Grading and editing share this route; label the audit entry by what actually happened so the
+  // activity log can say "Graded a finding" distinctly from a plain edit.
+  const graded = editor && (('severity' in b) || ('cvss' in b) || ('duplicate' in b) || ('needs_improvement' in b));
+  res.locals.auditAction = graded ? 'Graded a finding' : 'Edited a finding';
   res.json(q(`SELECT * FROM findings WHERE id=?`).get(cur.id));
 });
 

@@ -324,12 +324,17 @@ await req('POST', `/api/targets/${durT.id}/findings`, { token: workerToken, devi
 const durMid = await anaRankNow();
 await req('DELETE', `/api/projects/${durProj.id}`, { token: adminTok });
 check('deleting an engagement drops its vuln from the live ranking', (await anaRankNow()) === durMid - 1);
-// the ranking exposes per-operator enumeration counts (24h / 7d / 30d / total)
+// the ranking carries per-operator finding-type counts (web/api/…) for the types table
 const enumRow = (await req('GET', '/api/admin/ranking', { token: adminTok })).json.ranking.find(r => r.author === 'ana');
-check('ranking rows carry day/week/month enumeration counts', !!enumRow
-  && Number.isInteger(enumRow.day) && Number.isInteger(enumRow.week) && Number.isInteger(enumRow.month)
-  && enumRow.day <= enumRow.week && enumRow.week <= enumRow.month && enumRow.month <= enumRow.findings);
-check('freshly recorded findings fall in the 24h window', enumRow.day >= 1);
+check('ranking rows carry per-type finding counts', !!enumRow && enumRow.types && typeof enumRow.types === 'object'
+  && Object.values(enumRow.types).reduce((s, n) => s + n, 0) === enumRow.findings);
+// a time window filters the live ranking: a 24h window still counts fresh findings; a window that
+// ends before any finding existed counts nothing.
+const now = Date.now(), DAY = 864e5;
+const win24 = (await req('GET', `/api/admin/ranking?from=${now - DAY}`, { token: adminTok })).json;
+check('a 24h window keeps freshly recorded findings', (win24.ranking.find(r => r.author === 'ana')?.findings || 0) >= 1);
+const winOld = (await req('GET', `/api/admin/ranking?to=${now - 3650 * DAY}`, { token: adminTok })).json;
+check('a window before any finding existed counts nothing', (winOld.totals?.findings || 0) === 0 && winOld.ranking.length === 0);
 const badFix = await req('POST', `/api/targets/${rT.json.id}/findings`, { token: adminTok, body: { title: 'x', fix_status: 'nonsense' } });
 check('an invalid fix status is rejected (stored null)', badFix.json?.fix_status === null);
 
@@ -452,7 +457,16 @@ check('admin-role device reaches the admin surface', adminUsers.status === 200 &
 // attribution: the worker's finding write is in the audit log under their account
 const audit = await req('GET', '/api/admin/audit', { token: enrollA.token, device: dev2 });
 check('audit log attributes the write to the worker', audit.status === 200
-  && audit.json?.some(r => r.username === 'ana' && (r.path || '').includes('/findings')));
+  && Array.isArray(audit.json?.items) && audit.json.items.some(r => r.username === 'ana' && (r.path || '').includes('/findings')));
+// the log reads as plain-language events, not raw routes; and grading is distinguished from a plain edit
+check('audit log paginates with a total count', Number.isInteger(audit.json?.total) && audit.json.total >= audit.json.items.length);
+check('audit records a readable "Recorded a finding" action', audit.json.items.some(r => r.action === 'Recorded a finding'));
+check('audit distinguishes grading a finding', audit.json.items.some(r => r.action === 'Graded a finding'));
+// paging by offset returns a different (older) slice than the first page
+const p1 = await req('GET', '/api/admin/audit?limit=5&offset=0', { token: enrollA.token, device: dev2 });
+const p2 = await req('GET', '/api/admin/audit?limit=5&offset=5', { token: enrollA.token, device: dev2 });
+check('audit offset walks to an older page', p1.status === 200 && p2.status === 200 && p2.json.items.length <= 5
+  && (audit.json.total <= 5 || JSON.stringify(p1.json.items) !== JSON.stringify(p2.json.items)));
 
 // ── the editor role: builds engagement structure, but is walled off from server management ──
 const edev = '77777777-8888-4888-8888-777777777777';

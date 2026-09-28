@@ -1070,14 +1070,35 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 
 .pill.gold { border-color: var(--gold); color: var(--gold); background: var(--gold-wash); }
 
-/* Admin tab nav — one row of pages (Users / Devices / Ranking / Logs / Backup). */
-.admtabs { display: flex; flex-wrap: wrap; gap: 2px; margin: 4px 0 18px; border-bottom: 1px solid var(--line); }
-/* admin tab nav as a full-width bar directly under the top bar */
-.admwrap { display: flex; flex-direction: column; }
-.admtabs.adminbar { flex-wrap: nowrap; overflow-x: auto; gap: 2px; margin: 0; padding: 0 16px;
-  background: var(--panel-2); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
-.admtabs.adminbar::-webkit-scrollbar { height: 0; }
-.admwrap .page { padding-top: 22px; }
+/* Admin panel — full-width dashboard: a left sidebar of sections + a wide content area. */
+.adminlayout { display: flex; align-items: stretch; min-height: 100%; }
+.adminside {
+  flex: none; width: 214px; align-self: stretch;
+  background: var(--panel-2); border-right: 1px solid var(--line);
+  padding: 20px 12px; position: sticky; top: 0;
+}
+.adminside-hd {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .18em; text-transform: uppercase;
+  color: var(--label); padding: 0 10px 12px;
+}
+.adminnavs { display: flex; flex-direction: column; gap: 2px; }
+.adminnav {
+  display: flex; align-items: center; gap: 10px; padding: 9px 11px; border-radius: 8px;
+  color: var(--muted-2); text-decoration: none; font-size: 13px; letter-spacing: .01em;
+  border: 1px solid transparent; transition: background .12s, color .12s;
+}
+.adminnav svg { flex: none; opacity: .8; }
+.adminnav .adminnav-lbl { flex: 1; min-width: 0; }
+.adminnav:hover { color: var(--text); background: var(--row-hover); }
+.adminnav.on { color: var(--gold); background: var(--gold-wash); border-color: var(--gold); }
+.adminnav.on svg { opacity: 1; }
+.adminnav .tabcount {
+  min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px;
+  background: var(--gold); color: var(--gold-ink); font-size: 9.5px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.adminlayout .admbody { flex: 1; min-width: 0; padding: 26px 30px 80px; }
+.adminlayout .setcard { max-width: none; }  /* fill the wide panel — no more narrow centered card */
 /* ranking sub-nav (Findings / PoC) */
 .admsub { display: flex; gap: 6px; margin: 2px 0 14px; }
 .admsub-tab { background: none; border: 1px solid var(--line-3); border-radius: 999px; padding: 5px 14px;
@@ -1096,19 +1117,21 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 .enum-n { font-family: var(--mono); font-size: 10px; color: var(--muted-3); width: 18px; flex: none; }
 .enum-row .enum-total { color: var(--text); }
 .enum-row .enum-score { color: var(--gold); font-weight: 600; }
-.admtab {
-  display: inline-flex; align-items: center; gap: 6px; padding: 9px 14px; margin-bottom: -1px;
-  font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase;
-  color: var(--muted-2); text-decoration: none; border: 1px solid transparent; border-bottom: 2px solid transparent;
-}
-.admtab:hover { color: var(--text); }
-.admtab.on { color: var(--gold); border-bottom-color: var(--gold); }
-.admtab .tabcount {
-  min-width: 15px; height: 15px; padding: 0 4px; border-radius: 999px;
-  background: var(--gold); color: var(--gold-ink); font-size: 9.5px; font-weight: 700;
-  display: inline-flex; align-items: center; justify-content: center;
-}
 .admbody { display: flex; flex-direction: column; gap: 16px; }
+/* Narrow screens: fold the sidebar into a scrollable row of sections above the content. */
+@media (max-width: 860px) {
+  .adminlayout { flex-direction: column; }
+  .adminside {
+    width: auto; position: sticky; top: 0; z-index: 5;
+    border-right: none; border-bottom: 1px solid var(--line); padding: 8px 12px;
+  }
+  .adminside-hd { display: none; }
+  .adminnavs { flex-direction: row; overflow-x: auto; gap: 4px; }
+  .adminnavs::-webkit-scrollbar { height: 0; }
+  .adminnav { flex: none; padding: 8px 12px; }
+  .adminnav .adminnav-lbl { flex: none; }
+  .adminlayout .admbody { padding: 22px 16px 60px; }
+}
 
 /* Logs: quick client-side filter over the audit trail. */
 .audsearch {

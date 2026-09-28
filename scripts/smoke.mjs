@@ -534,8 +534,8 @@ checks.push(['admin tabs + ranking page paint', await ev(`
   };
   LINK = { unavailable: true };
   location.hash = "#/admin/ranking"; await new Promise(r => setTimeout(r, 1000));
-  // the tab nav is now a full-width bar directly under the top bar
-  const adminBar = !!document.querySelector(".admwrap .admtabs.adminbar");
+  // the admin panel is a full-width dashboard with a left sidebar of sections
+  const adminBar = !!document.querySelector(".adminlayout .adminside .adminnavs");
   // Findings sub-tab shows the detailed enumeration table (24h/7d/30d/total/score), searchable
   const subnav = document.querySelectorAll(".admsub .admsub-tab").length === 2;
   const enumRows = document.querySelectorAll(".enumtable .enum-row").length;
@@ -546,13 +546,13 @@ checks.push(['admin tabs + ranking page paint', await ev(`
   if (searchBox) { searchBox.value = "bob"; searchBox.dispatchEvent(new Event("input", { bubbles: true })); await new Promise(r => setTimeout(r, 150)); }
   const filtered = !searchBox || document.querySelectorAll(".enumtable .enum-row").length === 1;
   if (searchBox) { searchBox.value = ""; searchBox.dispatchEvent(new Event("input", { bubbles: true })); await new Promise(r => setTimeout(r, 100)); }
-  const tabs = document.querySelectorAll(".admtabs .admtab").length;
-  // the Templates tab lives in the admin panel now (connected format) and links out to the editor
-  const tplTab = [...document.querySelectorAll(".admtabs .admtab")].find(a => /Templates/.test(a.textContent));
+  const tabs = document.querySelectorAll(".adminside .adminnav").length;
+  // the Templates item lives in the admin sidebar now (connected format) and links out to the editor
+  const tplTab = [...document.querySelectorAll(".adminside .adminnav")].find(a => /Templates/.test(a.textContent));
   const tplTabOk = !!tplTab && tplTab.getAttribute("href") === "#/editor";
-  const activeIsRanking = /ranking/i.test(document.querySelector(".admtab.on")?.textContent || "");
+  const activeIsRanking = /ranking/i.test(document.querySelector(".adminnav.on")?.textContent || "");
   location.hash = "#/admin/users"; await new Promise(r => setTimeout(r, 700));
-  const usersActive = /users/i.test(document.querySelector(".admtab.on")?.textContent || "");
+  const usersActive = /users/i.test(document.querySelector(".adminnav.on")?.textContent || "");
   // Users page has "New operator"; the connection requests + codes moved to the Devices page.
   const usersHasCreate = [...document.querySelectorAll(".admbody button")].some(b => /new operator/i.test(b.textContent));
   // the per-operator Details dialog shows their workload (summary tiles + engagements + targets)

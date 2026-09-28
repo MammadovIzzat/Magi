@@ -3518,13 +3518,13 @@ let LAST_CODE = null; // a just-minted code to show once at the top of the panel
 // larger team): Users, Devices, Ranking, Logs, Backup. Each is its own hash (#/admin/<key>) and
 // loads only its own data, so a page stays light. A shared shell draws the header + tab nav.
 const ADMIN_TAB_LIST = [
-  { key: 'users', label: 'Users' },
-  { key: 'devices', label: 'Devices' },
-  { key: 'grading', label: 'Grading' },
-  { key: 'ranking', label: 'Ranking' },
-  { key: 'logs', label: 'Logs' },
-  { key: 'backup', label: 'Backup' },
-  { key: 'templates', label: 'Templates', href: '#/editor' }, // the checklist editor (a full page, not a section)
+  { key: 'users', label: 'Users', icon: 'user' },
+  { key: 'devices', label: 'Devices', icon: 'server' },
+  { key: 'grading', label: 'Grading', icon: 'flag' },
+  { key: 'ranking', label: 'Ranking', icon: 'up' },
+  { key: 'logs', label: 'Logs', icon: 'lines' },
+  { key: 'backup', label: 'Backup', icon: 'down' },
+  { key: 'templates', label: 'Templates', icon: 'edit', href: '#/editor' }, // the checklist editor (a full page, not a section)
 ];
 const admCard = (title, sub) => el('div', { className: 'setcard' },
   el('div', { className: 'setcard-hd', style: sub ? 'display:flex;align-items:baseline;justify-content:space-between;gap:12px' : '' },
@@ -3546,26 +3546,28 @@ async function renderAdmin(section) {
   const view = $('#view');
   const same = view.dataset.adminSection === section && !!view.querySelector('.admbody'); // a live-refresh of the same page
   const savedY = same ? view.scrollTop : 0;
-  // The tab nav is a full-width secondary bar directly under the top bar. It's built ONCE and reused
-  // across section switches — only the active tab, the counts, and the body swap — so clicking a tab
-  // never rebuilds (flickers) the whole view.
-  const tabHtml = (t) => el('a', { className: 'admtab' + (t.key === section ? ' on' : ''), href: t.href || ('#/admin/' + t.key) },
-    t.label,
-    (t.key === 'devices' && ADMIN_PENDING) ? el('span', { className: 'tabcount' }, String(ADMIN_PENDING)) : null,
-    (t.key === 'grading' && ADMIN_UNGRADED) ? el('span', { className: 'tabcount' }, String(ADMIN_UNGRADED)) : null);
-  let body = view.querySelector('.admwrap .admbody');
+  // The admin panel is a full-width dashboard: a left sidebar of sections + a wide content area.
+  // The shell is built ONCE and reused across section switches — only the active item, the counts,
+  // and the body swap — so clicking a section never rebuilds (flickers) the whole view.
+  const badgeFor = (t) => (t.key === 'devices' && ADMIN_PENDING) ? ADMIN_PENDING : (t.key === 'grading' && ADMIN_UNGRADED) ? ADMIN_UNGRADED : 0;
+  const navHtml = (t) => el('a', { className: 'adminnav' + (t.key === section ? ' on' : ''), href: t.href || ('#/admin/' + t.key) },
+    icon(t.icon || 'gear', 15),
+    el('span', { className: 'adminnav-lbl' }, t.label),
+    badgeFor(t) ? el('span', { className: 'tabcount' }, String(badgeFor(t))) : null);
+  let body = view.querySelector('.adminlayout .admbody');
   if (!body) {
     // fresh entry into the admin area — build the shell once
-    const nav = el('nav', { className: 'admtabs adminbar' }, ...ADMIN_TAB_LIST.map(tabHtml));
+    const nav = el('nav', { className: 'adminnavs' }, ...ADMIN_TAB_LIST.map(navHtml));
+    const side = el('aside', { className: 'adminside' }, el('div', { className: 'adminside-hd' }, 'Admin'), nav);
     body = el('div', { className: 'admbody' });
-    view.replaceChildren(el('div', { className: 'admwrap' }, nav, el('div', { className: 'page' }, body)));
+    view.replaceChildren(el('div', { className: 'adminlayout' }, side, body));
   } else {
-    // already on an admin page: refresh the tab bar in place (active state + counts), keep the DOM
-    const nav = view.querySelector('.admtabs.adminbar');
+    // already on an admin page: refresh the sidebar in place (active state + counts), keep the DOM
+    const nav = view.querySelector('.adminside .adminnavs');
     ADMIN_TAB_LIST.forEach((t, i) => {
       const a = nav.children[i]; if (!a) return;
       a.classList.toggle('on', t.key === section);
-      const n = (t.key === 'devices' && ADMIN_PENDING) ? ADMIN_PENDING : (t.key === 'grading' && ADMIN_UNGRADED) ? ADMIN_UNGRADED : 0;
+      const n = badgeFor(t);
       let badge = a.querySelector('.tabcount');
       if (n) { if (!badge) { badge = el('span', { className: 'tabcount' }); a.append(badge); } badge.textContent = String(n); }
       else if (badge) badge.remove();

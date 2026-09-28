@@ -668,13 +668,13 @@ app.get('/api/admin/users/:id/tasks', requireAdmin, (req, res) => {
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group')) AS total,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group') AND i.status IN ('done','na','yes','no')) AS handled,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.status='flag') AS flags,
-      (SELECT COUNT(*) FROM findings f WHERE f.asset_id=a.id AND f.kind='vuln') AS findings
+      (SELECT COUNT(*) FROM findings f WHERE f.asset_id=a.id AND f.kind='vuln' AND f.duplicate=0) AS findings
       FROM assets a JOIN projects p ON p.id=a.project_id
       WHERE a.project_id IN (${pids.map(() => '?').join(',')}) ORDER BY p.name, a.label`).all(...pids)
     .map(t => ({ id: t.id, type: t.type, label: t.label, project: t.project, project_id: t.project_id,
       total: t.total, handled: t.handled, flags: t.flags, findings: t.findings,
       done: t.total > 0 && t.handled >= t.total })) : [];
-  const authored = q(`SELECT COUNT(*) c FROM findings WHERE author=? AND kind='vuln'`).get(uname).c;
+  const authored = q(`SELECT COUNT(*) c FROM findings WHERE author=? AND kind='vuln' AND duplicate=0`).get(uname).c;
   res.json({ user: u, projects, targets, authored });
 });
 // Admin creates an operator account (username + initial password + role). Accounts exist
@@ -792,7 +792,7 @@ app.get('/api/admin/ranking', requireAdmin, (req, res) => {
   }).sort((a, b) => b.score - a.score || b.findings - a.findings || b.projects - a.projects);
   // Live vulns that still have no author (recorded before attribution) — a soft "not counted" note.
   // Notes/credentials never count, so they're excluded here too.
-  const unattributed = q(`SELECT COUNT(*) c FROM findings WHERE kind='vuln' AND (author IS NULL OR author='')`).get().c;
+  const unattributed = q(`SELECT COUNT(*) c FROM findings WHERE kind='vuln' AND duplicate=0 AND (author IS NULL OR author='')`).get().c;
   res.json({ ranking, totals: { operators: ranking.length, findings: rows.length, unattributed } });
 });
 
@@ -1176,7 +1176,7 @@ app.delete('/api/tpl-items/:id', requireManage, (req, res) => {
 app.get('/api/projects', (req, res) => {
   res.json(q(`SELECT p.*,
       (SELECT COUNT(*) FROM assets a WHERE a.project_id=p.id) AS asset_count,
-      (SELECT COUNT(*) FROM findings f JOIN assets a ON a.id=f.asset_id WHERE a.project_id=p.id AND f.kind='vuln') AS finding_count,
+      (SELECT COUNT(*) FROM findings f JOIN assets a ON a.id=f.asset_id WHERE a.project_id=p.id AND f.kind='vuln' AND f.duplicate=0) AS finding_count,
       (SELECT COUNT(*) FROM items i JOIN assets a ON a.id=i.asset_id
          WHERE a.project_id=p.id AND i.kind NOT IN ('select','group')) AS total,
       (SELECT COUNT(*) FROM items i JOIN assets a ON a.id=i.asset_id
@@ -1286,26 +1286,26 @@ app.get('/api/projects/:id', (req, res) => {
       (SELECT COUNT(*) FROM items i JOIN assets a ON a.id=i.asset_id WHERE a.folder_id=f.id AND i.kind NOT IN ('select','group')
          AND i.status IN ('done','na','yes','no')) AS handled,
       (SELECT COUNT(*) FROM items i JOIN assets a ON a.id=i.asset_id WHERE a.folder_id=f.id AND i.status='flag') AS flags,
-      (SELECT COUNT(*) FROM findings fi JOIN assets a ON a.id=fi.asset_id WHERE a.folder_id=f.id AND fi.kind='vuln') AS findings
+      (SELECT COUNT(*) FROM findings fi JOIN assets a ON a.id=fi.asset_id WHERE a.folder_id=f.id AND fi.kind='vuln' AND fi.duplicate=0) AS findings
       FROM folders f WHERE f.project_id=? ORDER BY f.created_at, f.id`).all(req.params.id);
   for (const f of assets) {
     f.items = q(`SELECT a.id, a.uid, a.type, a.label, a.assignee, a.metadata,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group')) AS total,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group') AND i.status IN ('done','na','yes','no')) AS handled,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.status='flag') AS flags,
-      (SELECT COUNT(*) FROM findings fi WHERE fi.asset_id=a.id AND fi.kind='vuln') AS findings
+      (SELECT COUNT(*) FROM findings fi WHERE fi.asset_id=a.id AND fi.kind='vuln' AND fi.duplicate=0) AS findings
       FROM assets a WHERE a.folder_id=? ORDER BY a.created_at, a.id`).all(f.id).map(assetSummary);
   }
   // Engagement-wide finding aggregates for the stat tiles: total vulnerabilities, how many are
   // written into the report (in_report), the severity mix, and note/credential counts. One query.
   const fs = q(`SELECT
-      SUM(CASE WHEN kind='vuln' THEN 1 ELSE 0 END) AS vulns,
-      SUM(CASE WHEN kind='vuln' AND in_report=1 THEN 1 ELSE 0 END) AS written,
-      SUM(CASE WHEN kind='vuln' AND severity='critical' THEN 1 ELSE 0 END) AS critical,
-      SUM(CASE WHEN kind='vuln' AND severity='high' THEN 1 ELSE 0 END) AS high,
-      SUM(CASE WHEN kind='vuln' AND severity='medium' THEN 1 ELSE 0 END) AS medium,
-      SUM(CASE WHEN kind='vuln' AND severity='low' THEN 1 ELSE 0 END) AS low,
-      SUM(CASE WHEN kind='vuln' AND (severity='info' OR severity IS NULL OR severity='') THEN 1 ELSE 0 END) AS info,
+      SUM(CASE WHEN kind='vuln' AND duplicate=0 THEN 1 ELSE 0 END) AS vulns,
+      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND in_report=1 THEN 1 ELSE 0 END) AS written,
+      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND severity='critical' THEN 1 ELSE 0 END) AS critical,
+      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND severity='high' THEN 1 ELSE 0 END) AS high,
+      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND severity='medium' THEN 1 ELSE 0 END) AS medium,
+      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND severity='low' THEN 1 ELSE 0 END) AS low,
+      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND (severity='info' OR severity IS NULL OR severity='') THEN 1 ELSE 0 END) AS info,
       SUM(CASE WHEN kind='note' THEN 1 ELSE 0 END) AS notes,
       SUM(CASE WHEN kind='credential' THEN 1 ELSE 0 END) AS creds
     FROM findings f JOIN assets a ON a.id=f.asset_id WHERE a.project_id=?`).get(req.params.id);
@@ -1378,7 +1378,7 @@ app.get('/api/assets/:id', (req, res) => {
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group')
          AND i.status IN ('done','na','yes','no')) AS handled,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.status='flag') AS flags,
-      (SELECT COUNT(*) FROM findings fi WHERE fi.asset_id=a.id AND fi.kind='vuln') AS findings
+      (SELECT COUNT(*) FROM findings fi WHERE fi.asset_id=a.id AND fi.kind='vuln' AND fi.duplicate=0) AS findings
       FROM assets a WHERE a.folder_id=? ORDER BY a.created_at, a.id`).all(f.id);
   const project = q(`SELECT id, name FROM projects WHERE id=?`).get(f.project_id);
   res.json({ ...f, project, targets: targets.map(assetSummary) });
@@ -1635,14 +1635,15 @@ function gradeFields(body, mayGrade, cur = {}) {
 // credit. Attribution is the recorder (author), even when an editor set the severity.
 function creditFinding(uid) {
   if (!SERVER_MODE || !uid) return;
-  const f = q(`SELECT f.uid, f.author, f.kind, f.severity, a.type AS asset_type, a.project_id
+  const f = q(`SELECT f.uid, f.author, f.kind, f.severity, f.duplicate, a.type AS asset_type, a.project_id
     FROM findings f JOIN assets a ON a.id = f.asset_id WHERE f.uid=?`).get(uid);
   if (!f) return; // not present yet (deferred) → leave any durable credit intact
   // Only vulnerabilities count toward the ranking — notes, credentials and raw requests are
-  // evidence, not findings. If an entry is (or was re-classified) not a vuln, it earns no credit;
-  // drop any stale one. This runs only on create/grade/sync, never on delete, so a deleted
-  // project's credits stay durable (deletion paths don't call this).
-  if (f.kind !== 'vuln') { q(`DELETE FROM finding_credits WHERE uid=?`).run(uid); return; }
+  // evidence, not findings, and a DUPLICATE earns no credit either (it keeps its severity but isn't
+  // a new finding). If an entry is (or became) a non-vuln or a duplicate, it earns no credit; drop
+  // any stale one. This runs only on create/grade/sync, never on delete, so a deleted project's
+  // credits stay durable (deletion paths don't call this).
+  if (f.kind !== 'vuln' || f.duplicate) { q(`DELETE FROM finding_credits WHERE uid=?`).run(uid); return; }
   if (!f.author) return; // a vuln with no recorder yet → nothing to credit
   q(`INSERT INTO finding_credits (uid, author, project_id, asset_type, severity, updated_at)
      VALUES (?,?,?,?,?, datetime('now'))
@@ -1684,7 +1685,7 @@ app.get('/api/targets/:id/finding-candidates', (req, res) => {
 // reached from the engagement stat tiles (vulns / notes / creds).
 app.get('/api/projects/:id/findings', (req, res) => {
   if (!q(`SELECT 1 FROM projects WHERE id=?`).get(req.params.id)) return res.status(404).json({ error: 'not found' });
-  const rows = q(`SELECT f.id, f.uid, f.title, f.kind, f.severity, f.cvss, f.author, f.body, f.in_report, f.needs_improvement, f.review_note, f.flagged_to, f.created_at,
+  const rows = q(`SELECT f.id, f.uid, f.title, f.kind, f.severity, f.cvss, f.author, f.body, f.in_report, f.needs_improvement, f.review_note, f.flagged_to, f.duplicate, f.created_at,
       a.id AS target_id, a.label AS target, a.type AS target_type
     FROM findings f JOIN assets a ON a.id=f.asset_id
     WHERE a.project_id=? ORDER BY f.created_at DESC`).all(req.params.id);
@@ -1723,12 +1724,15 @@ app.patch('/api/findings/:id', async (req, res) => {
   if (editor && (('severity' in b) || ('cvss' in b)) && (severity || vector)) { ni = 0; note = null; } // graded → resolved
   // Flagging a note to a teammate (or clearing it) is collaboration, open to any operator.
   const flaggedTo = 'flagged_to' in b ? (b.flagged_to ? String(b.flagged_to).slice(0, 120) : null) : cur.flagged_to;
-  q(`UPDATE findings SET title=?, kind=?, severity=?, body=?, refs=?, fix_status=?, in_report=?, cvss=?, needs_improvement=?, review_note=?, flagged_to=? WHERE id=?`).run(
+  // Marking a vuln a DUPLICATE is a grading-level call (an editor/admin), like severity: it keeps its
+  // severity but stops counting toward findings/ranking.
+  const dup = editor && 'duplicate' in b ? (b.duplicate ? 1 : 0) : cur.duplicate;
+  q(`UPDATE findings SET title=?, kind=?, severity=?, body=?, refs=?, fix_status=?, in_report=?, cvss=?, needs_improvement=?, review_note=?, flagged_to=?, duplicate=? WHERE id=?`).run(
     b.title ?? cur.title, b.kind ?? cur.kind, severity,
     b.body === undefined ? cur.body : (b.body || null),
     'refs' in b ? cleanRefs(b.refs) : cur.refs,
     'fix_status' in b ? cleanFix(b.fix_status) : cur.fix_status,
-    'in_report' in b ? (b.in_report ? 1 : 0) : cur.in_report, vector, ni, note, flaggedTo, cur.id);
+    'in_report' in b ? (b.in_report ? 1 : 0) : cur.in_report, vector, ni, note, flaggedTo, dup, cur.id);
   creditFinding(cur.uid);
   res.json(q(`SELECT * FROM findings WHERE id=?`).get(cur.id));
 });
@@ -1871,7 +1875,7 @@ app.get('/api/projects/:id/export', (req, res) => {
     if (a.findings.length) {
       md += `\n### Findings\n`;
       for (const f of a.findings) {
-        md += `- **${f.title}** (${f.kind}${f.severity ? ', ' + f.severity : ''})\n`;
+        md += `- **${f.title}** (${f.kind}${f.severity ? ', ' + f.severity : ''}${f.duplicate ? ', duplicate' : ''})\n`;
         if (f.body) md += '```\n' + f.body + '\n```\n';
       }
     }

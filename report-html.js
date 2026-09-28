@@ -19,7 +19,7 @@ export function projectReportHTML(projectId) {
   let total = 0;
   const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0, none: 0 };
   for (const a of assets) {
-    const findings = db.prepare(`SELECT * FROM findings WHERE asset_id=? AND kind='vuln' ORDER BY id`).all(a.id)
+    const findings = db.prepare(`SELECT * FROM findings WHERE asset_id=? AND kind='vuln' AND duplicate=0 ORDER BY id`).all(a.id)
       .map(f => ({
         ...f,
         images: db.prepare(`SELECT id, filename, mime, data FROM attachments WHERE finding_id=? ORDER BY id`).all(f.id),

@@ -327,6 +327,23 @@ check('deleting a project never drops a vuln credit (durable)', (await anaRankNo
 const badFix = await req('POST', `/api/targets/${rT.json.id}/findings`, { token: adminTok, body: { title: 'x', fix_status: 'nonsense' } });
 check('an invalid fix status is rejected (stored null)', badFix.json?.fix_status === null);
 
+// ---- a DUPLICATE vuln keeps its severity but stops counting (findings + ranking) ----
+const dupBase = await anaRankNow();
+const dupF = (await req('POST', `/api/targets/${webT.id}/findings`, { token: workerToken, device: dev1, body: { title: 'dup vuln', kind: 'vuln' } })).json;
+await req('PATCH', `/api/findings/${dupF.id}`, { token: adminTok, body: { severity: 'high' } });
+check('a fresh graded vuln lifts the ranking count', (await anaRankNow()) === dupBase + 1);
+const projVulnsBefore = (await req('GET', `/api/projects/${made.json.id}`, { token: adminTok })).json.findingStats.vulns;
+const dupMark = await req('PATCH', `/api/findings/${dupF.id}`, { token: adminTok, body: { duplicate: 1 } });
+check('an editor can mark a finding duplicate', dupMark.status === 200 && dupMark.json?.duplicate === 1);
+check('a duplicate keeps its severity', dupMark.json?.severity === 'high');
+check('marking it duplicate drops the ranking credit', (await anaRankNow()) === dupBase);
+const projVulnsAfter = (await req('GET', `/api/projects/${made.json.id}`, { token: adminTok })).json.findingStats.vulns;
+check('a duplicate is not counted in the engagement findings', projVulnsAfter === projVulnsBefore - 1);
+const wDup = await req('PATCH', `/api/findings/${dupF.id}`, { token: workerToken, device: dev1, body: { duplicate: 0 } });
+check('a worker cannot clear the duplicate flag (grading is editor-only)', wDup.json?.duplicate === 1);
+await req('PATCH', `/api/findings/${dupF.id}`, { token: adminTok, body: { duplicate: 0 } });
+check('un-marking duplicate restores the ranking credit', (await anaRankNow()) === dupBase + 1);
+
 // engagement -> target directly (the folder layer is auto-managed): a web target lands in an
 // External group, a worker is refused (admin-only structure).
 const dt = await req('POST', `/api/projects/${made.json.id}/targets`, { token: adminTok, body: { type: 'web', label: 'https://direct.test' } });

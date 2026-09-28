@@ -380,6 +380,30 @@ checks.push(['subdomains roll-up lists web domains and excludes IPs', await ev(`
     document.querySelector(".modal-x")?.click();
     return hasBoth && noIp && exports;
   } catch (e) { return false; }`)]);
+// The grade dialog's Duplicate toggle marks a vuln a duplicate: it keeps its severity, shows a "dup"
+// badge on the card, and (server-side) stops counting toward findings/ranking.
+checks.push(['grade dialog Duplicate toggle marks a finding', await ev(`
+  try {
+    const p = (await (await fetch("/api/projects")).json())[0];
+    const d = await (await fetch("/api/projects/" + p.id)).json();
+    const f = await (await fetch("/api/assets/" + d.assets[0].id)).json();
+    const web = f.targets.find(t => /smoke\\.test/.test(t.label)) || f.targets[0];
+    const v = await (await fetch("/api/targets/" + web.id + "/findings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "DupTest", kind: "vuln" }) })).json();
+    location.hash = "#/target/" + web.id; await new Promise(r => setTimeout(r, 1300));
+    const card = [...document.querySelectorAll(".dock .finding")].find(c => /DupTest/.test(c.textContent));
+    if (!card) return false;
+    card.querySelector(".f-sev.grade").click(); await new Promise(r => setTimeout(r, 300));
+    const dupBox = document.querySelector(".modal input[name=duplicate]");
+    if (!dupBox) return false;
+    dupBox.checked = true;
+    document.querySelector(".modal .actions .btn.gold").click(); await new Promise(r => setTimeout(r, 700));
+    const saved = (await (await fetch("/api/targets/" + web.id)).json()).findings.find(x => x.id === v.id);
+    const keptSevMarked = !!saved && saved.duplicate === 1 && !!saved.severity;
+    await renderTarget(web.id); await new Promise(r => setTimeout(r, 500));
+    const card2 = [...document.querySelectorAll(".dock .finding")].find(c => /DupTest/.test(c.textContent));
+    const badge = !!card2 && !!card2.querySelector(".f-dup") && card2.classList.contains("is-dup");
+    return keptSevMarked && badge;
+  } catch (e) { return false; }`)]);
 // The targets page has a live search that filters by name/type (flat while searching, incl. sub-targets).
 checks.push(['targets page search filters the list', await ev(`
   try {

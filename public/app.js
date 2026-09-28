@@ -1142,14 +1142,17 @@ async function renderProjectFindings(projectId) {
     { value: 'sev', label: 'Severity' }, { value: 'new', label: 'Newest' }, { value: 'title', label: 'Title' }] });
   sortSel.addEventListener('change', () => { PFV.sort = sortSel.value; repaint(); });
 
-  const written = vulns.filter(f => f.in_report).length;
-  const wpct = vulns.length ? Math.round(written / vulns.length * 100) : 0;
+  // Duplicates are still listed (with a badge) but don't count toward the totals.
+  const counted = vulns.filter(f => !f.duplicate);
+  const dupes = vulns.length - counted.length;
+  const written = counted.filter(f => f.in_report).length;
+  const wpct = counted.length ? Math.round(written / counted.length * 100) : 0;
   view.replaceChildren(el('div', { className: 'page narrow' },
     el('div', { className: 'kicker' }, 'Engagement · ' + p.name),
     el('div', { className: 'pf-head' },
       el('h1', {}, 'Findings'),
       vulns.length ? el('div', { className: 'pf-progress' },
-        el('span', {}, `${vulns.length} vuln${vulns.length === 1 ? '' : 's'} · ${written} written up`),
+        el('span', {}, `${counted.length} vuln${counted.length === 1 ? '' : 's'} · ${written} written up` + (dupes ? ` · ${dupes} duplicate` : '')),
         el('span', { className: 'stat-bar', style: 'width:88px;margin:0' }, el('span', { style: `width:${wpct}%;background:var(--ok)` }))) : null),
     el('div', { className: 'evfilter pf-filter' }, el('div', { className: 'evrow' }, search, sortSel)),
     list));
@@ -2433,10 +2436,12 @@ function findingCard(f, id, after, opts = {}) {
   const mineToFix = f.needs_improvement && CURRENT_USER && CURRENT_USER === f.author; // glows for the finder
   const card = el('div', { className: 'finding sev-' + (f.severity || 'info') + (f.in_report ? ' in-report' : '')
       + (f.needs_improvement ? ' needs-improve' : '') + (mineToFix ? ' mine-improve' : '')
+      + (f.duplicate ? ' is-dup' : '')
       + (opts.selectable ? ' pickable' : '') + (opts.selected ? ' picked' : ''),
     title: opts.selectable ? 'Click to select / deselect' : 'Click to open' },
     el('div', { className: 'f-top' },
       opts.selectable ? el('span', { className: 'f-pick', 'aria-hidden': 'true' }, opts.selected ? '☑' : '☐') : null,
+      f.duplicate ? el('span', { className: 'f-dup', title: 'Duplicate — not counted toward findings or the ranking' }, 'dup') : null,
       // For a vulnerability a grader (admin/editor) can set/change its severity right here — the chip
       // is the button, so it works in a standalone install too, with no admin page needed.
       (f.kind === 'vuln' && isEditor())
@@ -2473,6 +2478,7 @@ function findingDetail(f, id, after) {
     build: (b) => {
       b.append(el('div', { className: 'fd-badges' },
         f.severity ? el('span', { className: 'fd-sev sev-' + f.severity }, f.severity.toUpperCase()) : null,
+        f.duplicate ? el('span', { className: 'f-dup', title: 'Duplicate — not counted toward findings or the ranking' }, 'duplicate') : null,
         f.cvss ? el('span', { className: 'fd-cvss', title: f.cvss }, 'CVSS ' + (MagiCVSS.score(f.cvss)?.toFixed(1) ?? '—')) : null,
         f.author ? el('span', { className: 'fd-by' }, avatarSm(f.author), 'by ' + f.author) : null,
         f.created_at ? el('span', { className: 'fd-by', title: f.created_at }, fmtWhen(f.created_at)) : null,
@@ -3784,6 +3790,11 @@ function gradeDialog(f, onDone) {
         el('span', { className: 'kicker' }, 'Sent back'), el('div', {}, f.review_note)));
       const sevSel = field(b, 'Severity', 'severity', { value: f.severity || 'medium', options: SEVERITIES.filter(s => s.value) });
       b.append(cvssSection(sevSel, f.cvss || null));
+      // Mark as a duplicate: it keeps its severity but stops counting toward the engagement's findings
+      // and the operator ranking (so re-reports of the same issue don't inflate the numbers).
+      const dupCb = el('input', { type: 'checkbox', name: 'duplicate' }); dupCb.checked = !!f.duplicate;
+      b.append(el('label', { className: 'dupe-opt' }, dupCb,
+        el('span', {}, 'Duplicate — keeps its severity, but isn’t counted toward findings or the ranking')));
       // Instead of grading, a reviewer can send it back to the finder to improve, with a note.
       b.append(el('div', { className: 'srule', style: 'margin-top:16px' }, el('span', { className: 'kicker' }, 'Or send back'), el('span', { className: 'rule' })));
       const rnote = field(b, 'What to improve (shown to the finder)', 'review_note', { textarea: true, value: f.review_note || '', ph: 'e.g. add the request/response, confirm impact, attach a screenshot' });
@@ -3798,10 +3809,10 @@ function gradeDialog(f, onDone) {
     },
     onSubmit: async (fd) => {
       const raw = Object.fromEntries(fd);
-      const payload = { severity: raw.severity || null };
+      const payload = { severity: raw.severity || null, duplicate: raw.duplicate ? 1 : 0 };
       if (raw.cvss) payload.cvss = raw.cvss; // a CVSS vector, if set, derives the severity server-side
       await api('/findings/' + f.id, { method: 'PATCH', body: payload });
-      toast('Severity set'); onDone && onDone();
+      toast(payload.duplicate ? 'Marked duplicate' : 'Severity set'); onDone && onDone();
     },
   });
 }

@@ -27,6 +27,7 @@ const aid = rid(db.prepare(`INSERT INTO assets (project_id,folder_id,type,label)
 const fA = rid(db.prepare(`INSERT INTO findings (asset_id,title,kind) VALUES (?,?,?)`).run(aid, 'Creds', 'credential'));
 const uidA = db.prepare(`SELECT uid FROM findings WHERE id=?`).get(fA).uid;
 db.prepare(`INSERT INTO findings (asset_id,title,kind,severity,refs,author) VALUES (?,?,?,?,?,?)`).run(aid, 'RCE', 'vuln', 'critical', JSON.stringify([uidA]), 'mormor');
+db.prepare(`INSERT INTO findings (asset_id,title,kind,severity,duplicate) VALUES (?,?,?,?,?)`).run(aid, 'DupRCE', 'vuln', 'high', 1);
 // a retest target with a fix status
 const rf = rid(db.prepare(`INSERT INTO folders (project_id,grp,label) VALUES (?,?,?)`).run(pid, 'retest', 'RT'));
 const ra = rid(db.prepare(`INSERT INTO assets (project_id,folder_id,type,label) VALUES (?,?,?,?)`).run(pid, rf, 'retest', 'Remediation'));
@@ -44,6 +45,8 @@ const impProj = db.prepare(`SELECT priority,assignee,overview FROM projects WHER
 check('import preserves engagement priority / assignee / overview',
   impProj.priority === 4 && impProj.assignee === 'ana,bob' && /engagement details here/.test(impProj.overview || ''));
 check('import preserves the retest fix status', imp.find(f => f.title === 'ACME-1')?.fix_status === 'half_fixed');
+const impDup = db.prepare(`SELECT f.duplicate FROM findings f JOIN assets a ON a.id=f.asset_id WHERE a.project_id=? AND f.title='DupRCE'`).get(res.projectId);
+check('import preserves the duplicate flag', impDup?.duplicate === 1);
 check('import preserves the report tick', imp.find(f => f.title === 'ACME-1')?.in_report === 1);
 check('import keeps the attack-chain link', rce && JSON.parse(rce.refs || '[]').length === 1);
 check('the chain link is remapped to the imported finding’s new uid', rce && JSON.parse(rce.refs)[0] === newCredsUid);

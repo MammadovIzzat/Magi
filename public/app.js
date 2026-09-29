@@ -77,6 +77,12 @@ function setAuthToken(t) { try { if (t) localStorage.setItem(AUTH_KEY, t); } cat
 function clearAuthToken() { try { localStorage.removeItem(AUTH_KEY); } catch { /* ignore */ } }
 function authHeaders(extra) { const t = authToken(); return { ...(t ? { authorization: 'Bearer ' + t } : {}), ...(extra || {}) }; }
 
+// Remember the operator name (never the passphrase) so a browser refresh or logout doesn't
+// wipe what you typed — the login prefills it and jumps focus to the passphrase.
+const LAST_USER_KEY = 'magi.lastUser';
+function lastUser() { try { return localStorage.getItem(LAST_USER_KEY) || ''; } catch { return ''; } }
+function rememberUser(u) { try { if (u) localStorage.setItem(LAST_USER_KEY, u); } catch { /* private mode */ } }
+
 // Attachments are auth-gated, but an <img src> can't carry the Bearer header — so fetch the bytes
 // with auth and show them via an object URL. Cached by id (attachment bytes are immutable per id)
 // so the live-refresh re-render reuses the same URL instead of leaking a new one each cycle.
@@ -4276,7 +4282,8 @@ function downloadText(name, text) {
 }
 
 function loginPasswordStep() {
-  const u = el('input', { name: 'username', placeholder: 'admin', autocomplete: 'username' });
+  const u = el('input', { name: 'username', value: lastUser(), placeholder: 'admin', autocomplete: 'username' });
+  u.oninput = () => rememberUser(u.value.trim());
   const p = el('input', { name: 'password', type: 'password', autocomplete: 'current-password' });
   const err = el('div', { className: 'loginerr' });
   const hint = el('div', { className: 'login-hint' });
@@ -4292,6 +4299,7 @@ function loginPasswordStep() {
     err, el('button', { className: 'btn gold', type: 'submit' }, 'Authenticate'), hint));
   box.onsubmit = async (e) => {
     e.preventDefault(); err.textContent = ''; p.style.borderColor = '';
+    rememberUser(u.value.trim());
     try {
       const { json: r } = await postLogin({ username: u.value, password: p.value });
       if (r.token) { setAuthToken(r.token); return afterAuth(); }
@@ -4300,7 +4308,8 @@ function loginPasswordStep() {
       throw new Error(r.error || 'authentication failed');
     } catch (ex) { showLoginErr(err, ex.message.toUpperCase().startsWith('TOO MANY') ? ex.message : `AUTH REJECTED — ${ex.message}.`); p.style.borderColor = 'var(--red)'; }
   };
-  u.focus();
+  // When the operator name is already remembered, land on the passphrase instead of re-typing it.
+  if (u.value.trim()) p.focus(); else u.focus();
 }
 
 // Enrolled account: enter the rolling code (or a one-time recovery code). The password from the

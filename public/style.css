@@ -365,6 +365,10 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .stat-bar > span { display: block; height: 100%; background: var(--fg-2); }
 /* (.sevmix / .sevmix-chip are defined in the admin ranking block — this old copy was removed
    because its margin-top pushed the chips out of line with the operator name.) */
+/* The engagement Findings card spells the severities out ("19 medi", "26 low"), which are far
+   wider than the ranking's single letters — so wrap them within the card instead of letting the
+   last chip spill past its right edge and get sliced by the next stat's divider. */
+.stat .sevmix { flex-wrap: wrap; margin-top: 11px; align-self: flex-start; }
 .stat-link { border: 0; text-align: left; cursor: pointer; font: inherit; transition: background .12s; }
 .stat-link:hover { background: var(--row-hover); box-shadow: inset 0 0 0 1px var(--gold-wash), 0 0 14px -6px var(--gold); }
 .stat-link:hover .kicker { color: var(--gold); }

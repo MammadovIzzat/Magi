@@ -1161,6 +1161,9 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 .ellip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acell-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .acell-name strong { overflow: hidden; text-overflow: ellipsis; }
+/* marks the row for the operator you're signed in as */
+.selfpill { flex: none; font-family: var(--mono); font-size: 9px; letter-spacing: .14em; text-transform: uppercase;
+  padding: 1px 6px; border: 1px solid var(--line-hi); color: var(--muted-2); }
 .avatar-sq { width: 26px; height: 26px; flex: none; border: 1px solid var(--line-2); display: grid; place-items: center;
   font-family: var(--mono); font-size: 10px; color: var(--muted); }
 .rolepill { display: inline-block; justify-self: start; padding: 2px 8px; border: 1px solid var(--line-hi);

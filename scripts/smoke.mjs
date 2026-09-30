@@ -572,7 +572,7 @@ checks.push(['admin dashboard: overview, sidebar groups, ranking, logs, template
       totals: { operators: 2, findings: 9, unattributed: 1 } },
     "/api/admin/requests": [{ id: 3, device_name: "kali-vm", device_id: "910b2f33cccc", created_at: "2026-01-02 09:50:00" }], "/api/admin/enroll-codes": [],
     "/api/ungraded": [{ id: 1, title: "Reflected XSS", target_type: "web", project: "Acme Q3", target: "app.x", author: "ana", target_id: 5, project_id: 9 }],
-    "/api/admin/users": [{ id: 1, username: "ana", role: "worker", created_at: "2026-01-01", mfa_enabled: 1 }],
+    "/api/admin/users": [{ id: 1, username: "ana", role: "worker", created_at: "2026-01-01", mfa_enabled: 1 }, { id: 2, username: "boss", role: "admin", created_at: "2026-01-01", mfa_enabled: 1 }],
     "/api/admin/users/1/tasks": { user: { id: 1, username: "ana", role: "worker", created_at: "2026-01-01", mfa_enabled: 1 },
       projects: [{ id: 9, name: "Acme Q3", status: "active" }],
       targets: [{ id: 5, type: "web", label: "https://app.x", project: "Acme Q3", total: 10, handled: 10, flags: 0, findings: 2, done: true }], authored: 3 },
@@ -611,9 +611,14 @@ checks.push(['admin dashboard: overview, sidebar groups, ranking, logs, template
   location.hash = "#/admin/users"; await new Promise(r => setTimeout(r, 700));
   const usersTable = document.querySelectorAll(".atable .arow").length >= 1;
   const usersHasCreate = [...document.querySelectorAll(".admbody button")].some(b => /new operator/i.test(b.textContent));
+  // an ADMIN row is manageable now (its actions include Manage…), not just workers
+  const adminManageable = [...document.querySelectorAll(".atable .arow")].some(row => /boss/.test(row.textContent) && [...row.querySelectorAll("button")].some(b => /manage/i.test(b.textContent)));
   [...document.querySelectorAll(".admbody button")].find(b => /details/i.test(b.textContent))?.click();
   await new Promise(r => setTimeout(r, 400));
   const udOk = document.querySelectorAll(".ud-summary .ud-tile").length >= 3 && /Acme Q3/.test(document.querySelector(".ud-list")?.textContent || "");
+  // a read-only details dialog has a single Close button — no redundant Cancel
+  const udBtns = [...document.querySelectorAll(".modal .actions button")].map(b => b.textContent.trim());
+  const detailsReadOnly = udBtns.length === 1 && /close/i.test(udBtns[0]);
   document.querySelector(".modal-x")?.click(); await new Promise(r => setTimeout(r, 150));
   // ── Grading: table + Grade all ──
   location.hash = "#/admin/grading"; await new Promise(r => setTimeout(r, 600));
@@ -635,7 +640,7 @@ checks.push(['admin dashboard: overview, sidebar groups, ranking, logs, template
   const tplTab = [...document.querySelectorAll(".adminside .adminnav")].find(a => /Templates/.test(a.textContent));
   const tplTabOk = !!tplTab && tplTab.getAttribute("href") === "#/editor";
   window.fetch = real;
-  return adminShell && groups && tabs && tiles && panels && ovActivity && rankRows && sevChips && rankTotal && rankSelects && rankFiltered && activeIsRanking && usersTable && usersHasCreate && udOk && gradingOk && devicesOk && logsReadable && logsControls && logsExport && tplInPanel && tplTabOk`)]);
+  return adminShell && groups && tabs && tiles && panels && ovActivity && rankRows && sevChips && rankTotal && rankSelects && rankFiltered && activeIsRanking && usersTable && usersHasCreate && adminManageable && udOk && detailsReadOnly && gradingOk && devicesOk && logsReadable && logsControls && logsExport && tplInPanel && tplTabOk`)]);
 // Responsive top bar: at a narrow (phone-ish) width the page actions must not spill out of the bar —
 // the bar stays inside the window and the account badge remains on screen (actions scroll within).
 await cdp('Emulation.setDeviceMetricsOverride', { width: 480, height: 800, deviceScaleFactor: 1, mobile: false });

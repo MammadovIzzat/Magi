@@ -233,7 +233,8 @@ function canWorkProjectC(p) { return isEditor() || (!!CURRENT_USER && assigneeLi
 // ---------- modal ----------
 // kicker + title + optional note, fields, optional danger box, gold/red CTA
 function modal(opts) {
-  const { kicker = 'Form', title, note, build, onSubmit, cta = 'Save', danger = false, wide = false } = opts;
+  // readOnly: a details/actions dialog with nothing to submit — one "Close" button, no redundant Cancel.
+  const { kicker = 'Form', title, note, build, onSubmit, cta = 'Save', danger = false, wide = false, readOnly = false } = opts;
   const root = $('#modalRoot');
   const form = el('form', { className: 'modal' + (danger ? ' danger' : '') + (wide ? ' wide' : '') });
   const body = el('div', { className: 'modal-body' }, el('h3', {}, title), note ? el('p', { className: 'modal-note' }, note) : null);
@@ -245,14 +246,17 @@ function modal(opts) {
   const onKey = (e) => { if (e.key === 'Escape' && !document.querySelector('.lightbox, .fcheck')) { e.preventDefault(); close(); } };
   const close = () => { document.removeEventListener('keydown', onKey, true); root.replaceChildren(); };
   const x = el('button', { type: 'button', className: 'modal-x', title: 'Close', onclick: close }, icon('x'));
-  const submit = el('button', { type: 'submit', className: 'btn ' + (danger ? 'dangerfill' : 'gold') }, cta);
+  const submit = readOnly
+    ? el('button', { type: 'button', className: 'btn gold', onclick: close }, cta)
+    : el('button', { type: 'submit', className: 'btn ' + (danger ? 'dangerfill' : 'gold') }, cta);
   form.append(
     el('div', { className: 'modal-head' }, el('span', { className: 'modal-kicker' }, kicker), x),
     body,
     el('div', { className: 'actions' },
-      el('button', { type: 'button', className: 'btn', onclick: close }, 'Cancel'), submit));
+      readOnly ? null : el('button', { type: 'button', className: 'btn', onclick: close }, 'Cancel'), submit));
   form.onsubmit = async (e) => {
     e.preventDefault();
+    if (readOnly || !onSubmit) return;               // nothing to submit — Enter just does nothing
     errEl.textContent = ''; submit.disabled = true;   // inline error, not a focus-stealing alert()
     try { await onSubmit(new FormData(form)); close(); }
     catch (err) { errEl.textContent = err.message || String(err); form.querySelector('input:not([type=hidden]),textarea,.sel-trigger')?.focus(); }
@@ -975,7 +979,7 @@ function engagementSettings(p, done) {
   const kv = (k, v, pre) => v ? el('div', { className: 'es-kv' }, el('span', { className: 'es-k' }, k),
     el('span', { className: 'es-v', style: pre ? 'white-space:pre-wrap' : '' }, v)) : null;
   modal({
-    kicker: 'Engagement', title: p.name, cta: 'Close', wide: true,
+    kicker: 'Engagement', title: p.name, cta: 'Close', wide: true, readOnly: true,
     build: (b) => {
       b.append(el('div', { className: 'es-details' },
         kv('Client', p.client),
@@ -2805,7 +2809,7 @@ function exportProjectMenu(id, name) {
   modal({
     kicker: 'Export', title: 'Export engagement',
     note: 'A report is for reading and sharing findings. A project file round-trips back into Magi — it carries the whole engagement, including credentials and raw requests, so treat it as client-confidential.',
-    cta: 'Close', build: (b) => {
+    cta: 'Close', readOnly: true, build: (b) => {
       const row = (title, sub, fn) => {
         const el2 = el('button', { type: 'button', className: 'type', style: 'width:100%;margin-top:10px', onclick: async () => { await fn(); $('#modalRoot').replaceChildren(); } },
           el('span', { className: 'lbl' }, title), el('span', { className: 'hint' }, sub));
@@ -3697,17 +3701,22 @@ async function adminUsers(ctx, A) {
     `${users.length} account${users.length === 1 ? '' : 's'} · ${withMfa} with 2FA enabled`,
     aBtn('New operator', () => createUserDialog(ctx), 'gold', 'plus'));
   const cols = 'minmax(0,1.7fr) minmax(0,.8fr) minmax(82px,1fr) minmax(0,.5fr) 220px';
+  // Admins are managed too (the server refuses to demote/remove the only admin, or to let you remove
+  // your own account) — so a lead can change any operator's role and reset their access, yourself
+  // included. Only the self-remove button is hidden, since the server always blocks that.
+  const meName = ME?.username || CURRENT_USER;
   const rows = users.map(m => [
     el('span', { className: 'acell-name' },
       el('span', { className: 'avatar-sq' }, (m.username || '?').slice(0, 2).toUpperCase()),
-      el('strong', {}, m.username)),
+      el('strong', {}, m.username),
+      m.username === meName ? el('span', { className: 'selfpill' }, 'you') : null),
     el('span', { className: 'rolepill' + (m.role === 'admin' ? ' admin' : '') }, m.role),
     el('span', { className: 'amono' }, m.created_at ? new Date(m.created_at).toLocaleDateString() : '—'),
     el('span', { className: 'amono ' + (m.mfa_enabled ? 'ok' : 'off') }, m.mfa_enabled ? 'on' : 'off'),
     el('span', { className: 'arow-actions' },
       aBtn('Details', () => userDetailsDialog(ctx, m)),
-      m.role === 'admin' ? null : aBtn('Role…', () => manageUserDialog(ctx, m)),
-      m.role === 'admin' ? null : aBtn('Remove', () => removeUserDialog(ctx, m), 'danger')),
+      aBtn('Manage…', () => manageUserDialog(ctx, m)),
+      m.username === meName ? null : aBtn('Remove', () => removeUserDialog(ctx, m), 'danger')),
   ]);
   return [head, aTable(cols, ['Operator', 'Role', 'Created', '2FA', ''], rows, { title: 'No operators yet', hint: 'Create the first account to get started.' })];
 }
@@ -3724,7 +3733,7 @@ async function userDetailsDialog(ctx, m) {
   const wip = targets.filter(t => !t.done && t.handled > 0).length;
   const idle = targets.filter(t => (t.handled || 0) === 0).length;
   modal({
-    kicker: 'Operator', title: m.username, cta: 'Close', wide: true,
+    kicker: 'Operator', title: m.username, cta: 'Close', wide: true, readOnly: true,
     build: (b) => {
       b.append(el('div', { className: 'muted small', style: 'margin:-6px 0 12px' },
         `${m.role} · ${m.mfa_enabled ? 'two-factor on' : 'no two-factor'} · joined ${new Date(m.created_at).toLocaleDateString()}`));
@@ -4236,6 +4245,7 @@ function mintCodeDialog(ctx) {
 }
 // Manage a member: change role, reset password / two-factor, or remove them.
 function manageUserDialog(ctx, m) {
+  const isSelf = m.username === (ME?.username || CURRENT_USER);
   modal({
     kicker: 'Admin', title: `Manage ${m.username}`, cta: 'Save role',
     note: 'Changing the role or resetting the password signs this member out of every device (they sign in again).',
@@ -4246,7 +4256,8 @@ function manageUserDialog(ctx, m) {
       b.append(el('div', { className: 'setcard-actions', style: 'margin-top:12px' },
         el('button', { type: 'button', className: 'btn', onclick: () => resetUserPasswordDialog(ctx, m) }, 'Reset password…'),
         m.mfa_enabled ? el('button', { type: 'button', className: 'btn', onclick: () => resetMfaDialog(ctx, m) }, 'Reset two-factor') : null,
-        el('button', { type: 'button', className: 'btn danger', onclick: () => removeUserDialog(ctx, m) }, 'Remove member')));
+        // The server blocks removing your own account, so don't offer it here.
+        isSelf ? null : el('button', { type: 'button', className: 'btn danger', onclick: () => removeUserDialog(ctx, m) }, 'Remove member')));
     },
     onSubmit: async (fd) => { await api(`${ctx.base}/users/${m.id}/role`, { method: 'POST', body: { role: Object.fromEntries(fd).role } }); toast('Role updated'); renderAdmin(); },
   });

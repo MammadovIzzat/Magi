@@ -214,6 +214,31 @@ checks.push(['checklist popup paints', await ev(`
   document.querySelector(".checklist-open")?.click(); await new Promise(r => setTimeout(r, 1000));
   document.querySelectorAll(".checklist-pop .ghdr")[0]?.click(); await new Promise(r => setTimeout(r, 900));
   return document.querySelectorAll(".checklist-pop .item").length > 0`)]);
+// An item with follow-up sub-items gets a caret to fold them away (and unfold again) — nesting to
+// any depth. Build a parent task with one child, then collapse/expand it in the checklist popup.
+checks.push(["checklist: fold away an item's follow-up sub-items", await ev(`
+  try {
+    const p = (await (await fetch("/api/projects")).json())[0];
+    const fid = (await (await fetch("/api/projects/" + p.id)).json()).assets[0].id;
+    const j = (u, o) => fetch(u, { headers: { "content-type": "application/json" }, ...o }).then(r => r.json());
+    const t = await j("/api/assets/" + fid + "/targets", { method: "POST", body: JSON.stringify({ type: "web", label: "https://fold.test" }) });
+    const parent = await j("/api/targets/" + t.id + "/items", { method: "POST", body: JSON.stringify({ title: "ParentTask" }) });
+    await j("/api/targets/" + t.id + "/items", { method: "POST", body: JSON.stringify({ title: "ChildTask", parent_id: parent.id }) });
+    location.hash = "#/target/" + t.id; await new Promise(r => setTimeout(r, 1200));
+    document.querySelector(".checklist-open").click(); await new Promise(r => setTimeout(r, 900));
+    const grp = [...document.querySelectorAll(".checklist-pop .ghdr")].find(h => /Custom/i.test(h.textContent));
+    if (grp && !grp.classList.contains("open")) { grp.click(); await new Promise(r => setTimeout(r, 600)); }
+    const hasChild = () => [...document.querySelectorAll(".checklist-pop .item .ititle")].some(e => e.textContent === "ChildTask");
+    const caret = () => { const pit = [...document.querySelectorAll(".checklist-pop .item")].find(it => [...it.querySelectorAll(".ititle")].some(e => e.textContent === "ParentTask")); return pit && pit.querySelector(".icaret"); };
+    const before = hasChild();
+    const c1 = caret(); if (!c1) return false;
+    c1.click(); await new Promise(r => setTimeout(r, 700));
+    const afterCollapse = hasChild();
+    const c2 = caret(); if (!c2) return false;
+    c2.click(); await new Promise(r => setTimeout(r, 700));
+    const afterExpand = hasChild();
+    return before && !afterCollapse && afterExpand;
+  } catch (e) { return false; }`)]);
 // A retest target renders its own (checklist-free) page — no per-target assignee control anymore
 // (assignment is engagement-level only).
 checks.push(['retest targets render (no per-target assignee control)', await ev(`
@@ -310,32 +335,54 @@ checks.push(['marking a finding done keeps you on the findings page', await ev(`
     const toggled = !!now && now.classList.contains("on") !== wasOn;
     return stillFindings && scrollTracked && toggled;
   } catch (e) { return false; }`)]);
-// A finding recorded on the wrong target can be re-parented from the dock: enter "Move", select it,
-// pick a destination target in the same engagement, and it moves (source loses it, destination gains).
-checks.push(['move a finding to another target from the dock', await ev(`
+// Drag a TARGET onto another in the rail to nest it. Drag events key off module state set on
+// dragstart, so a synthetic dragstart→drop exercises the same path as a real drag.
+checks.push(['drag a target onto another in the rail nests it', await ev(`
   try {
     const p = (await (await fetch("/api/projects")).json())[0];
-    const items = (await (await fetch("/api/projects/" + p.id)).json()).assets.flatMap(f => f.items || []);
-    const src = items.find(t => (t.findings || 0) > 0);
-    const dest = items.find(t => src && t.id !== src.id);
-    if (!src || !dest) return false;
-    const srcN = src.findings, destN = dest.findings || 0;
+    const fid = (await (await fetch("/api/projects/" + p.id)).json()).assets[0].id;
+    const mk = (label) => fetch("/api/assets/" + fid + "/targets", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "web", label }) }).then(r => r.json());
+    const src = await mk("https://drag-src.test");
+    const dst = await mk("https://drag-dst.test");
     location.hash = "#/target/" + src.id; await new Promise(r => setTimeout(r, 1300));
-    const toggle = [...document.querySelectorAll(".dock-head button")].find(b => /move/i.test(b.textContent));
-    if (!toggle) return false;
-    toggle.click(); await new Promise(r => setTimeout(r, 250));
-    const card = document.querySelector(".find-list .finding.pickable");
-    if (!card) return false;
-    card.click(); await new Promise(r => setTimeout(r, 150));
-    const picked = document.querySelectorAll(".find-list .finding.picked").length === 1;
-    const bar = document.querySelector(".move-bar");
-    bar.querySelector(".move-target").value = String(dest.id);
-    [...bar.querySelectorAll("button")].find(b => b.textContent.trim() === "Move").click();
+    const rows = [...document.querySelectorAll(".rail-list .railtarget")];
+    const srcRow = rows.find(r => /drag-src\\.test/.test(r.textContent));
+    const dstRow = rows.find(r => /drag-dst\\.test/.test(r.textContent));
+    if (!srcRow || !dstRow || srcRow.getAttribute("draggable") !== "true") return false;
+    srcRow.dispatchEvent(new Event("dragstart", { bubbles: true }));
+    dstRow.dispatchEvent(new Event("dragover", { bubbles: true, cancelable: true }));
+    dstRow.dispatchEvent(new Event("drop", { bubbles: true, cancelable: true }));
+    srcRow.dispatchEvent(new Event("dragend", { bubbles: true }));
     await new Promise(r => setTimeout(r, 1000));
     const items2 = (await (await fetch("/api/projects/" + p.id)).json()).assets.flatMap(f => f.items || []);
-    const s2 = items2.find(t => t.id === src.id)?.findings ?? 0;
-    const d2 = items2.find(t => t.id === dest.id)?.findings ?? 0;
-    return picked && s2 === srcN - 1 && d2 === destN + 1;
+    const moved = items2.find(t => t.id === src.id);
+    const par = items2.find(t => t.id === dst.id);
+    return !!moved && !!par && moved.metadata && moved.metadata.parent_target === par.uid;
+  } catch (e) { return false; }`)]);
+// Drag a FINDING from the dock onto a target in the rail to move it there.
+checks.push(['drag a finding onto a rail target moves it', await ev(`
+  try {
+    const p = (await (await fetch("/api/projects")).json())[0];
+    const fid = (await (await fetch("/api/projects/" + p.id)).json()).assets[0].id;
+    const mk = (label) => fetch("/api/assets/" + fid + "/targets", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "web", label }) }).then(r => r.json());
+    const src = await mk("https://fdrag-src.test");
+    const dst = await mk("https://fdrag-dst.test");
+    const v = await (await fetch("/api/targets/" + src.id + "/findings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "DragMe", kind: "vuln", severity: "low" }) })).json();
+    location.hash = "#/target/" + src.id; await new Promise(r => setTimeout(r, 1300));
+    const card = [...document.querySelectorAll(".find-list .finding")].find(c => /DragMe/.test(c.textContent));
+    if (!card || card.getAttribute("draggable") !== "true") return false;
+    const dstRow = [...document.querySelectorAll(".rail-list .railtarget")].find(r => /fdrag-dst\\.test/.test(r.textContent));
+    if (!dstRow) return false;
+    card.dispatchEvent(new Event("dragstart", { bubbles: true }));
+    dstRow.dispatchEvent(new Event("dragover", { bubbles: true, cancelable: true }));
+    dstRow.dispatchEvent(new Event("drop", { bubbles: true, cancelable: true }));
+    card.dispatchEvent(new Event("dragend", { bubbles: true }));
+    await new Promise(r => setTimeout(r, 1000));
+    const t1 = await (await fetch("/api/targets/" + src.id)).json();
+    const t2 = await (await fetch("/api/targets/" + dst.id)).json();
+    const gone = !(t1.findings || []).some(x => x.id === v.id);
+    const here = (t2.findings || []).some(x => x.id === v.id);
+    return gone && here;
   } catch (e) { return false; }`)]);
 // Opening a target scrolls the left rail TO that target (so a target deep in a long list isn't
 // buried at the top). Force the rail to overflow, open the last entry, and check it's on screen.
@@ -446,12 +493,14 @@ checks.push(['engagement overview: settings popup + overview edit toggle', await
     const settingsOk = !!document.querySelector(".es-details")
       && [...document.querySelectorAll(".es-actions button")].some(b => /Edit details/.test(b.textContent))
       && [...document.querySelectorAll(".es-actions button")].some(b => /Delete/.test(b.textContent));
-    document.querySelector(".modal-x")?.click(); await new Promise(r => setTimeout(r, 150));
+    document.querySelector(".modal-x")?.click(); await new Promise(r => setTimeout(r, 250));
     const noTabsDefault = !document.querySelector(".nb-tabs");         // read-only render by default
     const editBtn = [...document.querySelectorAll(".srule button")].find(b => /Edit/.test(b.textContent));
     if (!editBtn) return false;
-    editBtn.click(); await new Promise(r => setTimeout(r, 300));
-    const editorShown = !!document.querySelector(".nb-input") && !!document.querySelector(".nb-tabs");
+    editBtn.click();
+    // the editor renders a tick after the click — poll rather than race a fixed timeout
+    let editorShown = false;
+    for (let i = 0; i < 25; i++) { await new Promise(r => setTimeout(r, 80)); if (document.querySelector(".nb-input") && document.querySelector(".nb-tabs")) { editorShown = true; break; } }
     return compact && settingsOk && noTabsDefault && editorShown;
   } catch (e) { return false; }`)]);
 // The back button walks UP the hierarchy (target -> targets list -> overview -> engagements), not

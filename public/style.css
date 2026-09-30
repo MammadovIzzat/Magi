@@ -279,6 +279,24 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
   padding: 8px 14px; font-family: var(--mono); font-size: 11px; color: var(--muted-2); }
 .railback:hover { color: var(--gold); }
 
+/* Drag to move: a target onto another (nest) or onto a group heading (lift out); a finding from the
+   dock onto a target (move it there). The dragged item dims; the live drop target is outlined gold. */
+.railtarget[draggable="true"] { cursor: grab; }
+.railtarget.dragging, .finding.dragging { opacity: .4; }
+.finding-draggable { cursor: grab; }
+.railtarget.drop-into { background: var(--gold-wash); box-shadow: inset 0 0 0 1px var(--gold); }
+.rail-label.drop-root { color: var(--gold); box-shadow: inset 0 0 0 1px var(--gold); }
+
+/* Fold the target list away to widen the middle column. The rail keeps its place in the flex row
+   but shrinks to nothing; the toggle in the top bar flips its chevron to show it will re-open. */
+.rail { transition: width .18s ease; }
+body.rail-collapsed .rail { width: 0; min-width: 0; border-right: 0; }
+.railtoggle { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px;
+  background: none; border: 1px solid var(--line); color: var(--muted); flex: none; }
+.railtoggle:hover { color: var(--fg); border-color: var(--line-hi); }
+.railtoggle svg { transition: transform .18s ease; }
+body.rail-collapsed .railtoggle svg { transform: rotate(180deg); }
+
 /* progress bars, used at three sizes */
 .bar { display: block; height: 3px; background: var(--line); width: 100%; }
 .bar > span { display: block; height: 100%; background: var(--gold); }
@@ -509,6 +527,13 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 .item.child .inum { color: var(--violet-hi); }
 .ibody { flex: 1; min-width: 0; }
 .irow { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+/* fold/unfold an item's follow-up sub-items — a tree caret before the title, with a big hit area */
+.icaret { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
+  margin: -4px 2px -4px -4px; background: none; border: 0; padding: 0; color: var(--muted-2);
+  font-size: 16px; line-height: 1; align-self: center; transition: transform .12s ease; }
+.icaret.open { transform: rotate(90deg); }
+.icaret:hover { color: var(--gold); background: var(--row-sel); }
+.ifold-note { font-family: var(--mono); font-size: 10px; color: var(--dim); }
 .ititle { font-size: 15px; font-weight: 500; line-height: 1.45; color: var(--fg-item); }
 .item.done .ititle, .item.na .ititle { color: var(--dim); }
 .item.flag .ititle { color: var(--fg); }
@@ -628,9 +653,6 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; color: var(--fg); }
 /* move findings to another target */
 .dock-head .btn { margin-left: auto; }
 .dock-head .btn.on { border-color: var(--gold); color: var(--gold); }
-.move-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 9px 10px; border: 1px solid var(--gold); border-radius: 6px; background: var(--gold-wash); }
-.move-count { font-family: var(--mono); font-size: 11px; color: var(--gold); flex: none; }
-.move-bar .move-target { flex: 1 1 120px; min-width: 0; }
 .finding.pickable { cursor: pointer; }
 .finding.pickable:hover { box-shadow: 0 0 0 1px var(--gold-wash); }
 .finding.picked { box-shadow: 0 0 0 1.5px var(--gold); }

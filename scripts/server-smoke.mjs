@@ -646,6 +646,24 @@ const engTarget = (await req('POST', `/api/assets/${engFolder.id}/targets`, { to
 const mvCross = await req('POST', '/api/findings/move', { token: adminTok, body: { ids: [misfiled.id], target_id: engTarget.id } });
 check('a finding cannot move to a target in another engagement', mvCross.status === 400);
 
+// ---- re-parent a target: nest one under another (drag), then lift it back to the top level ----
+const parentT = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json;
+const nest = await req('POST', `/api/targets/${webT2.id}/move`, { token: adminTok, body: { parent: webT.id } });
+check('a target nests under another (dragged onto it)', nest.status === 200 && nest.json?.parent === parentT.uid);
+const nested = (await req('GET', `/api/targets/${webT2.id}`, { token: adminTok })).json;
+check('the nested target records its parent uid', nested.metadata?.parent_target === parentT.uid);
+check('the nested target follows its parent into that group', nested.folder_id === parentT.folder_id);
+const cyc = await req('POST', `/api/targets/${webT.id}/move`, { token: adminTok, body: { parent: webT2.id } });
+check('nesting a target under its own sub-target is refused (cycle)', cyc.status === 400);
+const lift = await req('POST', `/api/targets/${webT2.id}/move`, { token: adminTok, body: { parent: null } });
+check('a target lifts back to the top level', lift.status === 200 && lift.json?.parent === null);
+const lifted = (await req('GET', `/api/targets/${webT2.id}`, { token: adminTok })).json;
+check('the lifted target is marked detached with no parent', lifted.metadata?.detached === true && lifted.metadata?.parent_target === undefined);
+const crossNest = await req('POST', `/api/targets/${engTarget.id}/move`, { token: adminTok, body: { parent: webT.id } });
+check('a target cannot nest under one in another engagement', crossNest.status === 400);
+const roMove = await req('POST', `/api/targets/${webT.id}/move`, { token: carolTok, device: dev1, body: { parent: webT2.id } });
+check('a worker not on the engagement cannot re-parent its targets', roMove.status === 403);
+
 // ---- report ----
 let bad = 0;
 for (const [name, ok] of checks) { console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${name}`); if (!ok) bad++; }

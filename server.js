@@ -1536,6 +1536,53 @@ app.patch('/api/targets/:id/notebook', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Re-parent a target in the sidebar forest (drag & drop): nest it under another target, or lift it
+// back to the top level of a group. Nesting is normally *derived* (spawn link, subdomain suffix,
+// subnet containment); this stores an explicit override in metadata — `parent_target` (the parent's
+// uid) to nest, or `detached` to force a root even when its hostname/IP would otherwise nest it. A
+// nested child also follows its parent into that group (folder) so the move holds across sections.
+app.post('/api/targets/:id/move', async (req, res) => {
+  const child = q(`SELECT id, uid, project_id, folder_id, metadata, label FROM assets WHERE id=?`).get(req.params.id);
+  if (!child) return res.status(404).json({ error: 'not found' });
+  if (!(await canWorkTarget(req, child.id))) return res.status(403).json(NO_WORK_PROJECT);
+  const meta = JSON.parse(child.metadata || '{}');
+  const parentId = req.body?.parent;
+
+  if (parentId != null && String(parentId) !== '') {
+    const parent = q(`SELECT id, uid, project_id, folder_id, metadata, label FROM assets WHERE id=?`).get(parentId);
+    if (!parent) return res.status(404).json({ error: 'destination target not found' });
+    if (parent.project_id !== child.project_id) return res.status(400).json({ error: 'a target can only move within its engagement' });
+    if (parent.id === child.id) return res.status(400).json({ error: 'a target cannot be its own parent' });
+    if (!parent.uid) return res.status(400).json({ error: 'the destination target is not ready to nest under yet' });
+    // Cycle guard: walking the chosen parent's explicit chain upward must not reach this target,
+    // or the two would nest inside each other.
+    for (let hop = parent, guard = 0; hop && guard < 200; guard++) {
+      if (hop.id === child.id) return res.status(400).json({ error: 'cannot nest a target under one of its own sub-targets' });
+      const pu = JSON.parse(hop.metadata || '{}').parent_target;
+      hop = pu ? q(`SELECT id, metadata FROM assets WHERE uid=?`).get(pu) : null;
+    }
+    meta.parent_target = parent.uid;
+    delete meta.detached;
+    q(`UPDATE assets SET folder_id=?, metadata=? WHERE id=?`).run(parent.folder_id, JSON.stringify(meta), child.id);
+    res.locals.auditAction = `Nested target ${auditName(child.label)} under ${auditName(parent.label)}`;
+    return res.json({ ok: true, parent: parent.uid });
+  }
+
+  // No parent → lift to the top level; optionally into a specific group (folder).
+  let folderId = child.folder_id;
+  const fid = req.body?.folder_id;
+  if (fid != null && String(fid) !== '') {
+    const folder = q(`SELECT id, project_id FROM folders WHERE id=?`).get(fid);
+    if (!folder || folder.project_id !== child.project_id) return res.status(400).json({ error: 'unknown destination group' });
+    folderId = folder.id;
+  }
+  delete meta.parent_target;
+  meta.detached = true;
+  q(`UPDATE assets SET folder_id=?, metadata=? WHERE id=?`).run(folderId, JSON.stringify(meta), child.id);
+  res.locals.auditAction = `Moved target ${auditName(child.label)} to the top level`;
+  res.json({ ok: true, parent: null });
+});
+
 // The roster a target can be assigned to. On a server that's the accounts table; a linked client
 // asks the server (operators live there, not in the local mirror), and if the server is unreachable
 // falls back to the teammates already visible in the synced data. Any authenticated user may read it.

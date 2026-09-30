@@ -416,10 +416,23 @@ async function refreshLink() {
   if (CURRENT_USER) renderAccount();
 }
 function topActions(...btns) { $('#topActions').replaceChildren(...btns.filter(Boolean)); }
+// The target-list rail can be folded away to give the middle column more room. Per session,
+// remembered in localStorage; only meaningful (and its toggle only shown) while a rail is up.
+let RAIL_COLLAPSED = false;
+try { RAIL_COLLAPSED = localStorage.getItem('magi.railCollapsed') === '1'; } catch { /* private mode */ }
+function applyRailCollapsed() {
+  document.body.classList.toggle('rail-collapsed', RAIL_COLLAPSED);
+  const b = $('#railToggle');
+  if (b) b.title = RAIL_COLLAPSED ? 'Show the target list' : 'Hide the target list';
+}
+
 function setRail(node) {
   const r = $('#rail');
-  if (!node) { r.hidden = true; r.replaceChildren(); return; }
+  const toggle = $('#railToggle');
+  if (!node) { r.hidden = true; r.replaceChildren(); if (toggle) toggle.hidden = true; return; }
   r.hidden = false; r.replaceChildren(...node);
+  if (toggle) toggle.hidden = false;
+  applyRailCollapsed();
   // Open the target list scrolled TO the target you're on (with its sub-targets just below), rather
   // than snapping back to the first target — so opening one deep in a long list doesn't bury it.
   const scroller = r.querySelector('.rail-list');
@@ -476,6 +489,11 @@ window.addEventListener('hashchange', (e) => {
   v.classList.remove('nav-in'); void v.offsetWidth; v.classList.add('nav-in');
 });
 $('#homeBtn').onclick = () => location.hash = '';
+$('#railToggle').onclick = () => {
+  RAIL_COLLAPSED = !RAIL_COLLAPSED;
+  try { localStorage.setItem('magi.railCollapsed', RAIL_COLLAPSED ? '1' : '0'); } catch { /* private mode */ }
+  applyRailCollapsed();
+};
 // Hierarchical back: go up ONE level (the parent breadcrumb), not browser-history back — so jumping
 // target → target and pressing back lands on the targets list, never the previously-viewed target.
 $('#backBtn').onclick = () => {
@@ -665,11 +683,51 @@ const codeBadge = (type, on) => el('span', { className: 'tcode' + (on ? ' on' : 
 function groupLabel(key) { return (GROUP_ORDER.find(g => g.key === key) || {}).label || key; }
 
 // Rail listing every target in the engagement, grouped by kind (the flat engagement→target model).
+// Two drag gestures land here: drag a TARGET onto another to nest it (or onto a group heading to lift
+// it out); drag a FINDING from the dock onto a target to move the finding there. Both also have a
+// "Move" button (renderTarget) as a non-drag path.
+let RAIL_DRAG = null;   // a target being dragged in the rail: { id, blocked:Set } (ids it can't drop on)
+let FIND_DRAG = null;   // a finding being dragged from the dock: { id, from } (its current target id)
+function clearRailDropHints() {
+  for (const n of document.querySelectorAll('.railtarget.drop-into, .rail-label.drop-root'))
+    n.classList.remove('drop-into', 'drop-root');
+}
+async function moveRailTarget(id, body) {
+  try {
+    await api('/targets/' + id + '/move', { method: 'POST', body });
+    if (curAssetId) await renderTarget(curAssetId); else await route();
+  } catch (e) { toast(e.message); }
+}
+async function moveFindingToTarget(findingId, targetId) {
+  try {
+    const r = await api('/findings/move', { method: 'POST', body: { ids: [findingId], target_id: Number(targetId) } });
+    toast(`Moved ${r.moved} finding${r.moved === 1 ? '' : 's'}`);
+    if (curAssetId) await renderTarget(curAssetId); else await route();
+  } catch (e) { toast(e.message); }
+}
+
 function railForProject(project, activeTargetId) {
   const groups = (project.assets || []).filter(f => (f.items || []).length);
   const targets = groups.flatMap(f => f.items || []);
   const total = targets.reduce((a, x) => a + x.total, 0);
   const handled = targets.reduce((a, x) => a + x.handled, 0);
+  // Leads and assigned workers may re-parent targets / move findings by dragging; viewers cannot.
+  const mayMove = canWorkProjectC(project);
+  // Per target, the set of its own descendant ids (incl. itself) — the drop targets a dragged
+  // TARGET must refuse (dropping into its own subtree would orphan the branch / make a loop).
+  const descOf = new Map();
+  if (mayMove) for (const f of groups) {
+    const walk = (n) => {
+      const ids = new Set([n.item.id]);
+      for (const c of n.children) for (const x of walk(c)) ids.add(x);
+      descOf.set(n.item.id, ids);
+      return ids;
+    };
+    for (const root of buildTargetForest(f.items)) walk(root);
+  }
+  // A rail row accepts a dropped target (reparent) or a dropped finding (move it here).
+  const canDropTarget = (tid) => RAIL_DRAG && !RAIL_DRAG.blocked.has(tid);
+  const canDropFinding = (tid) => FIND_DRAG && String(tid) !== String(FIND_DRAG.from);
   const head = el('div', { className: 'rail-head' },
     el('div', { className: 'kicker' }, 'Engagement'),
     el('div', { className: 'rail-title' }, project.name),
@@ -677,17 +735,51 @@ function railForProject(project, activeTargetId) {
       `${pct(handled, total)}% · ${targets.length} TARGET${targets.length === 1 ? '' : 'S'}`));
   const list = el('div', { className: 'rail-list' });
   for (const f of groups) {
-    list.append(el('div', { className: 'rail-label kicker', style: 'margin-top:10px' }, `${groupLabel(f.grp)}`));
+    const label = el('div', { className: 'rail-label kicker', style: 'margin-top:10px' }, `${groupLabel(f.grp)}`);
+    // Dropping a target on a group heading lifts it out of its sub and into that group as a root.
+    if (mayMove) {
+      label.addEventListener('dragover', (e) => { if (!RAIL_DRAG) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; label.classList.add('drop-root'); });
+      label.addEventListener('dragleave', () => label.classList.remove('drop-root'));
+      label.addEventListener('drop', (e) => {
+        label.classList.remove('drop-root');
+        if (!RAIL_DRAG) return; e.preventDefault();
+        moveRailTarget(RAIL_DRAG.id, { parent: null, folder_id: f.id });
+      });
+    }
+    list.append(label);
     for (const { item: a, depth } of flattenTargetForest(f.items)) {
       const p = pct(a.handled, a.total);
-      list.append(el('button', {
-        className: 'railtarget' + (depth ? ' sub' : '') + (String(a.id) === String(activeTargetId) ? ' on' : ''),
+      const isOn = String(a.id) === String(activeTargetId);
+      const row = el('button', {
+        className: 'railtarget' + (depth ? ' sub' : '') + (isOn ? ' on' : ''),
         style: depth ? `padding-left:${10 + depth * 12}px` : '',
+        draggable: mayMove,
+        title: mayMove ? 'Drag onto another target to nest it, or onto a group heading to move it out. Drop a finding here to move it to this target.' : undefined,
         onclick: () => location.hash = `/target/${a.id}`,
       },
-        el('span', { className: 'rt-top' }, codeBadge(a.type, String(a.id) === String(activeTargetId)), el('span', { className: 'rt-pct' }, p + '%')),
+        el('span', { className: 'rt-top' }, codeBadge(a.type, isOn), el('span', { className: 'rt-pct' }, p + '%')),
         el('span', { className: 'rt-name' }, a.label),
-        el('span', { className: 'bar thin' + (p > 70 ? ' good' : !p ? ' idle' : '') }, el('span', { style: `width:${p}%` }))));
+        el('span', { className: 'bar thin' + (p > 70 ? ' good' : !p ? ' idle' : '') }, el('span', { style: `width:${p}%` })));
+      if (mayMove) {
+        const blocked = descOf.get(a.id) || new Set([a.id]);
+        row.addEventListener('dragstart', (e) => {
+          RAIL_DRAG = { id: a.id, blocked }; FIND_DRAG = null;   // only one drag at a time
+          row.classList.add('dragging');
+          try { e.dataTransfer.setData('text/plain', 'target:' + a.id); e.dataTransfer.effectAllowed = 'move'; } catch { /* not draggable in this browser */ }
+        });
+        row.addEventListener('dragend', () => { row.classList.remove('dragging'); RAIL_DRAG = null; clearRailDropHints(); });
+        row.addEventListener('dragover', (e) => {
+          if (!canDropTarget(a.id) && !canDropFinding(a.id)) return;   // nothing droppable here
+          e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; row.classList.add('drop-into');
+        });
+        row.addEventListener('dragleave', () => row.classList.remove('drop-into'));
+        row.addEventListener('drop', (e) => {
+          row.classList.remove('drop-into');
+          if (canDropTarget(a.id)) { e.preventDefault(); moveRailTarget(RAIL_DRAG.id, { parent: a.id }); }
+          else if (canDropFinding(a.id)) { e.preventDefault(); moveFindingToTarget(FIND_DRAG.id, a.id); }
+        });
+      }
+      list.append(row);
     }
   }
   if (!targets.length) list.append(el('div', { className: 'pmeta', style: 'padding:10px' }, 'No targets yet'));
@@ -745,7 +837,10 @@ function buildTargetForest(items) {
   }
   const parentOf = new Map(); // child.id -> parent item
   for (const it of items) {
-    // 1) explicit spawn link
+    // 0) explicitly lifted to the top level (dragged out of a sub) — always a root, even when its
+    //    hostname/IP would otherwise nest it under another target.
+    if (it.metadata?.detached) continue;
+    // 1) explicit spawn / drag link
     const pu = it.metadata?.parent_target;
     if (pu && byUid.has(pu) && byUid.get(pu) !== it) { parentOf.set(it.id, byUid.get(pu)); continue; }
     // 2) subdomain: the OTHER host that is the longest strict suffix (closest ancestor domain)
@@ -1271,6 +1366,7 @@ function multiAssign({ selected, loadPeople, onChange }) {
 let curAssetId = null;
 const openGroups = new Set();
 const openPayloads = new Set();
+const collapsedItems = new Set();   // checklist items whose follow-up sub-items are folded away
 let FILTER = 'all';
 
 const MATCH = {
@@ -1285,7 +1381,7 @@ async function renderTarget(id) {
   const a = await api('/targets/' + id);
   SUBST_MAP = substMap(a);
   const t = TYPES.find(x => x.type === a.type) || {};
-  if (curAssetId !== id) { curAssetId = id; openGroups.clear(); openPayloads.clear(); FILTER = 'all'; ASSIGNEES_AT = 0; } // fresh target → refetch the assignee roster
+  if (curAssetId !== id) { curAssetId = id; openGroups.clear(); openPayloads.clear(); collapsedItems.clear(); FILTER = 'all'; ASSIGNEES_AT = 0; } // fresh target → refetch the assignee roster
 
   const pid = a.project?.id ?? a.folder?.project_id;
   const project = pid ? await api('/projects/' + pid) : null;   // engagement → all targets for the rail
@@ -1380,6 +1476,7 @@ async function renderTarget(id) {
     actionable.length ? el('span', { className: 'clk-bar' + (cov > 70 ? ' good' : '') }, el('span', { style: `width:${cov}%` })) : null);
 
   const credCount = a.findings.filter(f => f.kind === 'credential').length;
+
   const head = el('div', { className: 'target-head slim' },
     el('div', { style: 'display:flex;align-items:flex-start;gap:16px' },
       el('div', { style: 'min-width:0;flex:1' },
@@ -1387,7 +1484,7 @@ async function renderTarget(id) {
           codeBadge(a.type), el('span', { className: 'kicker' }, t.label || a.type)),
         el('h1', {}, a.label))),
     // Task tools on one line under the title: open the checklist, record a finding, manage creds.
-    // Findings show on the right; credentials open in a popup.
+    // (Re-parenting a target is done by dragging it in the left rail.) Findings show on the right.
     el('div', { className: 'task-tools' },
       checklistBtn,
       mayContribute ? el('button', { className: 'btn line sm', title: 'Record a vulnerability (a report finding)', onclick: () => addFinding(id, false, () => renderTarget(id), 'vuln') }, icon('plus', 12), 'Finding') : null,
@@ -1441,18 +1538,13 @@ async function renderTarget(id) {
 
   // ── right: findings (confirmed vulnerabilities only), with search + sort. Vulns are recorded from
   // the middle composer's "Evidence" button (Type → Vulnerability), so there's no add button here.
-  // Selecting findings and moving them to another target in this engagement — for one recorded on
-  // the wrong target, so it doesn't have to be retyped. Only this target's OWN vulns are movable
-  // (the dock also lists sub-targets' findings, which already live elsewhere).
-  let selectMode = false;
-  const selected = new Set();
+  // Move a finding to another target by DRAGGING its card onto a target in the left rail (for one
+  // recorded on the wrong target). Only this target's OWN vulns are draggable (the dock also lists
+  // sub-targets' findings, which already live elsewhere).
   const moveTargets = (project?.assets || []).flatMap(f => (f.items || [])).filter(t => String(t.id) !== String(id));
-  const canMove = mayContribute && a.findings.some(f => f.kind === 'vuln') && moveTargets.length > 0;
-  const moveToggle = canMove ? el('button', { className: 'btn line sm', title: 'Move findings to another target', onclick: () => { selectMode = !selectMode; selected.clear(); repaint(); } }, icon('right', 12), 'Move') : null;
 
   const dock = el('aside', { className: 'dock' },
-    el('div', { className: 'dock-head' },
-      el('span', { className: 'kicker' }, 'Findings'), moveToggle));
+    el('div', { className: 'dock-head' }, el('span', { className: 'kicker' }, 'Findings')));
   const dbody = el('div', { className: 'dock-body' });
   let dockFindings = a.findings.filter(f => f.kind === 'vuln').map(f => ({ ...f }));
   const findList = el('div', { className: 'find-list' });
@@ -1460,37 +1552,29 @@ async function renderTarget(id) {
   const sortSel = customSelect({ className: 'evsort', value: EVID.sort,
     options: [{ value: 'new', label: 'Newest' }, { value: 'sev', label: 'Severity' }, { value: 'title', label: 'Name' }] });
 
-  // The move bar is built once (so the destination picker keeps its choice); repaint toggles it.
-  const moveCount = el('span', { className: 'move-count' });
-  const movePicker = customSelect({ className: 'move-target', value: '',
-    options: [{ value: '', label: 'Move to target…' }, ...moveTargets.map(t => ({ value: String(t.id), label: `${(TYPES.find(x => x.type === t.type) || {}).label || t.type} · ${t.label}` }))] });
-  const doMove = async () => {
-    if (!movePicker.value) return toast('Pick a destination target');
-    if (!selected.size) return toast('Select one or more findings first');
-    try {
-      const r = await api('/findings/move', { method: 'POST', body: { ids: [...selected], target_id: Number(movePicker.value) } });
-      toast(`Moved ${r.moved} finding${r.moved === 1 ? '' : 's'}`);
-      renderTarget(id);
-    } catch (e) { toast(e.message); }
+  // Drag a finding from the dock onto a target in the left rail to move it there — the same gesture as
+  // dragging a target. Only THIS target's own vulns are draggable (a sub-target's finding, shown with
+  // a _target header, lives elsewhere).
+  const wireFindingDrag = (card, f) => {
+    card.setAttribute('draggable', 'true');
+    card.classList.add('finding-draggable');
+    card.addEventListener('dragstart', (e) => {
+      FIND_DRAG = { id: f.id, from: id }; RAIL_DRAG = null;   // only one drag at a time
+      card.classList.add('dragging');
+      try { e.dataTransfer.setData('text/plain', 'finding:' + f.id); e.dataTransfer.effectAllowed = 'move'; } catch { /* not draggable here */ }
+    });
+    card.addEventListener('dragend', () => { card.classList.remove('dragging'); FIND_DRAG = null; clearRailDropHints(); });
+    return card;
   };
-  const moveBar = el('div', { className: 'move-bar', hidden: true },
-    moveCount, movePicker,
-    el('button', { className: 'btn gold sm', onclick: doMove }, 'Move'),
-    el('button', { className: 'btn line sm', onclick: () => { selectMode = false; selected.clear(); repaint(); } }, 'Done'));
-
   const cardOf = (f) => {
     if (f._target) return el('div', { className: 'dock-sub' },
       el('button', { className: 'dock-sub-t', title: 'Open ' + f._target.label, onclick: () => location.hash = `/target/${f._target.id}` },
         codeBadge(f._target.type), el('span', {}, f._target.label)),
       findingCard(f, f._target.id, () => renderTarget(id)));
-    if (selectMode) return findingCard(f, id, () => renderTarget(id),
-      { selectable: true, selected: selected.has(f.id), onToggle: () => { selected.has(f.id) ? selected.delete(f.id) : selected.add(f.id); repaint(); } });
-    return findingCard(f, id);
+    const card = findingCard(f, id);
+    return (mayContribute && f.kind === 'vuln' && moveTargets.length) ? wireFindingDrag(card, f) : card;
   };
   const repaint = () => {
-    if (moveToggle) moveToggle.classList.toggle('on', selectMode);
-    moveBar.hidden = !selectMode;
-    moveCount.textContent = `${selected.size} selected`;
     let shown = dockFindings.filter(f => f.kind === 'vuln');
     const q = search.value.trim().toLowerCase();
     if (q) shown = shown.filter(f => `${f.title || ''} ${f.body || ''}`.toLowerCase().includes(q));
@@ -1503,7 +1587,7 @@ async function renderTarget(id) {
   };
   search.oninput = () => { EVID.q = search.value; repaint(); };
   sortSel.onchange = () => { EVID.sort = sortSel.value; repaint(); };
-  dbody.append(el('div', { className: 'evfilter' }, el('div', { className: 'evrow' }, search, sortSel)), moveBar, findList);
+  dbody.append(el('div', { className: 'evfilter' }, el('div', { className: 'evrow' }, search, sortSel)), findList);
   repaint();
   if (descendantIds.length && pid) {
     const gen = curAssetId; // if the user navigates away before this resolves, don't touch the DOM
@@ -1983,6 +2067,7 @@ async function openChecklist(id) {
         const walk = (it, depth) => {
           if (!survives(it)) return;
           gbody.append(renderItem(it, id, ++n, depth, childrenBy, spawnedByItem, { rerender, popup: true, mayEdit }));
+          if (collapsedItems.has(it.id)) return;   // its follow-up sub-items are folded away
           for (const k of (childrenBy[it.id] || []).sort((x, y) => x.sort - y.sort)) walk(k, depth + 1);
         };
         for (const it of roots) walk(it, 0);
@@ -2015,7 +2100,19 @@ function renderItem(it, assetId, num, depth, childrenBy = {}, spawnedByItem = {}
   });
 
   const body = el('div', { className: 'ibody' });
-  const row = el('div', { className: 'irow' }, el('span', { className: 'ititle' }, it.title));
+  const row = el('div', { className: 'irow' });
+  // Fold away this item's follow-up sub-items (and their own subs). Only in the popup, and only when
+  // the item actually has children — the caret sits before the title, like a tree toggle.
+  if (popup && kids.length) {
+    const collapsed = collapsedItems.has(it.id);
+    row.append(el('button', {
+      className: 'icaret' + (collapsed ? '' : ' open'),
+      title: collapsed ? `Show ${kids.length} follow-up item${kids.length === 1 ? '' : 's'}` : 'Hide follow-up items',
+      onclick: (e) => { e.stopPropagation(); collapsed ? collapsedItems.delete(it.id) : collapsedItems.add(it.id); rerender(); },
+    }, '▸'));
+  }
+  row.append(el('span', { className: 'ititle' }, it.title));
+  if (collapsedItems.has(it.id) && kids.length) row.append(el('span', { className: 'ifold-note' }, `${kids.length} hidden`));
   if (it.kind !== 'check') row.append(el('span', { className: 'tag ' + it.kind }, it.kind));
   const pcount = it.payloads?.length || 0;
   const pOpen = openPayloads.has(it.id);

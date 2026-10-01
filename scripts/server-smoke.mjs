@@ -502,6 +502,17 @@ check('a sync push applies a teammate change', syncPush.status === 200 && (syncP
 const afterSync = (await req('GET', '/api/admin/audit?limit=20', { token: adminTok })).json.items || [];
 check('a synced-in change is logged on the server, attributed to the pusher',
   afterSync.some(r => /^Recorded finding “Synced from a device”/.test(r.action || '') && r.username === 'ana'));
+// A new target's checklist instantiates from a template — those tasks sync as a burst of item rows.
+// They must NOT each log a line (that was the flood); only a task the operator TYPED (is_custom=1) is.
+const tmplTask = { group_key: 'recon', group_title: 'Recon', title: 'Template task should be silent', payloads: '[]', kind: 'check', options: '[]', status: 'todo', sort: 0, is_custom: 0, created_at: '2026-01-01 00:00:00' };
+await req('POST', '/api/sync/push', { token: workerToken, device: dev1, body: {
+  rows: [
+    { table: 'items', uid: 'synctest-item-tmpl-1', hlc: '999999999999999-000001-deadbeefdeadbeef', fields: tmplTask, parents: { asset_id: webUid, parent_id: null } },
+    { table: 'items', uid: 'synctest-item-custom-1', hlc: '999999999999999-000002-deadbeefdeadbeef', fields: { ...tmplTask, title: 'Custom task I typed', is_custom: 1 }, parents: { asset_id: webUid, parent_id: null } },
+  ], tombstones: [] } });
+const afterItems = (await req('GET', '/api/admin/audit?limit=20', { token: adminTok })).json.items || [];
+check('a synced template task is NOT logged (no per-task flood on target creation)', !afterItems.some(r => /Template task should be silent/.test(r.action || '')));
+check('a synced custom task IS logged', afterItems.some(r => /^Added task “Custom task I typed”/.test(r.action || '')));
 
 // ── the editor role: builds engagement structure, but is walled off from server management ──
 const edev = '77777777-8888-4888-8888-777777777777';

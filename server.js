@@ -325,9 +325,13 @@ function describeSyncedRow(table, uid, op) {
     return `${op === 'insert' ? 'Recorded' : 'Updated'} ${noun} ${auditName(f.title)}${targetWhere(f.asset_id)}`;
   }
   if (table === 'items') {
-    const it = q(`SELECT title, status, asset_id FROM items WHERE uid=?`).get(uid);
+    const it = q(`SELECT title, status, is_custom, asset_id FROM items WHERE uid=?`).get(uid);
     if (!it) return null;
-    if (op === 'insert') return `Added task ${auditName(it.title)}${targetWhere(it.asset_id)}`;
+    // A target's checklist is instantiated from a template — and so are spawned follow-ups and catalog
+    // picks. Those arrive as a BURST of item rows the moment a target is created, not as per-task user
+    // actions, so they must not each become a log line (that's the "Added target" event's detail). Only
+    // a task the operator typed themselves (is_custom) is logged on insert; status changes always are.
+    if (op === 'insert') return it.is_custom ? `Added task ${auditName(it.title)}${targetWhere(it.asset_id)}` : null;
     const state = { done: 'done', na: 'N/A', flag: 'to revisit', yes: 'yes', no: 'no', todo: 'not done' }[it.status];
     return state ? `Marked task ${auditName(it.title)} ${state}${targetWhere(it.asset_id)}` : `Updated task ${auditName(it.title)}${targetWhere(it.asset_id)}`;
   }

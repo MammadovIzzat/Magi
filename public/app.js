@@ -3886,7 +3886,8 @@ async function adminLogs(ctx, A) {
   if (LOG_OFFSET && !items.length) { LOG_OFFSET = 0; return adminLogs(ctx, A); } // fell off the end (rows removed) → snap back
   const head = pageHead('Logs', 'Activity log',
     LOG_USER ? `${total} event${total === 1 ? '' : 's'} by ${LOG_USER}` : `${total} event${total === 1 ? '' : 's'} recorded`,
-    (total || LOG_USER) ? aBtn('Export CSV', () => exportAuditCsv(ctx, A), '', 'down') : null);
+    (total || LOG_USER) ? aBtn('Export CSV', () => exportAuditCsv(ctx, A), '', 'down') : null,
+    total ? aBtn('Clear…', () => clearLogDialog(ctx), 'danger', 'trash') : null);
   // A genuinely empty, unfiltered log → nothing to filter; everything else keeps the controls so a
   // filter that matches nothing can still be changed or cleared.
   if (!total && !LOG_USER && !actors.length) return [head, aTable('1fr', ['Timestamp', 'Actor', 'Action'], [], { title: 'Nothing recorded yet', hint: 'Actions across the team will appear here.' })];
@@ -3949,6 +3950,27 @@ async function exportAuditCsv(ctx, A) {
   const url = URL.createObjectURL(blob), a = el('a', { href: url, download: `magi-activity-${new Date().toISOString().slice(0, 10)}.csv` });
   document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
   toast(`Exported ${all.length} event${all.length === 1 ? '' : 's'}`);
+}
+// Clear the activity log — prune older entries, or wipe it entirely. The clear is itself recorded, so
+// the trail always shows who cleared it and when. Export first if you want to keep a copy.
+function clearLogDialog(ctx) {
+  const done = () => { LOG_OFFSET = 0; LOG_USER = ''; renderAdmin('logs'); };
+  const run = async (qs) => {
+    try { const r = await api(`${ctx.base}/audit${qs}`, { method: 'DELETE' }); toast(`Cleared ${r.cleared} entr${r.cleared === 1 ? 'y' : 'ies'}`); done(); }
+    catch (e) { toast(e.message); }
+  };
+  modal({
+    kicker: 'Activity log', title: 'Clear the log', cta: 'Close', readOnly: true,
+    note: 'Removes recorded activity. The clear itself is logged, so there is always a record of who cleared it and when. Export first if you need a copy — this cannot be undone.',
+    build: (b) => {
+      const row = (title, sub, fn) => el('button', { type: 'button', className: 'type', style: 'width:100%;margin-top:10px',
+        onclick: () => { $('#modalRoot').replaceChildren(); fn(); } }, el('span', { className: 'lbl' }, title), el('span', { className: 'hint' }, sub));
+      b.append(row('Older than 30 days', 'Keep the last 30 days; delete everything before that.', () => run('?days=30')));
+      b.append(row('Older than 7 days', 'Keep the last week; delete everything before that.', () => run('?days=7')));
+      b.append(row('Everything', 'Delete the entire activity log.',
+        () => confirmDanger('Delete the ENTIRE activity log?', () => run(''), { cta: 'Delete everything', note: 'Wipes all recorded activity. The clear itself is then logged.' })));
+    },
+  });
 }
 
 // Backup page: run / schedule / restore, and download individual snapshots.

@@ -531,6 +531,12 @@ const afterCas = (await req('GET', '/api/admin/audit?limit=30', { token: adminTo
 check('a cascade target delete logs the target, not each child task',
   afterCas.some(r => /^Deleted target “cascade-del\.test”/.test(r.action || ''))
   && !afterCas.some(r => /^Deleted task/.test(r.action || '') && (r.action || '').includes(casItem.title)));
+// clearing the activity log (admin only) wipes it, but the clear itself is recorded (never no-trace)
+check('a worker cannot clear the activity log', (await req('DELETE', '/api/admin/audit', { token: workerToken, device: dev1 })).status === 403);
+const clr = await req('DELETE', '/api/admin/audit', { token: adminTok });
+check('an admin can clear the activity log', clr.status === 200 && clr.json.cleared >= 1);
+const afterClear = (await req('GET', '/api/admin/audit?limit=5', { token: adminTok })).json;
+check('the clear itself is recorded (trail never wiped with no trace)', afterClear.items.some(r => /^Cleared the activity log/.test(r.action || '')));
 
 // ── the editor role: builds engagement structure, but is walled off from server management ──
 const edev = '77777777-8888-4888-8888-777777777777';

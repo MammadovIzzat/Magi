@@ -927,6 +927,17 @@ app.get('/api/admin/audit', requireAdmin, (req, res) => {
     WHERE COALESCE(username, display_name) IS NOT NULL AND COALESCE(username, display_name) <> '' ORDER BY who`).all().map(r => r.who);
   res.json({ items, total, actors });
 });
+// Clear the activity log — the whole trail, or (with ?days=N) just entries older than N days. The act
+// of clearing is itself recorded (by the middleware, after this returns), so the trail is never wiped
+// to nothing with no trace of who did it.
+app.delete('/api/admin/audit', requireAdmin, (req, res) => {
+  const days = req.query.days != null ? Math.max(0, Math.floor(Number(req.query.days) || 0)) : null;
+  let cleared;
+  if (days) cleared = q(`DELETE FROM audit WHERE at < datetime('now', ?)`).run(`-${days} days`).changes;
+  else cleared = q(`DELETE FROM audit`).run().changes;
+  res.locals.auditAction = days ? `Cleared ${cleared} activity-log entr${cleared === 1 ? 'y' : 'ies'} older than ${days} day${days === 1 ? '' : 's'}` : `Cleared the activity log (${cleared} entr${cleared === 1 ? 'y' : 'ies'})`;
+  res.json({ ok: true, cleared });
+});
 
 // Worker ranking: how much each operator has produced, so a lead can see who is finding things.
 // Computed LIVE over the current findings — attribution is findings.author, joined to its asset for

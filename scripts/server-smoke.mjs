@@ -472,11 +472,36 @@ check('audit records a detailed "Recorded finding …" action with the title', a
 check('audit distinguishes grading (detailed "Graded finding …")', auditAll.some(r => /^Graded finding “.+”/.test(r.action || '')));
 // detailed context: a target-add names the target and its engagement
 check('audit names the target + engagement on an add', auditAll.some(r => /^Added target “.+” to “.+”/.test(r.action || '')));
+// who + when: operator sign-ins are recorded (from the auth handlers, not the middleware)
+check('audit records operator sign-ins', auditAll.some(r => /^Signed in/.test(r.action || '') && r.username));
+// where: a bulk checklist mark names the target and engagement it happened on
+check('audit details a bulk mark with the target + engagement', auditAll.some(r => /^Marked done \d+ task/.test(r.action || '') && / on “.+” in “.+”/.test(r.action || '')));
+// the actor list spans the WHOLE log (so the UI filter offers everyone, not just the page in view)
+const auditFull = (await req('GET', '/api/admin/audit?limit=500', { token: enrollA.token, device: dev2 })).json;
+check('audit returns the full actor list', Array.isArray(auditFull.actors) && auditFull.actors.includes('ana') && auditFull.actors.includes('admin'));
+// the ?user= filter narrows the whole trail server-side, not just one page
+const anaOnly = await req('GET', '/api/admin/audit?user=ana&limit=500', { token: enrollA.token, device: dev2 });
+check('audit filters by user server-side', anaOnly.status === 200 && anaOnly.json.items.length > 0
+  && anaOnly.json.items.every(r => r.username === 'ana' || r.display_name === 'ana')
+  && anaOnly.json.total === anaOnly.json.items.length);
 // paging by offset returns a different (older) slice than the first page
 const p1 = await req('GET', '/api/admin/audit?limit=5&offset=0', { token: enrollA.token, device: dev2 });
 const p2 = await req('GET', '/api/admin/audit?limit=5&offset=5', { token: enrollA.token, device: dev2 });
 check('audit offset walks to an older page', p1.status === 200 && p2.status === 200 && p2.json.items.length <= 5
   && (audit.json.total <= 5 || JSON.stringify(p1.json.items) !== JSON.stringify(p2.json.items)));
+
+// a teammate's offline work arrives via sync push → the server logs it (who = the pusher, stamped at
+// receipt), so engagement work done on a device still shows in the one server-side trail.
+const webUid = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.uid;
+const syncPush = await req('POST', '/api/sync/push', { token: workerToken, device: dev1, body: {
+  rows: [{ table: 'findings', uid: 'synctest-finding-0001', hlc: '999999999999999-000000-deadbeefdeadbeef',
+    fields: { title: 'Synced from a device', kind: 'vuln', author: 'ana', in_report: 0, needs_improvement: 0, duplicate: 0, created_at: '2026-01-01 00:00:00' },
+    parents: { asset_id: webUid } }],
+  tombstones: [] } });
+check('a sync push applies a teammate change', syncPush.status === 200 && (syncPush.json.applied || 0) >= 1);
+const afterSync = (await req('GET', '/api/admin/audit?limit=20', { token: adminTok })).json.items || [];
+check('a synced-in change is logged on the server, attributed to the pusher',
+  afterSync.some(r => /^Recorded finding “Synced from a device”/.test(r.action || '') && r.username === 'ana'));
 
 // ── the editor role: builds engagement structure, but is walled off from server management ──
 const edev = '77777777-8888-4888-8888-777777777777';

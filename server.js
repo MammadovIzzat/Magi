@@ -286,7 +286,8 @@ const AUDIT_RULES = [
   ['POST', /^\/admin\/backup\/config$/, 'Updated the backup schedule'],
   ['POST', /^\/admin\/backup\/now$/, 'Ran a backup'],
   ['POST', /^\/admin\/backup\/restore(-upload)?$/, 'Restored from a backup'],
-  ['POST', /^\/auth\/logout$/, 'Signed out'],
+  // (auth sign-in / sign-out / 2FA events are written directly from the auth handlers, since the
+  //  middleware skips /auth/ — see writeAudit calls there.)
 ];
 function describeAudit(method, path) {
   const p = String(path || '').replace(/^\/api/, '').split('?')[0].replace(/\/+$/, '') || '/';
@@ -299,6 +300,64 @@ const auditName = (s) => '“' + String(s ?? '').trim().slice(0, 80) + '”';
 function projectNameOfAsset(assetId) {
   const r = q(`SELECT p.name FROM assets a JOIN projects p ON p.id=a.project_id WHERE a.id=?`).get(assetId);
   return r?.name || null;
+}
+// The "where" suffix for a target-scoped action: " on “<target>” in “<engagement>”". Best-effort,
+// so a detailed line always answers WHERE the change happened (which target, which engagement).
+function targetWhere(assetId) {
+  const r = q(`SELECT a.label, p.name AS project FROM assets a LEFT JOIN projects p ON p.id=a.project_id WHERE a.id=?`).get(assetId);
+  if (!r) return '';
+  return ` on ${auditName(r.label)}${r.project ? ' in ' + auditName(r.project) : ''}`;
+}
+// The target that owns a checklist item, resolved from the item id (used before the item is deleted).
+function targetOfItem(itemId) {
+  return q(`SELECT a.id, a.label, p.name AS project FROM items i JOIN assets a ON a.id=i.asset_id
+            LEFT JOIN projects p ON p.id=a.project_id WHERE i.id=?`).get(itemId) || null;
+}
+// A change that arrived via sync (a teammate's offline work replicating in) → a plain-language line
+// for the server's activity log. The row is looked up by uid AFTER it was applied, so names/context
+// are current. Returns null for a change not worth a line. Used only by the sync-push handler.
+const SYNC_NOUN = { projects: 'engagement', folders: 'target folder', assets: 'target', items: 'task', findings: 'finding', attachments: 'screenshot', notebook_images: 'notebook image' };
+function describeSyncedRow(table, uid, op) {
+  if (table === 'findings') {
+    const f = q(`SELECT title, kind, asset_id FROM findings WHERE uid=?`).get(uid);
+    if (!f) return null;
+    const noun = f.kind === 'credential' ? 'credential' : f.kind === 'vuln' ? 'finding' : 'note';
+    return `${op === 'insert' ? 'Recorded' : 'Updated'} ${noun} ${auditName(f.title)}${targetWhere(f.asset_id)}`;
+  }
+  if (table === 'items') {
+    const it = q(`SELECT title, status, asset_id FROM items WHERE uid=?`).get(uid);
+    if (!it) return null;
+    if (op === 'insert') return `Added task ${auditName(it.title)}${targetWhere(it.asset_id)}`;
+    const state = { done: 'done', na: 'N/A', flag: 'to revisit', yes: 'yes', no: 'no', todo: 'not done' }[it.status];
+    return state ? `Marked task ${auditName(it.title)} ${state}${targetWhere(it.asset_id)}` : `Updated task ${auditName(it.title)}${targetWhere(it.asset_id)}`;
+  }
+  if (table === 'assets') {
+    const a = q(`SELECT label, project_id FROM assets WHERE uid=?`).get(uid);
+    if (!a) return null;
+    const proj = q(`SELECT name FROM projects WHERE id=?`).get(a.project_id)?.name;
+    return `${op === 'insert' ? 'Added target' : 'Updated target'} ${auditName(a.label)}${proj ? ' in ' + auditName(proj) : ''}`;
+  }
+  if (table === 'projects') {
+    const p = q(`SELECT name FROM projects WHERE uid=?`).get(uid);
+    return p ? `${op === 'insert' ? 'Created engagement' : 'Updated engagement'} ${auditName(p.name)}` : null;
+  }
+  if (table === 'folders') {
+    const fo = q(`SELECT label FROM folders WHERE uid=?`).get(uid);
+    return fo ? `${op === 'insert' ? 'Added' : 'Updated'} target folder ${auditName(fo.label)}` : null;
+  }
+  if (table === 'attachments') return op === 'insert' ? 'Added a screenshot to a finding' : null;
+  if (table === 'notebook_images') return op === 'insert' ? 'Added a notebook image' : null;
+  return `${op === 'insert' ? 'Added' : 'Updated'} ${SYNC_NOUN[table] || 'a record'}`;
+}
+// Write one activity-log line per change a client just pushed, attributed to that operator and stamped
+// at receipt (writeAudit uses now()). This is how a teammate's offline work lands in the server trail:
+// the server logs when a change arrives IN it, rather than clients shipping their own saved logs.
+function auditSyncPush(req, actor, result) {
+  if (!actor || !actor.username) return;
+  try {
+    for (const e of (result.log || [])) { const d = describeSyncedRow(e.table, e.uid, e.op); if (d) writeAudit(req, actor, d); }
+    for (const e of (result.removed || [])) writeAudit(req, actor, `Deleted ${SYNC_NOUN[e.tbl] || 'a record'} ${e.label ? auditName(e.label) : '(synced)'}`.trim());
+  } catch { /* auditing must never break a sync */ }
 }
 app.use('/api', (req, res, next) => {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
@@ -354,6 +413,7 @@ app.post('/api/auth/login', async (req, res) => {
       q(`INSERT INTO sessions (token, user_id) VALUES (?, NULL)`).run(token);
       attempts.delete(key);
       const cur = linkedIdentity();
+      writeAudit(req, { username: cur.username }, 'Signed in on this device');
       return res.json({ token, exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * SESSION_TTL_DAYS, username: cur.username, role: cur.role, ...(extra || {}) });
     };
     const on = await m.login({ username, password, otp });
@@ -372,7 +432,7 @@ app.post('/api/auth/login', async (req, res) => {
   attempts.delete(key);
 
   const ttl = 60 * 60 * 24 * SESSION_TTL_DAYS;
-  const mint = (extra) => {
+  const mint = (extra, how) => {
     const fresh = q(`SELECT role, cred_epoch FROM users WHERE id=?`).get(u.id); // pick up a just-enabled MFA
     let token, exp;
     if (SERVER_MODE) {
@@ -385,6 +445,7 @@ app.post('/api/auth/login', async (req, res) => {
       q(`INSERT INTO sessions (token, user_id) VALUES (?,?)`).run(token, u.id);
       exp = Math.floor(Date.now() / 1000) + ttl;
     }
+    writeAudit(req, { id: u.id, username: u.username }, how || 'Signed in');
     return res.json({ token, exp, username: u.username, role: fresh.role, ...(extra || {}) });
   };
 
@@ -397,8 +458,7 @@ app.post('/api/auth/login', async (req, res) => {
     if (!okTotp && !okRec) { noteFailure(key); return res.status(401).json({ error: otp ? 'invalid code' : 'a two-factor code is required', mfa: 'required' }); }
     if (okRec) {
       const left = (JSON.parse(q(`SELECT recovery_hashes FROM users WHERE id=?`).get(u.id).recovery_hashes || '[]')).length;
-      writeAudit(req, { id: u.id, username: u.username }, `signed in with a recovery code (${left} left)`);
-      return mint({ recovery_used: true, recovery_left: left });
+      return mint({ recovery_used: true, recovery_left: left }, `Signed in with a recovery code (${left} left)`);
     }
     return mint();
   }
@@ -411,7 +471,7 @@ app.post('/api/auth/login', async (req, res) => {
   if (!totp.verifyTOTP(u.mfa_secret, String(otp))) { noteFailure(key); return res.status(401).json({ error: 'that code did not match — check your phone’s clock is on automatic time', mfa: 'setup' }); }
   const codes = totp.recoveryCodes(10);
   q(`UPDATE users SET mfa_enabled=1, recovery_hashes=? WHERE id=?`).run(JSON.stringify(codes.map(c => sha256(c))), u.id);
-  writeAudit(req, { id: u.id, username: u.username }, 'enrolled two-factor auth');
+  writeAudit(req, { id: u.id, username: u.username }, 'Enrolled two-factor auth');
   return mint({ recovery_codes: codes });
 });
 
@@ -439,6 +499,8 @@ app.post('/api/auth/token', (req, res) => {
     const fresh = q(`SELECT role, cred_epoch FROM users WHERE id=?`).get(u.id); // pick up a just-enabled MFA / any change
     const token = jwt.sign({ sub: u.id, username: u.username, role: fresh.role, device_id: dev.id, epoch: fresh.cred_epoch }, JWT_SECRET);
     q(`UPDATE devices SET last_seen=datetime('now'), user_id=? WHERE id=?`).run(u.id, dev.id); // remember the last operator on this device
+    const devName = q(`SELECT display_name FROM devices WHERE id=?`).get(dev.id)?.display_name || dev.id;
+    writeAudit(req, { id: u.id, username: u.username, device_id: dev.id }, `Signed in from device ${auditName(devName)}`);
     return res.json({ token, exp: jwt.decodeUnsafe(token).exp, username: u.username, role: fresh.role, ...(extra || {}) });
   };
 
@@ -458,7 +520,7 @@ app.post('/api/auth/token', (req, res) => {
   if (!totp.verifyTOTP(u.mfa_secret, String(otp))) { noteFailure(key); return res.status(401).json({ error: 'that code did not match', mfa: 'setup' }); }
   const codes = totp.recoveryCodes(10);
   q(`UPDATE users SET mfa_enabled=1, recovery_hashes=? WHERE id=?`).run(JSON.stringify(codes.map(c => sha256(c))), u.id);
-  writeAudit(req, { id: u.id, username: u.username }, 'enrolled two-factor auth (client login)');
+  writeAudit(req, { id: u.id, username: u.username }, 'Enrolled two-factor auth (client login)');
   return mint({ recovery_codes: codes });
 });
 
@@ -476,10 +538,12 @@ function consumeRecovery(userId, hashesJson, code) {
 // here — it dies at expiry, or at once on a cred-epoch change). Standalone/client: delete the
 // opaque local session so it stops working immediately.
 app.post('/api/auth/logout', (req, res) => {
+  const u = currentUser(req);   // resolve WHO before the session token is invalidated
   if (!SERVER_MODE) {
     const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
     if (m) q(`DELETE FROM sessions WHERE token=?`).run(m[1]);
   }
+  if (u?.username) writeAudit(req, u, 'Signed out');
   res.json({ ok: true });
 });
 // Structural changes — engagements, their scope/dates, assets, targets, and checklist
@@ -700,6 +764,7 @@ app.post('/api/admin/enroll-codes', requireAdmin, (req, res) => {
   const info = q(`INSERT INTO enroll_codes (code_hash, role, note, created_by, expires_at)
      VALUES (?,?,?,?, ${hours ? `datetime('now','+${hours} hours')` : 'NULL'})`)
     .run(sha256(code), 'worker', b.note || null, req.user.id);
+  res.locals.auditAction = `Minted an enrollment code${b.note ? ' for ' + auditName(b.note) : ''}${hours ? ` (expires in ${hours}h)` : ''}`;
   res.status(201).json({ id: Number(info.lastInsertRowid), code, note: b.note || null, expires_in_hours: hours || null });
 });
 app.get('/api/admin/enroll-codes', requireAdmin, (req, res) => {
@@ -712,15 +777,17 @@ app.get('/api/admin/enroll-codes', requireAdmin, (req, res) => {
 app.delete('/api/admin/enroll-codes', requireAdmin, (req, res) => {
   const r = q(`DELETE FROM enroll_codes WHERE used_at IS NOT NULL
     OR (expires_at IS NOT NULL AND expires_at <= datetime('now'))`).run();
+  res.locals.auditAction = `Cleared ${r.changes} used/expired enrollment code${r.changes === 1 ? '' : 's'}`;
   res.json({ ok: true, cleared: r.changes });
 });
 // Kill a code so it can no longer be redeemed. Also drops any pending request that was
 // riding on it (it can never be approved now).
 app.delete('/api/admin/enroll-codes/:id', requireAdmin, (req, res) => {
-  const c = q(`SELECT code_hash FROM enroll_codes WHERE id=?`).get(req.params.id);
+  const c = q(`SELECT code_hash, note FROM enroll_codes WHERE id=?`).get(req.params.id);
   if (!c) return res.status(404).json({ error: 'no such code' });
   q(`DELETE FROM enroll_requests WHERE code_hash=? AND status='pending'`).run(c.code_hash);
   q(`DELETE FROM enroll_codes WHERE id=?`).run(req.params.id);
+  res.locals.auditAction = `Killed an enrollment code${c.note ? ' (' + auditName(c.note) + ')' : ''}`;
   res.json({ ok: true });
 });
 app.get('/api/admin/users', requireAdmin, (req, res) => {
@@ -819,22 +886,34 @@ app.get('/api/admin/devices', requireAdmin, (req, res) => {
 // is kept for the list/audit. ?hard=1 deletes it outright. Accounts are untouched — a device is not
 // an account now — so operators can just connect a new device and sign in again.
 app.delete('/api/admin/devices/:id', requireAdmin, (req, res) => {
+  const dev = q(`SELECT display_name FROM devices WHERE id=?`).get(req.params.id);
+  const devName = auditName(dev?.display_name || req.params.id);
   if (req.query.hard) {
     const r = q(`DELETE FROM devices WHERE id=?`).run(req.params.id);
+    res.locals.auditAction = `Removed device ${devName}`;
     return res.json({ ok: true, deleted: !!r.changes });
   }
   const r = q(`UPDATE devices SET revoked=1 WHERE id=?`).run(req.params.id);
+  res.locals.auditAction = `Revoked device ${devName}`;
   res.json({ ok: true, revoked: r.changes });
 });
 // The "who is where" view: activity across the whole server, newest first. Paged — the client picks
-// a page size (50/100/200/500) and walks pages by offset; `total` lets it show "X–Y of N".
+// a page size (50/100/200/500) and walks pages by offset; `total` lets it show "X–Y of N". An
+// optional `?user=` filters the WHOLE trail server-side (not just the current page), and `actors`
+// lists every operator who appears ANYWHERE in the log (so the filter offers them all, not only the
+// names on the page in view).
 app.get('/api/admin/audit', requireAdmin, (req, res) => {
   const limit = Math.min(500, Math.max(1, Math.floor(Number(req.query.limit) || 50)));
   const offset = Math.max(0, Math.floor(Number(req.query.offset) || 0));
-  const total = q(`SELECT COUNT(*) c FROM audit`).get().c;
+  const user = (req.query.user != null && String(req.query.user).trim()) ? String(req.query.user).trim() : null;
+  const where = user ? `WHERE username = ? OR display_name = ?` : '';
+  const wargs = user ? [user, user] : [];
+  const total = q(`SELECT COUNT(*) c FROM audit ${where}`).get(...wargs).c;
   const items = q(`SELECT at, username, display_name, device_id, method, path, action
-    FROM audit ORDER BY id DESC LIMIT ? OFFSET ?`).all(limit, offset);
-  res.json({ items, total });
+    FROM audit ${where} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...wargs, limit, offset);
+  const actors = q(`SELECT DISTINCT COALESCE(username, display_name) AS who FROM audit
+    WHERE COALESCE(username, display_name) IS NOT NULL AND COALESCE(username, display_name) <> '' ORDER BY who`).all().map(r => r.who);
+  res.json({ items, total, actors });
 });
 
 // Worker ranking: how much each operator has produced, so a lead can see who is finding things.
@@ -936,17 +1015,19 @@ if (SERVER_MODE) {
         });
       }
       const r = applyChanges(db, { rows: rows || [], tombstones: tombstones || [] });
-      res.json({ ok: true, ...r, server_hlc: maxHlc(db) });
+      auditSyncPush(req, actor, r);   // log each synced-in change in the server trail (who/what/where, stamped at receipt)
+      const { log, removed, ...counts } = r; // keep these server-side; the client only needs the counts/deferred
+      res.json({ ok: true, ...counts, server_hlc: maxHlc(db) });
     } catch (e) { res.status(400).json({ error: e.message }); }
   });
 
   // ---- backups (admin) ----
   const backupMod = () => import('./backup.js');
   app.get('/api/admin/backup', requireAdmin, async (req, res) => { const m = await backupMod(); res.json({ config: m.config(), backups: m.listBackups() }); });
-  app.post('/api/admin/backup/config', requireAdmin, async (req, res) => { const m = await backupMod(); res.json(m.setConfig(db, req.body || {})); });
-  app.post('/api/admin/backup/now', requireAdmin, async (req, res) => { const m = await backupMod(); try { res.json(m.runBackup(db, req.body || {})); } catch (e) { res.status(400).json({ error: e.message }); } });
-  app.post('/api/admin/backup/restore', requireAdmin, async (req, res) => { const m = await backupMod(); try { res.json(m.restoreAll(db, (req.body || {}).password)); } catch (e) { res.status(400).json({ error: e.message }); } });
-  app.post('/api/admin/backup/restore-upload', requireAdmin, async (req, res) => { const m = await backupMod(); try { res.json(m.restoreFromFiles(db, (req.body || {}).files, (req.body || {}).password)); } catch (e) { res.status(400).json({ error: e.message }); } });
+  app.post('/api/admin/backup/config', requireAdmin, async (req, res) => { const m = await backupMod(); const b = req.body || {}; res.locals.auditAction = b.enabled === false ? 'Turned off scheduled backups' : `Scheduled backups every ${Math.max(1, Number(b.interval_hours) || 24)}h`; res.json(m.setConfig(db, b)); });
+  app.post('/api/admin/backup/now', requireAdmin, async (req, res) => { const m = await backupMod(); try { const r = m.runBackup(db, req.body || {}); res.locals.auditAction = `Ran a backup (${r.rows} row${r.rows === 1 ? '' : 's'})`; res.json(r); } catch (e) { res.status(400).json({ error: e.message }); } });
+  app.post('/api/admin/backup/restore', requireAdmin, async (req, res) => { const m = await backupMod(); try { const r = m.restoreAll(db, (req.body || {}).password); res.locals.auditAction = `Restored ${r.applied} record${r.applied === 1 ? '' : 's'} from ${r.files} backup file${r.files === 1 ? '' : 's'}`; res.json(r); } catch (e) { res.status(400).json({ error: e.message }); } });
+  app.post('/api/admin/backup/restore-upload', requireAdmin, async (req, res) => { const m = await backupMod(); try { const r = m.restoreFromFiles(db, (req.body || {}).files, (req.body || {}).password); res.locals.auditAction = `Restored ${r.applied} record${r.applied === 1 ? '' : 's'} from ${r.files} uploaded file${r.files === 1 ? '' : 's'}`; res.json(r); } catch (e) { res.status(400).json({ error: e.message }); } });
   app.get('/api/admin/backup/file/:name', requireAdmin, async (req, res) => { const m = await backupMod(); const text = m.readBackup(req.params.name); if (text == null) return res.status(404).json({ error: 'no such backup' }); res.json({ name: req.params.name, text }); });
 }
 
@@ -1200,9 +1281,11 @@ app.post('/api/templates/import', requireManage, (req, res) => {
 
 // restore this type's shipped defaults (template edits are discarded; assets untouched)
 app.post('/api/templates/:type/reset', requireManage, (req, res) => {
-  if (!q(`SELECT type FROM tpl_types WHERE type=?`).get(req.params.type)) return res.status(404).json({ error: 'type not found' });
+  const t = q(`SELECT type, label FROM tpl_types WHERE type=?`).get(req.params.type);
+  if (!t) return res.status(404).json({ error: 'type not found' });
   const n = resetType(req.params.type);
   if (n === false) return res.status(400).json({ error: 'this type has no shipped defaults to restore' });
+  res.locals.auditAction = `Restored the default checklist for asset type ${auditName(t.label || t.type)}`;
   res.json({ ok: true, items: n });
 });
 app.post('/api/templates', requireManage, (req, res) => {
@@ -1212,6 +1295,7 @@ app.post('/api/templates', requireManage, (req, res) => {
   if (q(`SELECT type FROM tpl_types WHERE type=?`).get(type)) return res.status(409).json({ error: 'type already exists' });
   const sort = q(`SELECT COALESCE(MAX(sort),0)+1 s FROM tpl_types`).get().s;
   q(`INSERT INTO tpl_types (type,label,icon,hint,grp,sort) VALUES (?,?,?,?,?,?)`).run(type, label, icon || null, hint || null, grp || null, sort);
+  res.locals.auditAction = `Created asset type ${auditName(label)} (${type})`;
   res.status(201).json(q(`SELECT * FROM tpl_types WHERE type=?`).get(type));
 });
 app.patch('/api/templates/:type', requireManage, (req, res) => {
@@ -1220,15 +1304,18 @@ app.patch('/api/templates/:type', requireManage, (req, res) => {
   const b = req.body || {};
   q(`UPDATE tpl_types SET label=?, icon=?, hint=?, grp=? WHERE type=?`)
     .run(b.label ?? t.label, b.icon ?? t.icon, b.hint ?? t.hint, b.grp ?? t.grp, t.type);
+  res.locals.auditAction = `Edited asset type ${auditName(b.label ?? t.label)}`;
   res.json(q(`SELECT * FROM tpl_types WHERE type=?`).get(t.type));
 });
 app.delete('/api/templates/:type', requireManage, (req, res) => {
+  const t = q(`SELECT label FROM tpl_types WHERE type=?`).get(req.params.type);
   q(`DELETE FROM tpl_items WHERE type=?`).run(req.params.type);
   q(`DELETE FROM tpl_types WHERE type=?`).run(req.params.type);
+  res.locals.auditAction = `Deleted asset type ${auditName(t?.label || req.params.type)}`;
   res.json({ ok: true });
 });
 app.post('/api/templates/:type/items', requireManage, (req, res) => {
-  const t = q(`SELECT type FROM tpl_types WHERE type=?`).get(req.params.type);
+  const t = q(`SELECT type, label FROM tpl_types WHERE type=?`).get(req.params.type);
   if (!t) return res.status(404).json({ error: 'type not found' });
   const b = req.body || {};
   if (!b.title) return res.status(400).json({ error: 'title required' });
@@ -1238,6 +1325,7 @@ app.post('/api/templates/:type/items', requireManage, (req, res) => {
     req.params.type, (b.group_title || 'Custom').toLowerCase().replace(/\s+/g, '_'), b.group_title || 'Custom',
     b.title, b.detail || '', JSON.stringify(b.payloads || []), b.kind || 'check',
     b.spawns || null, b.catalog || null, JSON.stringify(b.options || []), sort);
+  res.locals.auditAction = `Added template task ${auditName(b.title)} to asset type ${auditName(t.label || t.type)}`;
   res.status(201).json(q(`SELECT * FROM tpl_items WHERE id=?`).get(info.lastInsertRowid));
 });
 app.patch('/api/tpl-items/:id', requireManage, (req, res) => {
@@ -1251,10 +1339,13 @@ app.patch('/api/tpl-items/:id', requireManage, (req, res) => {
     .run(gt, gt.toLowerCase().replace(/\s+/g, '_'), b.title ?? cur.title, b.detail ?? cur.detail,
       payloads, b.kind ?? cur.kind, blank(b.spawns, cur.spawns), blank(b.catalog, cur.catalog), options,
       b.sort ?? cur.sort, req.params.id);
+  res.locals.auditAction = `Edited template task ${auditName(b.title ?? cur.title)} in asset type ${auditName(cur.type)}`;
   res.json(q(`SELECT * FROM tpl_items WHERE id=?`).get(req.params.id));
 });
 app.delete('/api/tpl-items/:id', requireManage, (req, res) => {
+  const cur = q(`SELECT title, type FROM tpl_items WHERE id=?`).get(req.params.id);
   q(`DELETE FROM tpl_items WHERE id=?`).run(req.params.id);
+  if (cur) res.locals.auditAction = `Deleted template task ${auditName(cur.title)} from asset type ${auditName(cur.type)}`;
   res.json({ ok: true });
 });
 
@@ -1323,19 +1414,22 @@ app.patch('/api/projects/:id', requireEdit, (req, res) => {
 // Assign operators to an engagement — display only, like a target's assignees, so any authenticated
 // user may set it (it grants no access). Stored as one normalised comma-joined list.
 app.patch('/api/projects/:id/assignee', (req, res) => {
-  const p = q(`SELECT id FROM projects WHERE id=?`).get(req.params.id);
+  const p = q(`SELECT id, name FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'not found' });
-  q(`UPDATE projects SET assignee=? WHERE id=?`).run(cleanAssignee(req.body?.assignee), p.id);
+  const assignee = cleanAssignee(req.body?.assignee);
+  q(`UPDATE projects SET assignee=? WHERE id=?`).run(assignee, p.id);
+  res.locals.auditAction = `Set the operators on ${auditName(p.name)} to ${assignee ? auditName(assignee.split(',').join(', ')) : 'nobody'}`;
   res.json(q(`SELECT * FROM projects WHERE id=?`).get(p.id));
 });
 
 // The engagement's overview / details (Markdown). Editors set it; a cap keeps a runaway paste from
 // bloating the synced row (same limit as a target's notebook).
 app.patch('/api/projects/:id/overview', requireEdit, (req, res) => {
-  const p = q(`SELECT id FROM projects WHERE id=?`).get(req.params.id);
+  const p = q(`SELECT id, name FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'not found' });
   const md = req.body?.overview == null ? '' : String(req.body.overview).slice(0, 200000);
   q(`UPDATE projects SET overview=? WHERE id=?`).run(md, p.id);
+  res.locals.auditAction = `Edited the overview of ${auditName(p.name)}`;
   res.json({ ok: true });
 });
 
@@ -1363,6 +1457,7 @@ app.post('/api/projects/import', requireEdit, (req, res) => {
   const { bundle, name } = req.body || {};
   try {
     const r = importProject(bundle, name && String(name).trim() ? String(name).trim() : null);
+    res.locals.auditAction = `Imported engagement ${auditName(r.name || name || bundle?.project?.name)}`;
     res.status(201).json({ ok: true, ...r });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
@@ -1533,6 +1628,7 @@ app.patch('/api/targets/:id/notebook', async (req, res) => {
   if (!(await canWorkTarget(req, a.id))) return res.status(403).json({ error: 'writing this target’s notes is for its assignees and leads' });
   const md = req.body?.notebook == null ? '' : String(req.body.notebook).slice(0, 200000);
   q(`UPDATE assets SET notebook=? WHERE id=?`).run(md, a.id);
+  res.locals.auditAction = `Edited the notes${targetWhere(a.id)}`;
   res.json({ ok: true });
 });
 
@@ -1643,9 +1739,12 @@ app.patch('/api/items/:id', async (req, res) => {
   const payloads = Array.isArray(b.payloads) ? JSON.stringify(b.payloads) : cur.payloads;
   q(`UPDATE items SET status=?, answer=?, title=?, detail=?, group_title=?, kind=?, payloads=? WHERE id=?`)
     .run(status, answer, title, detail, group_title, kind, payloads, req.params.id);
-  // A pure status tick reads as "marked", any other field change as "updated".
+  // A pure status tick reads as "marked <state>", any other field change as "updated".
   const onlyStatus = 'status' in b && !['title', 'detail', 'group_title', 'kind', 'answer', 'payloads'].some(k => k in b);
-  res.locals.auditAction = `${onlyStatus ? 'Marked' : 'Updated'} task ${auditName(title)}`;
+  const stateLabel = { done: 'done', na: 'N/A', flag: 'to revisit', yes: 'yes', no: 'no', todo: 'not done' }[status] || status;
+  res.locals.auditAction = onlyStatus
+    ? `Marked task ${auditName(title)} ${stateLabel}${targetWhere(cur.asset_id)}`
+    : `Updated task ${auditName(title)}${targetWhere(cur.asset_id)}`;
   res.json(q(`SELECT * FROM items WHERE id=?`).get(req.params.id));
 });
 
@@ -1664,7 +1763,7 @@ app.post('/api/targets/:id/items', async (req, res) => {
     spawns: null, catalog: null, options: '[]', opt_key: null, spawn_type: null, sort: maxSort,
   });
   q(`UPDATE items SET is_custom=1 WHERE id=?`).run(info.lastInsertRowid);
-  res.locals.auditAction = `Added task ${auditName(title)} to ${auditName(q(`SELECT label FROM assets WHERE id=?`).get(req.params.id)?.label)}`;
+  res.locals.auditAction = `Added task ${auditName(title)}${targetWhere(req.params.id)}`;
   res.status(201).json(q(`SELECT * FROM items WHERE id=?`).get(info.lastInsertRowid));
 });
 
@@ -1674,6 +1773,7 @@ app.post('/api/targets/:id/items', async (req, res) => {
 // target at once, so you don't tick each box. Container rows (select/group) are left alone. Ticking
 // status is worker work (not gated on edit rights), and the row updates sync like any single tick.
 const BULK_STATUS = new Set(['todo', 'done', 'na', 'flag']);
+const BULK_VERB = { done: 'Marked done', na: 'Marked N/A', flag: 'Flagged for revisit', todo: 'Reopened' };
 app.post('/api/targets/:id/mark', async (req, res) => {
   const a = q(`SELECT id FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'not found' });
@@ -1685,6 +1785,8 @@ app.post('/api/targets/:id/mark', async (req, res) => {
   let sql = `UPDATE items SET status=? WHERE asset_id=? AND kind NOT IN ('select','group')`;
   if (gk != null && gk !== '') { sql += ` AND group_key=?`; args.push(String(gk)); }
   const changed = q(sql).run(...args).changes;
+  const section = (gk != null && gk !== '') ? q(`SELECT group_title FROM items WHERE asset_id=? AND group_key=? LIMIT 1`).get(a.id, String(gk))?.group_title : null;
+  res.locals.auditAction = `${BULK_VERB[status]} ${changed} task${changed === 1 ? '' : 's'}${section ? ' in ' + auditName(section) : ''}${targetWhere(a.id)}`;
   res.json({ ok: true, changed });
 });
 app.post('/api/items/:id/spawn', async (req, res) => {
@@ -1709,6 +1811,7 @@ app.post('/api/items/:id/spawn', async (req, res) => {
     title: item.title, detail: item.detail || '', payloads: item.payloads || '[]', // already JSON in the DB
     kind: item.kind || 'check', spawns: item.spawns || null, sort: sort++,
   });
+  res.locals.auditAction = `Added the ${auditName(sg.title)} follow-up (${sg.items.length} task${sg.items.length === 1 ? '' : 's'}) under ${auditName(it.title)}${targetWhere(it.asset_id)}`;
   res.status(201).json({ ok: true, added: sg.items.length, instance: n });
 });
 
@@ -1730,6 +1833,7 @@ app.post('/api/items/:id/spawn-target', async (req, res) => {
   if (!label) return res.status(400).json({ error: 'a name is required' });
   const metadata = { spawned_from_item: it.uid || null, parent_target: parent.uid || null };
   const tid = createTarget(parent.folder_id, parent.project_id, it.spawn_type, label, metadata);
+  res.locals.auditAction = `Spawned ${it.spawn_type} target ${auditName(label)} under ${auditName(parent.label)}${projectNameOfAsset(parent.id) ? ' in ' + auditName(projectNameOfAsset(parent.id)) : ''}`;
   res.status(201).json(assetSummary(q(`SELECT * FROM assets WHERE id=?`).get(tid)));
 });
 
@@ -1740,9 +1844,11 @@ app.post('/api/items/:id/select', async (req, res) => {
   if (!(await canWorkTarget(req, it.asset_id))) return res.status(403).json(NO_WORK_PROJECT);
   const key = (req.body || {}).key;
   if (!it.catalog || !key) return res.status(400).json({ error: 'not a select item / key missing' });
+  const optLabel = (() => { try { return (JSON.parse(it.options || '[]').find(o => o.key === key) || {}).label || key; } catch { return key; } })();
   const existing = q(`SELECT id FROM items WHERE parent_id=? AND opt_key=?`).all(it.id, key);
   if (existing.length) { // deselect -> remove that option's subtree
     for (const c of existing) deleteItemTree(c.id);
+    res.locals.auditAction = `Removed the ${auditName(optLabel)} checklist${targetWhere(it.asset_id)}`;
     return res.json({ ok: true, selected: false });
   }
   const asset = q(`SELECT * FROM assets WHERE id=?`).get(it.asset_id);
@@ -1754,14 +1860,16 @@ app.post('/api/items/:id/select', async (req, res) => {
     title: `[${cat.title}] ${r.title}`, detail: r.detail || '', payloads: r.payloads || '[]',
     kind: r.kind || 'check', spawns: r.spawns || null, sort: sort++,
   });
+  res.locals.auditAction = `Added the ${auditName(optLabel)} checklist (${cat.items.length} task${cat.items.length === 1 ? '' : 's'})${targetWhere(it.asset_id)}`;
   res.status(201).json({ ok: true, selected: true, added: cat.items.length });
 });
 
 app.delete('/api/items/:id', async (req, res) => {
-  const it = q(`SELECT asset_id FROM items WHERE id=?`).get(req.params.id);
+  const it = q(`SELECT asset_id, title FROM items WHERE id=?`).get(req.params.id);
   if (!it) return res.json({ ok: true }); // already gone
   if (!(await canWorkTarget(req, it.asset_id))) return res.status(403).json({ error: 'deleting checklist items is for this target’s assignees and leads' });
   deleteItemTree(req.params.id);
+  res.locals.auditAction = `Deleted task ${auditName(it.title)}${targetWhere(it.asset_id)}`;
   res.json({ ok: true });
 });
 
@@ -1929,7 +2037,8 @@ app.post('/api/findings/:id/attachments', (req, res) => rawUpload(req, res, (err
     const tooBig = err.type === 'entity.too.large' || err.status === 413 || err.statusCode === 413;
     return res.status(tooBig ? 413 : 400).json({ error: tooBig ? 'image too large (40 MB max)' : 'could not read the upload' });
   }
-  if (!q(`SELECT id FROM findings WHERE id=?`).get(req.params.id)) return res.status(404).json({ error: 'finding not found' });
+  const finding = q(`SELECT id, title, asset_id FROM findings WHERE id=?`).get(req.params.id);
+  if (!finding) return res.status(404).json({ error: 'finding not found' });
   const mime = (req.headers['content-type'] || '').split(';')[0].trim();
   if (!mime.startsWith('image/')) return res.status(400).json({ error: 'only image files are accepted' });
   const buf = req.body;
@@ -1938,6 +2047,7 @@ app.post('/api/findings/:id/attachments', (req, res) => rawUpload(req, res, (err
   const filename = randomImageName(mime); // stored under a fresh random name, not the client's
   const info = q(`INSERT INTO attachments (finding_id, filename, mime, size, data) VALUES (?,?,?,?,?)`)
     .run(req.params.id, filename, mime, buf.length, buf);
+  res.locals.auditAction = `Added a screenshot to finding ${auditName(finding.title)}${targetWhere(finding.asset_id)}`;
   res.status(201).json(q(`SELECT id, finding_id, filename, mime, size, created_at FROM attachments WHERE id=?`).get(info.lastInsertRowid));
 }));
 app.get('/api/attachments/:id', (req, res) => {
@@ -1949,7 +2059,9 @@ app.get('/api/attachments/:id', (req, res) => {
   res.end(Buffer.from(a.data));
 });
 app.delete('/api/attachments/:id', (req, res) => {
+  const at = q(`SELECT f.title, f.asset_id FROM attachments a LEFT JOIN findings f ON f.id=a.finding_id WHERE a.id=?`).get(req.params.id);
   q(`DELETE FROM attachments WHERE id=?`).run(req.params.id);
+  if (at) res.locals.auditAction = `Removed a screenshot from finding ${auditName(at.title)}${targetWhere(at.asset_id)}`;
   res.json({ ok: true });
 });
 
@@ -1972,6 +2084,7 @@ app.post('/api/targets/:id/notebook-images', (req, res) => rawUpload(req, res, a
   const info = q(`INSERT INTO notebook_images (asset_id, filename, mime, size, data) VALUES (?,?,?,?,?)`)
     .run(a.id, filename, mime, buf.length, buf);
   const row = q(`SELECT uid, filename, mime, size, created_at FROM notebook_images WHERE id=?`).get(info.lastInsertRowid);
+  res.locals.auditAction = `Added a notebook image${targetWhere(a.id)}`;
   res.status(201).json(row); // the Markdown references row.uid
 }));
 app.get('/api/notebook-images/:uid', (req, res) => {

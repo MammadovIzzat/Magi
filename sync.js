@@ -230,6 +230,9 @@ export function applyChanges(db, { rows = [], tombstones = [] } = {}) {
   ].sort((a, b) => (a.hlc < b.hlc ? -1 : a.hlc > b.hlc ? 1 : 0));
 
   let applied = 0, deleted = 0;
+  // Per-change record of what actually landed (newer than the local copy), so a caller — the server's
+  // sync-push handler — can write one activity-log line per synced-in change. `op` is insert|update.
+  const log = [], removed = [];
   db.prepare('BEGIN').run();
   db.prepare(`INSERT INTO _sync_mute (x) VALUES (1)`).run();
   try {
@@ -239,10 +242,10 @@ export function applyChanges(db, { rows = [], tombstones = [] } = {}) {
       lastPending = pending.length;
       const still = [];
       for (const op of pending) {
-        if (op.kind === 'tomb') { if (applyTomb(db, op.t)) deleted++; continue; }
+        if (op.kind === 'tomb') { const rm = applyTomb(db, op.t); if (rm) { deleted++; removed.push({ tbl: op.t.tbl, uid: op.t.uid, label: rm.label }); } continue; }
         const res = applyRow(db, op.r);
         if (res === 'defer') still.push(op);
-        else if (res) applied++;
+        else if (res) { applied++; log.push({ table: op.r.table, uid: op.r.uid, op: res }); }
       }
       pending = still;
     }
@@ -250,7 +253,7 @@ export function applyChanges(db, { rows = [], tombstones = [] } = {}) {
     db.prepare('COMMIT').run();
     // Report the rows we could not place (parent absent) so the caller does not advance its
     // watermark past them and lose them — they must be re-sent on a later cycle.
-    return { applied, deleted, deferred: pending.filter(o => o.kind === 'row').map(o => ({ table: o.r.table, uid: o.r.uid, hlc: o.r.hlc })) };
+    return { applied, deleted, deferred: pending.filter(o => o.kind === 'row').map(o => ({ table: o.r.table, uid: o.r.uid, hlc: o.r.hlc })), log, removed };
   } catch (e) {
     db.prepare(`DELETE FROM _sync_mute`).run();
     db.prepare('ROLLBACK').run();
@@ -283,11 +286,11 @@ function applyRow(db, r) {
     const names = ['uid', 'hlc', ...cols];
     db.prepare(`INSERT INTO ${r.table} (${names.join(',')}) VALUES (${names.map(() => '?').join(',')})`)
       .run(r.uid, r.hlc, ...cols.map(c => all[c]));
-  } else {
-    db.prepare(`UPDATE ${r.table} SET hlc=?, ${cols.map(c => c + '=?').join(', ')} WHERE uid=?`)
-      .run(r.hlc, ...cols.map(c => all[c]), r.uid);
+    return 'insert';
   }
-  return true;
+  db.prepare(`UPDATE ${r.table} SET hlc=?, ${cols.map(c => c + '=?').join(', ')} WHERE uid=?`)
+    .run(r.hlc, ...cols.map(c => all[c]), r.uid);
+  return 'update';
 }
 
 function applyTomb(db, t) {
@@ -295,7 +298,12 @@ function applyTomb(db, t) {
   db.prepare(`INSERT INTO tombstones (tbl, uid, hlc) VALUES (?,?,?)
     ON CONFLICT(tbl, uid) DO UPDATE SET hlc=excluded.hlc WHERE excluded.hlc > tombstones.hlc`).run(t.tbl, t.uid, t.hlc);
   const cur = db.prepare(`SELECT hlc FROM ${t.tbl} WHERE uid=?`).get(t.uid);
-  if (cur && t.hlc > cur.hlc) { db.prepare(`DELETE FROM ${t.tbl} WHERE uid=?`).run(t.uid); return true; }
+  if (cur && t.hlc > cur.hlc) {
+    // Capture a human label before the row is gone, so the delete can be described in the activity log.
+    const row = db.prepare(`SELECT * FROM ${t.tbl} WHERE uid=?`).get(t.uid);
+    db.prepare(`DELETE FROM ${t.tbl} WHERE uid=?`).run(t.uid);
+    return { label: row ? (row.title ?? row.label ?? row.name ?? null) : null };
+  }
   return false;
 }
 

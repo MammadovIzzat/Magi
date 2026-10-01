@@ -577,7 +577,7 @@ checks.push(['admin dashboard: overview, sidebar groups, ranking, logs, template
       projects: [{ id: 9, name: "Acme Q3", status: "active" }],
       targets: [{ id: 5, type: "web", label: "https://app.x", project: "Acme Q3", total: 10, handled: 10, flags: 0, findings: 2, done: true }], authored: 3 },
     "/api/admin/devices": [], "/api/admin/backup": { config: {}, backups: [] },
-    "/api/admin/audit": { total: 3, items: [
+    "/api/admin/audit": { total: 3, actors: ["ana", "bob", "carol"], items: [
       { at: "2026-01-02 10:00:00", username: "ana", display_name: "Ana", method: "POST", path: "/targets/5/findings", action: "Recorded a finding" },
       { at: "2026-01-02 09:00:00", username: "bob", display_name: "Bob", method: "PATCH", path: "/findings/9", action: "Graded a finding" },
       { at: "2026-01-01 08:00:00", username: "ana", display_name: "Ana", method: "DELETE", path: "/projects/2", action: "Deleted an engagement" }] },
@@ -634,13 +634,21 @@ checks.push(['admin dashboard: overview, sidebar groups, ranking, logs, template
   const logsReadable = /Recorded a finding/.test(logText) && /Graded a finding/.test(logText);
   const logsControls = document.querySelectorAll(".arow-controls .sel.aselect").length >= 2 && !!document.querySelector(".log-pager") && /of 3/.test(logText);
   const logsExport = [...document.querySelectorAll(".ahead-actions button")].some(b => /export csv/i.test(b.textContent));
+  // the user filter is built from the server's full actor list — "carol" acted in the log but not on
+  // this page, yet is still offered (open the dropdown to read its options)
+  document.querySelector(".arow-controls .sel.aselect .sel-trigger")?.click();
+  await new Promise(r => setTimeout(r, 120));
+  const logUserOpts = [...document.querySelectorAll(".sel-menu .sel-opt")].map(e => e.textContent);
+  const logsAllActors = logUserOpts.includes("All users") && logUserOpts.includes("ana") && logUserOpts.includes("carol");
+  document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); // click outside → close the menu without selecting
+  await new Promise(r => setTimeout(r, 80));
   // ── Templates opens INSIDE the panel ──
   location.hash = "#/editor"; await new Promise(r => setTimeout(r, 900));
   const tplInPanel = !!document.querySelector(".adminlayout .adminside") && !!document.querySelector(".adminlayout .admbody .tpl-layout");
   const tplTab = [...document.querySelectorAll(".adminside .adminnav")].find(a => /Templates/.test(a.textContent));
   const tplTabOk = !!tplTab && tplTab.getAttribute("href") === "#/editor";
   window.fetch = real;
-  return adminShell && groups && tabs && tiles && panels && ovActivity && rankRows && sevChips && rankTotal && rankSelects && rankFiltered && activeIsRanking && usersTable && usersHasCreate && adminManageable && udOk && detailsReadOnly && gradingOk && devicesOk && logsReadable && logsControls && logsExport && tplInPanel && tplTabOk`)]);
+  return adminShell && groups && tabs && tiles && panels && ovActivity && rankRows && sevChips && rankTotal && rankSelects && rankFiltered && activeIsRanking && usersTable && usersHasCreate && adminManageable && udOk && detailsReadOnly && gradingOk && devicesOk && logsReadable && logsControls && logsExport && logsAllActors && tplInPanel && tplTabOk`)]);
 // Responsive top bar: at a narrow (phone-ish) width the page actions must not spill out of the bar —
 // the bar stays inside the window and the account badge remains on screen (actions scroll within).
 await cdp('Emulation.setDeviceMetricsOverride', { width: 480, height: 800, deviceScaleFactor: 1, mobile: false });

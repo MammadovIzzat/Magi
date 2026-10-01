@@ -1259,6 +1259,11 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 
 /* logs pager */
 .log-pager { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+/* activity-log actor cell: operator name, with the originating device beneath it when present */
+.aud-who-wrap { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.aud-who-wrap .aud-who { color: var(--fg); font-weight: 500; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; }
+.aud-dev { font-size: 10px; color: var(--muted-2); }
+.aud-act { color: var(--text); overflow-wrap: anywhere; }
 
 /* the checklist-template editor renders as a section here, so drop the standalone-page framing */
 .adminlayout .admbody .page { max-width: none; margin: 0; padding: 0; }

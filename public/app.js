@@ -3881,17 +3881,21 @@ function auditLabel(a) {
 // the whole trail (capped) into a downloadable file.
 let LOG_SIZE = 50, LOG_OFFSET = 0, LOG_USER = '';
 async function adminLogs(ctx, A) {
-  const { items = [], total = 0 } = await A(`/audit?limit=${LOG_SIZE}&offset=${LOG_OFFSET}`);
+  const qs = `/audit?limit=${LOG_SIZE}&offset=${LOG_OFFSET}` + (LOG_USER ? `&user=${encodeURIComponent(LOG_USER)}` : '');
+  const { items = [], total = 0, actors = [] } = await A(qs);
   if (LOG_OFFSET && !items.length) { LOG_OFFSET = 0; return adminLogs(ctx, A); } // fell off the end (rows removed) → snap back
   const head = pageHead('Logs', 'Activity log',
-    `${total} event${total === 1 ? '' : 's'} recorded`,
-    total ? aBtn('Export CSV', () => exportAuditCsv(ctx, A), '', 'down') : null);
-  if (!total) return [head, aTable('1fr', ['Timestamp', 'Actor', 'Action'], [], { title: 'Nothing recorded yet', hint: 'Actions across the team will appear here.' })];
+    LOG_USER ? `${total} event${total === 1 ? '' : 's'} by ${LOG_USER}` : `${total} event${total === 1 ? '' : 's'} recorded`,
+    (total || LOG_USER) ? aBtn('Export CSV', () => exportAuditCsv(ctx, A), '', 'down') : null);
+  // A genuinely empty, unfiltered log → nothing to filter; everything else keeps the controls so a
+  // filter that matches nothing can still be changed or cleared.
+  if (!total && !LOG_USER && !actors.length) return [head, aTable('1fr', ['Timestamp', 'Actor', 'Action'], [], { title: 'Nothing recorded yet', hint: 'Actions across the team will appear here.' })];
 
-  const actors = [...new Set(items.map(a => a.username || a.display_name).filter(Boolean))].sort();
-  const search = el('input', { className: 'ainput', placeholder: 'Filter by user or action…', autocomplete: 'off' });
+  const search = el('input', { className: 'ainput', placeholder: 'Search this page…', autocomplete: 'off' });
+  // The operator list comes from the WHOLE log (server `actors`), so every operator who has ever
+  // acted on the server is offered — not just the ones on the page currently in view.
   const userSel = customSelect({ className: 'aselect', value: LOG_USER, options: [{ value: '', label: 'All users' }, ...actors.map(u => ({ value: u, label: u }))] });
-  userSel.addEventListener('change', () => { LOG_USER = userSel.value; paint(); });
+  userSel.addEventListener('change', () => { LOG_USER = userSel.value; LOG_OFFSET = 0; renderAdmin('logs'); }); // filter is server-side → re-fetch
   const sizeSel = customSelect({ className: 'aselect', value: String(LOG_SIZE), options: [20, 50, 100, 200, 500].map(n => ({ value: String(n), label: `${n} / page` })) });
   sizeSel.addEventListener('change', () => { LOG_SIZE = Number(sizeSel.value) || 50; LOG_OFFSET = 0; renderAdmin('logs'); });
   const controls = el('div', { className: 'arow-controls' }, search, userSel, sizeSel);
@@ -3899,17 +3903,15 @@ async function adminLogs(ctx, A) {
   const cols = 'minmax(0,1.4fr) minmax(0,.7fr) minmax(0,2fr)';
   const table = el('div', { className: 'atable' }, el('div', { className: 'acol-head', style: 'grid-template-columns:' + cols }, el('span', {}, 'Timestamp'), el('span', {}, 'Actor'), el('span', {}, 'Action')));
   const paint = () => {
-    const needle = search.value.trim().toLowerCase();
-    const rows = items.filter(a => {
-      const who = a.username || a.display_name || '';
-      if (LOG_USER && who !== LOG_USER) return false;
-      return !needle || `${a.display_name || ''} ${a.username || ''} ${auditLabel(a)} ${a.method} ${a.path}`.toLowerCase().includes(needle);
-    });
+    const needle = search.value.trim().toLowerCase();  // text search narrows the current page; the user filter is applied server-side
+    const rows = items.filter(a => !needle || `${a.display_name || ''} ${a.username || ''} ${auditLabel(a)} ${a.method} ${a.path}`.toLowerCase().includes(needle));
     table.replaceChildren(table.firstChild, ...(rows.length ? rows.map(a => el('div', { className: 'arow', style: 'grid-template-columns:' + cols },
       el('span', { className: 'amono' }, fmtStamp(a.at)),
-      el('strong', { className: 'aud-who' }, a.display_name || a.username || '—'),
+      el('span', { className: 'aud-who-wrap' },
+        el('strong', { className: 'aud-who' }, a.display_name || a.username || '—'),
+        a.device_id ? el('span', { className: 'aud-dev amono', title: 'device ' + a.device_id }, String(a.device_id).slice(0, 8)) : null),
       el('span', { className: 'aud-act', title: `${a.method} ${a.path}` }, auditLabel(a))))
-      : [aEmpty('No entries match', 'Clear the filters to see more.')]));
+      : [aEmpty(LOG_USER ? `No activity by ${LOG_USER}` : 'No entries match', LOG_USER ? 'They may only work on their own device — that syncs as data, not log entries.' : 'Clear the search to see more.')]));
   };
   search.oninput = paint;
   paint();
@@ -3932,16 +3934,17 @@ function fmtStamp(at) {
 // Export the whole audit trail (capped) as a CSV file. Walks pages by offset until covered.
 async function exportAuditCsv(ctx, A) {
   const CAP = 5000, PAGE = 500, all = [];
+  const uq = LOG_USER ? `&user=${encodeURIComponent(LOG_USER)}` : '';   // export honours the active user filter
   try {
     for (let off = 0; off < CAP; off += PAGE) {
-      const { items = [], total = 0 } = await A(`/audit?limit=${PAGE}&offset=${off}`);
+      const { items = [], total = 0 } = await A(`/audit?limit=${PAGE}&offset=${off}${uq}`);
       all.push(...items);
       if (off + PAGE >= total || !items.length) break;
     }
   } catch (e) { toast('Export failed: ' + e.message); return; }
   const esc = (v) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
-  const lines = ['Timestamp,Actor,Action,Method,Path',
-    ...all.map(a => [fmtStamp(a.at), a.username || a.display_name || '', auditLabel(a), a.method || '', a.path || ''].map(esc).join(','))];
+  const lines = ['Timestamp,Actor,Device,Action,Method,Path',
+    ...all.map(a => [fmtStamp(a.at), a.username || a.display_name || '', a.device_id || '', auditLabel(a), a.method || '', a.path || ''].map(esc).join(','))];
   const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
   const url = URL.createObjectURL(blob), a = el('a', { href: url, download: `magi-activity-${new Date().toISOString().slice(0, 10)}.csv` });
   document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);

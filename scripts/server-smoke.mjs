@@ -513,6 +513,24 @@ await req('POST', '/api/sync/push', { token: workerToken, device: dev1, body: {
 const afterItems = (await req('GET', '/api/admin/audit?limit=20', { token: adminTok })).json.items || [];
 check('a synced template task is NOT logged (no per-task flood on target creation)', !afterItems.some(r => /Template task should be silent/.test(r.action || '')));
 check('a synced custom task IS logged', afterItems.some(r => /^Added task “Custom task I typed”/.test(r.action || '')));
+// a delete that arrives via sync (a tombstone) must be logged as a DELETION, not an update
+await req('POST', '/api/sync/push', { token: workerToken, device: dev1, body: {
+  rows: [], tombstones: [{ tbl: 'findings', uid: 'synctest-finding-0001', hlc: '999999999999999-000009-deadbeefdeadbeef' }] } });
+const afterDel = (await req('GET', '/api/admin/audit?limit=20', { token: adminTok })).json.items || [];
+check('a synced delete (tombstone) is logged as a deletion', afterDel.some(r => /^Deleted finding “Synced from a device”/.test(r.action || '')));
+// deleting a target cascade-deletes its checklist tasks; over sync that's a target tombstone PLUS a
+// tombstone per task. The log must show only "Deleted target", not a line per cascade-deleted task.
+const casT = (await req('POST', `/api/assets/${extAsset.id}/targets`, { token: adminTok, body: { type: 'web', label: 'cascade-del.test' } })).json;
+const casFull = (await req('GET', `/api/targets/${casT.id}`, { token: adminTok })).json;
+const casItem = casFull.items[0];
+await req('POST', '/api/sync/push', { token: workerToken, device: dev1, body: { rows: [], tombstones: [
+  { tbl: 'items', uid: casItem.uid, hlc: '999999999999999-000010-deadbeefdeadbeef' },
+  { tbl: 'assets', uid: casFull.uid, hlc: '999999999999999-000011-deadbeefdeadbeef' },
+] } });
+const afterCas = (await req('GET', '/api/admin/audit?limit=30', { token: adminTok })).json.items || [];
+check('a cascade target delete logs the target, not each child task',
+  afterCas.some(r => /^Deleted target “cascade-del\.test”/.test(r.action || ''))
+  && !afterCas.some(r => /^Deleted task/.test(r.action || '') && (r.action || '').includes(casItem.title)));
 
 // ── the editor role: builds engagement structure, but is walled off from server management ──
 const edev = '77777777-8888-4888-8888-777777777777';

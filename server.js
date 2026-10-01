@@ -360,7 +360,15 @@ function auditSyncPush(req, actor, result) {
   if (!actor || !actor.username) return;
   try {
     for (const e of (result.log || [])) { const d = describeSyncedRow(e.table, e.uid, e.op); if (d) writeAudit(req, actor, d); }
-    for (const e of (result.removed || [])) writeAudit(req, actor, `Deleted ${SYNC_NOUN[e.tbl] || 'a record'} ${e.label ? auditName(e.label) : '(synced)'}`.trim());
+    // Deleting a target (or engagement) cascade-deletes its checklist tasks, findings and screenshots —
+    // each arrives as its own tombstone. Log only the thing the operator actually deleted: skip any
+    // child whose parent was deleted in the SAME batch (the parent's "Deleted …" line covers it). A
+    // standalone delete (one task, one finding) still logs, since its parent is not in the batch.
+    const deletedUids = new Set((result.removed || []).map(e => e.uid));
+    for (const e of (result.removed || [])) {
+      if (Object.values(e.parents || {}).some(p => p && deletedUids.has(p))) continue; // cascade child
+      writeAudit(req, actor, `Deleted ${SYNC_NOUN[e.tbl] || 'a record'} ${e.label ? auditName(e.label) : '(synced)'}`.trim());
+    }
   } catch { /* auditing must never break a sync */ }
 }
 app.use('/api', (req, res, next) => {

@@ -242,7 +242,7 @@ export function applyChanges(db, { rows = [], tombstones = [] } = {}) {
       lastPending = pending.length;
       const still = [];
       for (const op of pending) {
-        if (op.kind === 'tomb') { const rm = applyTomb(db, op.t); if (rm) { deleted++; removed.push({ tbl: op.t.tbl, uid: op.t.uid, label: rm.label }); } continue; }
+        if (op.kind === 'tomb') { const rm = applyTomb(db, op.t); if (rm) { deleted++; removed.push({ tbl: op.t.tbl, uid: op.t.uid, label: rm.label, parents: rm.parents }); } continue; }
         const res = applyRow(db, op.r);
         if (res === 'defer') still.push(op);
         else if (res) { applied++; log.push({ table: op.r.table, uid: op.r.uid, op: res }); }
@@ -299,10 +299,14 @@ function applyTomb(db, t) {
     ON CONFLICT(tbl, uid) DO UPDATE SET hlc=excluded.hlc WHERE excluded.hlc > tombstones.hlc`).run(t.tbl, t.uid, t.hlc);
   const cur = db.prepare(`SELECT hlc FROM ${t.tbl} WHERE uid=?`).get(t.uid);
   if (cur && t.hlc > cur.hlc) {
-    // Capture a human label before the row is gone, so the delete can be described in the activity log.
+    // Capture a human label and the parent uids before the row is gone, so the delete can be described
+    // in the activity log — and so a cascade child (a deleted target's tasks) can be told apart from a
+    // standalone delete (the parent appears in the same batch's removed set).
     const row = db.prepare(`SELECT * FROM ${t.tbl} WHERE uid=?`).get(t.uid);
+    const parents = {};
+    for (const [fk, pt] of Object.entries(SPEC[t.tbl].parents)) parents[fk] = row ? uidOf(db, pt, row[fk]) : null;
     db.prepare(`DELETE FROM ${t.tbl} WHERE uid=?`).run(t.uid);
-    return { label: row ? (row.title ?? row.label ?? row.name ?? null) : null };
+    return { label: row ? (row.title ?? row.label ?? row.name ?? null) : null, parents };
   }
   return false;
 }

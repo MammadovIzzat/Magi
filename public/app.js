@@ -539,6 +539,18 @@ function priorityMeter(pr) {
 // Highest priority first (unset sinks to the bottom), then newest.
 const byPriority = (a, b) => (Number(b.priority) || 0) - (Number(a.priority) || 0) || (new Date(b.created_at) - new Date(a.created_at));
 
+// Download the cross-engagement statistics as a real .xlsx (built server-side). An <a download> can't
+// carry the auth header, so fetch the bytes with auth and save them via an object URL.
+async function exportStatsXlsx() {
+  try {
+    const r = await fetch('/api/stats.xlsx', { headers: authHeaders() });
+    if (!r.ok) throw new Error('export failed (' + r.status + ')');
+    const url = URL.createObjectURL(await r.blob());
+    const a = el('a', { href: url, download: `magi-statistics-${new Date().toISOString().slice(0, 10)}.xlsx` });
+    document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
+    toast('Statistics exported');
+  } catch (e) { toast(e.message); }
+}
 async function renderHome() {
   const projects = await api('/projects');
   setRail(null);
@@ -546,9 +558,10 @@ async function renderHome() {
   const view = $('#view');
   const head = el('div', { className: 'page-head' },
     el('div', {}, el('div', { className: 'kicker' }, 'Workspace'), el('h1', {}, 'Engagements')),
-    isEditor() ? el('div', { style: 'display:flex;gap:7px' },
-      el('button', { className: 'btn', onclick: importProjectFile, title: 'Import an engagement from a file' }, icon('up', 12), 'Import'),
-      el('button', { className: 'btn gold', onclick: newProject }, icon('plus', 12), 'New engagement')) : null);
+    el('div', { style: 'display:flex;gap:7px' },
+      projects.length ? el('button', { className: 'btn', onclick: exportStatsXlsx, title: 'Download statistics for every engagement as an Excel file' }, icon('down', 12), 'Export stats') : null,
+      isEditor() ? el('button', { className: 'btn', onclick: importProjectFile, title: 'Import an engagement from a file' }, icon('up', 12), 'Import') : null,
+      isEditor() ? el('button', { className: 'btn gold', onclick: newProject }, icon('plus', 12), 'New engagement') : null));
 
   if (!projects.length) {
     return view.replaceChildren(el('div', { className: 'page' }, head,

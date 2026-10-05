@@ -101,7 +101,9 @@ checks.push(['engagements screen paints', await ev(`
   // setting an already-empty hash fires no hashchange, and reloading would destroy
   // this execution context, so re-render by calling the router directly
   await route(); await new Promise(r => setTimeout(r, 600));
-  return document.querySelectorAll(".prow").length > 0`)]);
+  const hasRows = document.querySelectorAll(".prow").length > 0;
+  const hasExport = [...document.querySelectorAll(".page-head button")].some(b => /export stats/i.test(b.textContent));
+  return hasRows && hasExport`)]);
 checks.push(['asset folder screen paints', await ev(`
   const p = (await (await fetch("/api/projects")).json())[0];
   const d = await (await fetch("/api/projects/" + p.id)).json();

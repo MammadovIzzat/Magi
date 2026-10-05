@@ -538,6 +538,18 @@ check('an admin can clear the activity log', clr.status === 200 && clr.json.clea
 const afterClear = (await req('GET', '/api/admin/audit?limit=5', { token: adminTok })).json;
 check('the clear itself is recorded (trail never wiped with no trace)', afterClear.items.some(r => /^Cleared the activity log/.test(r.action || '')));
 
+// finishing an engagement with no end date on file stamps today's date (so it lands on the timeline)
+const efin = (await req('POST', '/api/projects', { token: adminTok, body: { name: 'Finish Stamp Test' } })).json;
+await req('PATCH', `/api/projects/${efin.id}`, { token: adminTok, body: { status: 'finished' } });
+const efp = (await req('GET', '/api/projects', { token: adminTok })).json.find(p => p.id === efin.id);
+check('finishing an engagement with no end date stamps today', !!efp && efp.status === 'finished' && efp.end_date === new Date().toISOString().slice(0, 10));
+
+// statistics export: a genuine .xlsx (a ZIP) with a row per engagement
+const stats = await req('GET', '/api/stats.xlsx', { token: adminTok });
+check('stats export is an xlsx with the spreadsheet content-type', stats.status === 200 && /spreadsheetml\.sheet/.test(stats.headers['content-type'] || ''));
+check('stats export is a valid zip containing the worksheet + an engagement name',
+  (stats.raw || '').startsWith('PK') && (stats.raw || '').includes('sheet1.xml') && (stats.raw || '').includes('Acme Q3'));
+
 // ── the editor role: builds engagement structure, but is walled off from server management ──
 const edev = '77777777-8888-4888-8888-777777777777';
 const ecode = (await req('POST', '/api/admin/enroll-codes', { token: adminTok })).json.code;

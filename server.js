@@ -6,6 +6,7 @@ import { db, hashPassword, verifyPassword, resetType, SESSION_TTL_DAYS, env, usi
 import { exportBundle, importBundle, validateBundle } from './templates-io.js';
 import { exportProject as exportProjectBundle, importProject, validateProjectBundle } from './projects-io.js';
 import { projectReportHTML } from './report-html.js';
+import { buildXlsx } from './xlsx.js';
 import { collectChanges, applyChanges, maxHlc } from './sync.js';
 import * as totp from './totp.js';
 import './public/cvss.js'; // classic script: assigns globalThis.MagiCVSS (shared with the browser)
@@ -1385,6 +1386,47 @@ app.get('/api/projects', (req, res) => {
          WHERE a.project_id=p.id AND i.kind NOT IN ('select','group')
            AND i.status IN ('done','na','yes','no')) AS handled
       FROM projects p ORDER BY p.created_at DESC`).all());
+});
+
+// Statistics export (Excel): one row per engagement — dates, status, target count + type mix, checklist
+// progress, and findings with the severity breakdown — plus a totals row. A real .xlsx (no dependency;
+// see xlsx.js). Any authenticated operator may pull it; it's the same data the engagements list shows.
+app.get('/api/stats.xlsx', (req, res) => {
+  const projects = q(`SELECT p.id, p.name, p.client, p.status, p.priority, p.start_date, p.end_date, p.created_at,
+      (SELECT COUNT(*) FROM assets a WHERE a.project_id=p.id) AS targets,
+      (SELECT COUNT(*) FROM items i JOIN assets a ON a.id=i.asset_id WHERE a.project_id=p.id AND i.kind NOT IN ('select','group')) AS tasks,
+      (SELECT COUNT(*) FROM items i JOIN assets a ON a.id=i.asset_id WHERE a.project_id=p.id AND i.kind NOT IN ('select','group') AND i.status IN ('done','na','yes','no')) AS done
+      FROM projects p ORDER BY p.created_at DESC`).all();
+  const header = ['Engagement', 'Client', 'Status', 'Priority', 'Start', 'End', 'Targets', 'Types',
+    'Checklist tasks', 'Tasks done', 'Coverage %', 'Findings', 'Critical', 'High', 'Medium', 'Low', 'Info', 'Written up', 'Created'];
+  const rows = [header];
+  const tot = { targets: 0, tasks: 0, done: 0, findings: 0, crit: 0, high: 0, med: 0, low: 0, info: 0, written: 0 };
+  for (const p of projects) {
+    const types = q(`SELECT type, COUNT(*) c FROM assets WHERE project_id=? GROUP BY type ORDER BY c DESC, type`).all(p.id)
+      .map(t => `${t.type}×${t.c}`).join(', ');
+    const s = q(`SELECT
+        SUM(CASE WHEN severity='critical' THEN 1 ELSE 0 END) crit,
+        SUM(CASE WHEN severity='high' THEN 1 ELSE 0 END) high,
+        SUM(CASE WHEN severity='medium' THEN 1 ELSE 0 END) med,
+        SUM(CASE WHEN severity='low' THEN 1 ELSE 0 END) low,
+        SUM(CASE WHEN severity='info' OR severity IS NULL OR severity='' THEN 1 ELSE 0 END) info,
+        SUM(CASE WHEN in_report=1 THEN 1 ELSE 0 END) written,
+        COUNT(*) total
+      FROM findings f JOIN assets a ON a.id=f.asset_id WHERE a.project_id=? AND f.kind='vuln' AND f.duplicate=0`).get(p.id);
+    const coverage = p.tasks ? Math.round(p.done / p.tasks * 100) : 0;
+    rows.push([p.name, p.client || '', p.status || 'active', p.priority || '', p.start_date || '', p.end_date || '',
+      p.targets, types, p.tasks, p.done, coverage, s.total || 0, s.crit || 0, s.high || 0, s.med || 0, s.low || 0, s.info || 0, s.written || 0,
+      (p.created_at || '').slice(0, 10)]);
+    tot.targets += p.targets; tot.tasks += p.tasks; tot.done += p.done; tot.findings += s.total || 0;
+    tot.crit += s.crit || 0; tot.high += s.high || 0; tot.med += s.med || 0; tot.low += s.low || 0; tot.info += s.info || 0; tot.written += s.written || 0;
+  }
+  if (projects.length) rows.push([`TOTAL (${projects.length} engagement${projects.length === 1 ? '' : 's'})`, '', '', '', '', '',
+    tot.targets, '', tot.tasks, tot.done, tot.tasks ? Math.round(tot.done / tot.tasks * 100) : 0,
+    tot.findings, tot.crit, tot.high, tot.med, tot.low, tot.info, tot.written, '']);
+  const buf = buildXlsx('Statistics', rows);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="magi-statistics-${new Date().toISOString().slice(0, 10)}.xlsx"`);
+  res.end(buf);
 });
 
 // Accepts yyyy-mm-dd or empty; anything else is stored as null rather than trusted verbatim.

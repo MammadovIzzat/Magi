@@ -101,9 +101,7 @@ checks.push(['engagements screen paints', await ev(`
   // setting an already-empty hash fires no hashchange, and reloading would destroy
   // this execution context, so re-render by calling the router directly
   await route(); await new Promise(r => setTimeout(r, 600));
-  const hasRows = document.querySelectorAll(".prow").length > 0;
-  const hasExport = [...document.querySelectorAll(".page-head button")].some(b => /export stats/i.test(b.textContent));
-  return hasRows && hasExport`)]);
+  return document.querySelectorAll(".prow").length > 0`)]);
 checks.push(['asset folder screen paints', await ev(`
   const p = (await (await fetch("/api/projects")).json())[0];
   const d = await (await fetch("/api/projects/" + p.id)).json();
@@ -599,6 +597,7 @@ checks.push(['admin dashboard: overview, sidebar groups, ranking, logs, template
   const panels = document.querySelectorAll(".dashgrid .dashpanel").length === 2;
   const ovText = document.querySelector(".admbody")?.textContent || "";
   const ovActivity = /Recorded a finding/.test(ovText) && /Worker status/.test(ovText);
+  const ovExport = [...document.querySelectorAll(".ahead-actions button")].some(b => /export stats/i.test(b.textContent)); // stats export lives in the admin panel now
   // ── Ranking: severity-mix chips + total, type/time selects, operator search ──
   location.hash = "#/admin/ranking"; await new Promise(r => setTimeout(r, 700));
   const rankRows = document.querySelectorAll(".rankboard .rank-row").length === 2;
@@ -650,7 +649,7 @@ checks.push(['admin dashboard: overview, sidebar groups, ranking, logs, template
   const tplTab = [...document.querySelectorAll(".adminside .adminnav")].find(a => /Templates/.test(a.textContent));
   const tplTabOk = !!tplTab && tplTab.getAttribute("href") === "#/editor";
   window.fetch = real;
-  return adminShell && groups && tabs && tiles && panels && ovActivity && rankRows && sevChips && rankTotal && rankSelects && rankFiltered && activeIsRanking && usersTable && usersHasCreate && adminManageable && udOk && detailsReadOnly && gradingOk && devicesOk && logsReadable && logsControls && logsExport && logsAllActors && tplInPanel && tplTabOk`)]);
+  return adminShell && groups && tabs && tiles && panels && ovActivity && ovExport && rankRows && sevChips && rankTotal && rankSelects && rankFiltered && activeIsRanking && usersTable && usersHasCreate && adminManageable && udOk && detailsReadOnly && gradingOk && devicesOk && logsReadable && logsControls && logsExport && logsAllActors && tplInPanel && tplTabOk`)]);
 // Responsive top bar: at a narrow (phone-ish) width the page actions must not spill out of the bar —
 // the bar stays inside the window and the account badge remains on screen (actions scroll within).
 await cdp('Emulation.setDeviceMetricsOverride', { width: 480, height: 800, deviceScaleFactor: 1, mobile: false });

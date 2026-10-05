@@ -558,10 +558,9 @@ async function renderHome() {
   const view = $('#view');
   const head = el('div', { className: 'page-head' },
     el('div', {}, el('div', { className: 'kicker' }, 'Workspace'), el('h1', {}, 'Engagements')),
-    el('div', { style: 'display:flex;gap:7px' },
-      projects.length ? el('button', { className: 'btn', onclick: exportStatsXlsx, title: 'Download statistics for every engagement as an Excel file' }, icon('down', 12), 'Export stats') : null,
-      isEditor() ? el('button', { className: 'btn', onclick: importProjectFile, title: 'Import an engagement from a file' }, icon('up', 12), 'Import') : null,
-      isEditor() ? el('button', { className: 'btn gold', onclick: newProject }, icon('plus', 12), 'New engagement') : null));
+    isEditor() ? el('div', { style: 'display:flex;gap:7px' },
+      el('button', { className: 'btn', onclick: importProjectFile, title: 'Import an engagement from a file' }, icon('up', 12), 'Import'),
+      el('button', { className: 'btn gold', onclick: newProject }, icon('plus', 12), 'New engagement')) : null);
 
   if (!projects.length) {
     return view.replaceChildren(el('div', { className: 'page' }, head,
@@ -4200,7 +4199,9 @@ async function adminOverview(ctx, A) {
       el('p', { className: 'ahead-sub' }, waiting
         ? `${waiting} thing${waiting === 1 ? '' : 's'} ${waiting === 1 ? 'is' : 'are'} waiting on you. Everything else is running normally.`
         : 'Nothing is waiting on you. Everything is running normally.')),
-    el('div', { className: 'ahead-actions' }, aBtn('Open activity log', () => location.hash = '#/admin/logs')));
+    el('div', { className: 'ahead-actions' },
+      aBtn('Export stats', exportStatsXlsx, '', 'down'),
+      aBtn('Open activity log', () => location.hash = '#/admin/logs')));
 
   const oldestReq = requests.length ? Math.min(...requests.map(r => tsMs(r.created_at) || Infinity)) : 0;
   const gradEngs = new Set(ungraded.map(f => f.project_id)).size;

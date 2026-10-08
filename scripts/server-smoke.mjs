@@ -550,6 +550,17 @@ check('stats export is an xlsx with the spreadsheet content-type', stats.status 
 check('stats export is a valid zip containing the worksheet + an engagement name',
   (stats.raw || '').startsWith('PK') && (stats.raw || '').includes('sheet1.xml') && (stats.raw || '').includes('Acme Q3'));
 
+// HTML findings report: one list ordered by severity across targets, and a closeable image lightbox.
+// Seed a LOW on one target and a CRITICAL on ANOTHER, so ordering can only be right if it's global.
+await req('POST', `/api/targets/${webT.id}/findings`, { token: adminTok, body: { title: 'ZZlowsort', kind: 'vuln', severity: 'low' } });
+await req('POST', `/api/targets/${webT2.id}/findings`, { token: adminTok, body: { title: 'AAcritsort', kind: 'vuln', severity: 'critical' } });
+const report = await req('GET', `/api/projects/${made.json.id}/report.html`, { token: adminTok });
+const rhtml = report.raw || '';
+check('report lists findings by severity across targets (critical before low)',
+  report.status === 200 && rhtml.indexOf('AAcritsort') > -1 && rhtml.indexOf('ZZlowsort') > -1 && rhtml.indexOf('AAcritsort') < rhtml.indexOf('ZZlowsort'));
+check('report uses an in-page lightbox (no new-tab window.open, no image filenames)',
+  /id="lb"/.test(rhtml) && !/window\.open/.test(rhtml) && !/figcaption/.test(rhtml));
+
 // ── the editor role: builds engagement structure, but is walled off from server management ──
 const edev = '77777777-8888-4888-8888-777777777777';
 const ecode = (await req('POST', '/api/admin/enroll-codes', { token: adminTok })).json.code;

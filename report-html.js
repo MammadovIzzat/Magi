@@ -15,33 +15,28 @@ export function projectReportHTML(projectId) {
   // Gather VULNERABILITIES only, with their images, across the whole engagement. Notes and
   // credentials are working evidence — they are never findings, so the report neither lists nor
   // counts them.
-  const blocks = [];
+  // Every vulnerability across the engagement in ONE list, most-severe first (critical → info, then
+  // oldest first). Each finding carries its target, shown on the card — a findings report reads
+  // worst-first, not grouped by whichever host it happened to be recorded on.
+  const all = [];
   let total = 0;
   const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0, none: 0 };
   for (const a of assets) {
-    const findings = db.prepare(`SELECT * FROM findings WHERE asset_id=? AND kind='vuln' AND duplicate=0 ORDER BY id`).all(a.id)
-      .map(f => ({
-        ...f,
-        images: db.prepare(`SELECT id, filename, mime, data FROM attachments WHERE finding_id=? ORDER BY id`).all(f.id),
-      }));
-    if (!findings.length) continue;
-    findings.sort((x, y) => (SEV_ORDER[x.severity] ?? 5) - (SEV_ORDER[y.severity] ?? 5));
+    const findings = db.prepare(`SELECT * FROM findings WHERE asset_id=? AND kind='vuln' AND duplicate=0 ORDER BY id`).all(a.id);
     for (const f of findings) {
       total++;
       counts[f.severity && counts[f.severity] !== undefined ? f.severity : 'none']++;
+      all.push({ ...f, asset: a, images: db.prepare(`SELECT id, filename, mime, data FROM attachments WHERE finding_id=? ORDER BY id`).all(f.id) });
     }
-    blocks.push({ asset: a, findings });
   }
+  all.sort((x, y) => (SEV_ORDER[x.severity] ?? 5) - (SEV_ORDER[y.severity] ?? 5) || (x.created_at < y.created_at ? -1 : 1));
 
   const now = new Date();
   const findingCard = (f) => {
     const sev = f.severity || '';
     const imgs = f.images.map(im => {
       const b64 = Buffer.from(im.data).toString('base64');
-      return `<figure class="shot">
-        <img src="data:${esc(im.mime)};base64,${b64}" alt="${esc(im.filename)}">
-        <figcaption>${esc(im.filename)}</figcaption>
-      </figure>`;
+      return `<figure class="shot"><img src="data:${esc(im.mime)};base64,${b64}" alt=""></figure>`;
     }).join('');
     return `<article class="finding sev-${esc(sev || 'none')}">
       <div class="fhead">
@@ -49,6 +44,7 @@ export function projectReportHTML(projectId) {
         <h3>${esc(f.title)}</h3>
         ${f.author ? `<span class="by">recorded by ${esc(f.author)}</span>` : ''}
       </div>
+      <div class="ftarget">${esc(f.asset.type.toUpperCase())} · ${esc(f.asset.label)}</div>
       ${f.body ? `<pre>${esc(f.body)}</pre>` : ''}
       ${imgs ? `<div class="shots">${imgs}</div>` : ''}
     </article>`;
@@ -92,10 +88,14 @@ export function projectReportHTML(projectId) {
   .sev-low .chip.sev{background:${SEV_COLOR.low}}
   .sev-info .chip.sev,.sev-none .chip.sev{background:${SEV_COLOR.info}}
   pre{background:#06070b;border:1px solid var(--line);border-radius:3px;padding:12px;overflow:auto;font-family:var(--mono);font-size:12.5px;line-height:1.6;color:#a8c8ff;white-space:pre-wrap;word-break:break-word;margin:12px 0 0}
+  .ftarget{font-family:var(--mono);font-size:11px;letter-spacing:.04em;color:var(--gold);margin-top:6px}
   .shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin-top:14px}
   figure.shot{margin:0;border:1px solid var(--line);border-radius:4px;overflow:hidden;background:#06070b}
   figure.shot img{display:block;width:100%;height:auto;cursor:zoom-in}
-  figure.shot figcaption{font-family:var(--mono);font-size:10.5px;color:var(--muted);padding:6px 8px;border-top:1px solid var(--line);word-break:break-all}
+  .lb{position:fixed;inset:0;background:rgba(0,0,0,.92);display:none;align-items:center;justify-content:center;padding:28px;cursor:zoom-out;z-index:50}
+  .lb.open{display:flex}
+  .lb img{max-width:100%;max-height:100%;box-shadow:0 0 50px rgba(0,0,0,.6)}
+  .lb .lbx{position:fixed;top:12px;right:20px;color:#fff;font:700 28px/1 system-ui;opacity:.85}
   .empty{color:var(--muted);padding:40px 0}
   footer{margin-top:50px;color:var(--muted);font-family:var(--mono);font-size:11px;border-top:1px solid var(--line);padding-top:16px}
   @media print{body{background:#fff;color:#111}.finding,.tile,figure.shot{break-inside:avoid}}
@@ -107,17 +107,20 @@ export function projectReportHTML(projectId) {
     <div class="meta">${[p.client && 'Client: ' + esc(p.client), p.scope && 'Scope: ' + esc(p.scope)].filter(Boolean).join(' &nbsp;·&nbsp; ') || '&nbsp;'}</div>
   </header>
   <div class="tiles"><div class="tile"><div class="n">${total}</div><div class="k">findings</div></div>${sevTiles}</div>
-  ${blocks.length ? blocks.map(bl => `
-    <h2 class="asset">${esc(bl.asset.type.toUpperCase())} — ${esc(bl.asset.label)}</h2>
-    ${bl.findings.map(findingCard).join('')}
-  `).join('') : `<p class="empty">No findings recorded yet.</p>`}
+  ${all.length ? all.map(findingCard).join('') : `<p class="empty">No findings recorded yet.</p>`}
   <footer>Generated by Magi · ${now.toISOString().replace('T', ' ').slice(0, 16)} UTC · for authorized security testing only</footer>
 </div>
+<div class="lb" id="lb"><span class="lbx">✕</span><img id="lbimg" alt=""></div>
 <script>
-  // click a screenshot to open it full-size in a new tab
+  // Click a screenshot to view it full-size in an overlay; click anywhere (or Esc) to close it —
+  // no new tab, no reload needed.
+  var lb=document.getElementById('lb'), lbimg=document.getElementById('lbimg');
+  function closeLb(){ lb.classList.remove('open'); lbimg.removeAttribute('src'); }
   document.querySelectorAll('figure.shot img').forEach(function(img){
-    img.addEventListener('click', function(){ var w=window.open(); if(w) w.document.write('<img src="'+img.src+'" style="max-width:100%">'); });
+    img.addEventListener('click', function(){ lbimg.src=img.src; lb.classList.add('open'); });
   });
+  lb.addEventListener('click', closeLb);
+  document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeLb(); });
 </script>
 </body></html>`;
 }

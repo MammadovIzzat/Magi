@@ -2161,11 +2161,15 @@ app.get('/api/projects/:id/export', (req, res) => {
   const p = q(`SELECT * FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'not found' });
   const assets = q(`SELECT * FROM assets WHERE project_id=? ORDER BY created_at`).all(p.id);
+  // Findings list most-severe first within each target (critical → info, then oldest first), matching
+  // the HTML report — a report reads worst-first, not in the order findings happened to be entered.
+  const SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
   const data = assets.map(a => ({
     ...assetSummary(a),
     items: q(`SELECT * FROM items WHERE asset_id=? ORDER BY sort`).all(a.id)
       .map(i => ({ ...i, payloads: JSON.parse(i.payloads || '[]') })),
-    findings: q(`SELECT * FROM findings WHERE asset_id=?`).all(a.id),
+    findings: q(`SELECT * FROM findings WHERE asset_id=?`).all(a.id)
+      .sort((x, y) => (SEV_RANK[x.severity] ?? 5) - (SEV_RANK[y.severity] ?? 5) || (x.created_at < y.created_at ? -1 : 1)),
   }));
   if (req.query.format === 'json') return res.json({ project: p, assets: data });
 

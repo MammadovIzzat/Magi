@@ -222,7 +222,7 @@ CREATE TABLE IF NOT EXISTS findings (
   body        TEXT,                      -- raw request / description
   refs        TEXT,                      -- JSON array of other findings' uids (attack chain)
   fix_status  TEXT,                      -- retest only: fixed | not_fixed | half_fixed
-  in_report   INTEGER NOT NULL DEFAULT 0, -- ticked once written into the report, so it's clear what's done
+  in_report   INTEGER NOT NULL DEFAULT 0, -- report status: 0 not reported · 1 written into the report · 2 ignored (left out on purpose)
   author      TEXT,                      -- username of whoever recorded it (for the team ranking); syncs with the row
   cvss        TEXT,                      -- optional CVSS v3.1 base vector; severity is derived from it when set
   needs_improvement INTEGER NOT NULL DEFAULT 0, -- a reviewer sent it back to its author to improve

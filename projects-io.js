@@ -147,7 +147,7 @@ export function importProject(bundle, nameOverride) {
           // value, so a hand-edited bundle can't flip an ordinary finding into "retest mode".
           const fix = (tgt.type === 'retest' && ['fixed', 'half_fixed', 'not_fixed'].includes(f.fix_status)) ? f.fix_status : null;
           const fnd = insFinding.run(aid, f.title, f.kind || 'note', f.severity ?? null, f.body ?? null,
-            fix, f.in_report ? 1 : 0, f.author ?? null, f.cvss ?? null, f.flagged_to ?? null, f.duplicate ? 1 : 0, f.created_at || new Date().toISOString()).lastInsertRowid;
+            fix, Number(f.in_report) === 2 ? 2 : (f.in_report ? 1 : 0), f.author ?? null, f.cvss ?? null, f.flagged_to ?? null, f.duplicate ? 1 : 0, f.created_at || new Date().toISOString()).lastInsertRowid;
           nFindings++;
           const newUid = db.prepare(`SELECT uid FROM findings WHERE id=?`).get(fnd)?.uid;
           if (f.uid && newUid) uidMap.set(f.uid, newUid);

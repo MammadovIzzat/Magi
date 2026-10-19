@@ -290,7 +290,10 @@ function customSelect({ name, options, value, className = '' } = {}) {
   const fire = () => root.dispatchEvent(new Event('change', { bubbles: true }));
   const position = () => {
     const r = trigger.getBoundingClientRect();
-    menu.style.left = r.left + 'px'; menu.style.width = r.width + 'px';
+    // At least as wide as the trigger, but free to grow to its longest option (a compact trigger
+    // showing a short value must not clip the others); kept inside the viewport on the right.
+    menu.style.minWidth = r.width + 'px';
+    menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 8)) + 'px';
     const mh = Math.min(menu.scrollHeight, 260), below = window.innerHeight - r.bottom;
     if (below < mh + 8 && r.top > below) { menu.style.top = 'auto'; menu.style.bottom = (window.innerHeight - r.top + 4) + 'px'; }
     else { menu.style.bottom = 'auto'; menu.style.top = (r.bottom + 4) + 'px'; }
@@ -571,8 +574,8 @@ async function renderHome() {
 
   const projectRow = (p) => {
     const cov = pct(p.handled, p.total);
-    const del = el('button', { className: 'ibtn del', title: 'Delete engagement' }, icon('trash'));
-    del.onclick = (e) => { e.stopPropagation(); delProject(p, p.asset_count, renderHome); };
+    const del = isEditor() ? el('button', { className: 'ibtn del', title: 'Delete engagement' }, icon('trash')) : null;
+    if (del) del.onclick = (e) => { e.stopPropagation(); delProject(p, p.asset_count, renderHome); };
     const asg = assigneeList(p.assignee);
     return el('button', { className: 'prow', onclick: () => location.hash = `/project/${p.id}` },
       el('span', { style: 'display:flex;align-items:center;gap:12px;min-width:0' }, priorityMeter(p.priority),
@@ -802,7 +805,7 @@ function railForProject(project, activeTargetId) {
   return [head,
     el('button', { className: 'railback', onclick: () => location.hash = `/project/${project.id}/targets` }, '‹ Back to targets'),
     list,
-    isEditor() ? el('div', { className: 'rail-foot' },
+    mayMove ? el('div', { className: 'rail-foot' },
       el('button', { className: 'dashbtn', onclick: () => addTargetToProject(project.id) }, icon('plus', 12), 'Add target')) : null];
 }
 
@@ -927,7 +930,8 @@ async function renderProjectOverview(id) {
   const cov = pct(handled, total);
   const notStarted = allTargets.filter(x => (x.handled || 0) === 0).length;
   const fs = p.findingStats || { vulns: 0, written: 0, bySeverity: {} };
-  const writtenPct = fs.vulns ? Math.round(fs.written / fs.vulns * 100) : 0;
+  const toWrite = fs.vulns - (fs.ignored || 0); // ignored findings are left out of the report on purpose
+  const writtenPct = toWrite ? Math.round(fs.written / toWrite * 100) : 0;
   const sevMix = ['critical', 'high', 'medium', 'low'].map(s => [s, fs.bySeverity?.[s] || 0]).filter(([, n]) => n > 0);
   const bar = (v, color) => el('span', { className: 'stat-bar' }, el('span', { style: `width:${v}%` + (color ? `;background:${color}` : '') }));
   const kick = (l) => el('div', { className: 'kicker' }, l);
@@ -975,7 +979,7 @@ async function renderProjectOverview(id) {
         sevMix.length
           ? el('div', { className: 'sevmix' }, ...sevMix.map(([s, n]) => el('span', { className: 'sevmix-chip sev-' + s }, `${n} ${s.slice(0, 4)}`)))
           : el('div', { className: 'stat-note' }, 'none yet')),
-      el('div', { className: 'stat' }, kick('Written up'), srow(fs.written, 'of ' + fs.vulns, 'ok'), bar(writtenPct, 'var(--ok)')),
+      el('div', { className: 'stat' }, kick('Written up'), srow(fs.written, 'of ' + toWrite + (fs.ignored ? ` · ${fs.ignored} ignored` : ''), 'ok'), bar(writtenPct, 'var(--ok)')),
       el('button', { className: 'stat stat-link', onclick: () => location.hash = `/project/${id}/targets` }, kick('Targets'),
         srow(allTargets.length, null),
         el('div', { className: 'stat-note' }, notStarted ? `${notStarted} not started` : allTargets.length ? 'all started' : 'add targets ›'))),
@@ -1206,14 +1210,19 @@ async function renderProjectFindings(projectId) {
   topActions();
 
   // Confirmed vulnerabilities only — notes and credentials are per-target working evidence (the
-  // target chat), never listed here.
-  const vulns = all.filter(f => f.kind === 'vuln');
+  // target chat), never listed here, and retest items re-check an earlier finding (they live on
+  // their retest target), so they are neither listed nor counted as findings.
+  const vulns = all.filter(f => f.kind === 'vuln' && !isRetestItem(f));
   const list = el('div', { className: 'pf-list' });
   const repaint = () => {
     let out = vulns.slice();
     const q = PFV.q.trim().toLowerCase();
     if (q) out = out.filter(f => (f.title || '').toLowerCase().includes(q) || (f.body || '').toLowerCase().includes(q) || (f.target || '').toLowerCase().includes(q));
-    if (PFV.sort === 'sev') out.sort((a, b) => (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9) || (a.created_at < b.created_at ? 1 : -1));
+    const bySev = (a, b) => (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9) || (a.created_at < b.created_at ? 1 : -1);
+    // Report-status sorts group reported / not reported (ignored always last), then severity within each.
+    const REP_ORDER = { rep: { 1: 0, 0: 1, 2: 2 }, unrep: { 0: 0, 1: 1, 2: 2 } }[PFV.sort];
+    if (PFV.sort === 'sev') out.sort(bySev);
+    else if (REP_ORDER) out.sort((a, b) => REP_ORDER[reportState(a)] - REP_ORDER[reportState(b)] || bySev(a, b));
     else if (PFV.sort === 'title') out.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
     else out.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
     list.replaceChildren();
@@ -1221,25 +1230,29 @@ async function renderProjectFindings(projectId) {
     for (const f of out) list.append(el('div', { className: 'pf-item' },
       el('button', { className: 'pf-target', title: 'Open ' + f.target, onclick: () => location.hash = `/target/${f.target_id}` },
         codeBadge(f.target_type), el('span', { className: 'pf-tname' }, f.target)),
-      findingCard(f, f.target_id, () => renderProjectFindings(projectId))));
+      findingCard(f, f.target_id, () => renderProjectFindings(projectId), { canWork: canWorkProjectC(p) })));
   };
   const search = el('input', { className: 'evsearch', type: 'search', placeholder: 'Search vulnerabilities…', value: PFV.q });
   search.oninput = () => { PFV.q = search.value; repaint(); };
   const sortSel = customSelect({ className: 'evsort', value: PFV.sort, options: [
-    { value: 'sev', label: 'Severity' }, { value: 'new', label: 'Newest' }, { value: 'title', label: 'Title' }] });
+    { value: 'sev', label: 'Severity' }, { value: 'rep', label: 'Reported first' }, { value: 'unrep', label: 'Not reported first' },
+    { value: 'new', label: 'Newest' }, { value: 'title', label: 'Title' }] });
   sortSel.addEventListener('change', () => { PFV.sort = sortSel.value; repaint(); });
 
-  // Duplicates are still listed (with a badge) but don't count toward the totals.
+  // Duplicates are still listed (with a badge) but don't count toward the totals. Ignored findings are
+  // left out of the report on purpose, so the write-up progress is measured over the rest.
   const counted = vulns.filter(f => !f.duplicate);
   const dupes = vulns.length - counted.length;
-  const written = counted.filter(f => f.in_report).length;
-  const wpct = counted.length ? Math.round(written / counted.length * 100) : 0;
+  const written = counted.filter(f => reportState(f) === 1).length;
+  const ignored = counted.filter(f => reportState(f) === 2).length;
+  const toWrite = counted.length - ignored;
+  const wpct = toWrite ? Math.round(written / toWrite * 100) : 0;
   view.replaceChildren(el('div', { className: 'page narrow' },
     el('div', { className: 'kicker' }, 'Engagement · ' + p.name),
     el('div', { className: 'pf-head' },
       el('h1', {}, 'Findings'),
       vulns.length ? el('div', { className: 'pf-progress' },
-        el('span', {}, `${counted.length} vuln${counted.length === 1 ? '' : 's'} · ${written} written up` + (dupes ? ` · ${dupes} duplicate` : '')),
+        el('span', {}, `${counted.length} vuln${counted.length === 1 ? '' : 's'} · ${written} written up` + (ignored ? ` · ${ignored} ignored` : '') + (dupes ? ` · ${dupes} duplicate` : '')),
         el('span', { className: 'stat-bar', style: 'width:88px;margin:0' }, el('span', { style: `width:${wpct}%;background:var(--ok)` }))) : null),
     el('div', { className: 'evfilter pf-filter' }, el('div', { className: 'evrow' }, search, sortSel)),
     list));
@@ -1440,7 +1453,7 @@ async function renderTarget(id) {
     if (!a.findings.length) list.append(el('div', { className: 'empty', style: 'border:0' },
       el('div', {}, 'No retest items yet. Add one for each finding from the previous engagement you re-checked.'),
       el('button', { className: 'btn gold', onclick: () => addFinding(id, true) }, icon('plus', 12), 'Add the first')));
-    for (const f of a.findings) list.append(findingCard(f, id));
+    for (const f of a.findings) { f.target_type = 'retest'; list.append(findingCard(f, id, undefined, { canWork: a.can_work })); }
     const counts = { fixed: 0, half_fixed: 0, not_fixed: 0 };
     for (const f of a.findings) if (f.fix_status) counts[f.fix_status]++;
     return $('#view').replaceChildren(el('div', { className: 'page narrow' },
@@ -1463,7 +1476,7 @@ async function renderTarget(id) {
     if (!a.findings.length) list.append(el('div', { className: 'empty', style: 'border:0' },
       el('div', {}, 'No findings yet. Record the exploit — notes, requests, credentials and screenshots — as your proof of concept.'),
       el('button', { className: 'btn gold', onclick: () => addFinding(id, false) }, icon('plus', 12), 'Add the first')));
-    for (const f of a.findings) list.append(findingCard(f, id));
+    for (const f of a.findings) list.append(findingCard(f, id, undefined, { canWork: a.can_work }));
     return $('#view').replaceChildren(el('div', { className: 'page narrow' },
       el('div', { className: 'kicker' }, 'Proof of concept'),
       el('h1', {}, a.label),
@@ -1586,8 +1599,8 @@ async function renderTarget(id) {
     if (f._target) return el('div', { className: 'dock-sub' },
       el('button', { className: 'dock-sub-t', title: 'Open ' + f._target.label, onclick: () => location.hash = `/target/${f._target.id}` },
         codeBadge(f._target.type), el('span', {}, f._target.label)),
-      findingCard(f, f._target.id, () => renderTarget(id)));
-    const card = findingCard(f, id);
+      findingCard(f, f._target.id, () => renderTarget(id), { canWork: mayContribute }));
+    const card = findingCard(f, id, undefined, { canWork: mayContribute });
     return (mayContribute && f.kind === 'vuln' && moveTargets.length) ? wireFindingDrag(card, f) : card;
   };
   const repaint = () => {
@@ -2378,6 +2391,10 @@ function openCvssEditor(currentVector, onApply) {
 }
 const FIX_STATUS = [{ value: 'not_fixed', label: 'Not fixed' }, { value: 'half_fixed', label: 'Partially fixed' }, { value: 'fixed', label: 'Fixed' }];
 const fixLabel = (v) => (FIX_STATUS.find(x => x.value === v)?.label || v);
+// A retest item re-checks a finding from an earlier engagement: it is not a new finding, is never
+// graded or counted, and its "severity" reads RETEST. Known by its target type (or, on the target's own
+// page, by the fix status every retest item carries).
+const isRetestItem = (f) => f.target_type === 'retest' || f.fix_status != null;
 // A vuln's location(s) are stored as a "Location: a, b, c" first line of the body.
 const parseLocations = (body) => { const m = /^Location:\s*(.+)/.exec(body || ''); return m ? m[1].split(',').map(s => s.trim()).filter(Boolean) : []; };
 const stripLocationPrefix = (body) => (body || '').replace(/^Location:.*\n\n?/, '');
@@ -2385,24 +2402,32 @@ const stripLocationPrefix = (body) => (body || '').replace(/^Location:.*\n\n?/, 
 // credential re-populates its inputs instead of blanking them.
 const credField = (body, key) => { const m = new RegExp('^' + key + ':[ \\t]?(.*)$', 'm').exec(body || ''); return m ? m[1].trim() : ''; };
 
-// A tick that marks whether this finding has been written into the report, so it's obvious at a
-// glance what's already covered and what's left. Toggles in place and refreshes the view.
+// A finding's report status (in_report): 0 not reported · 1 written into the report · 2 ignored (left
+// out on purpose). Two toggles — the tick marks it written up, Ignore sets it aside; clicking the active
+// one returns it to not reported — so it's obvious at a glance what's covered and what's left.
+const reportState = (f) => (Number(f.in_report) === 2 ? 2 : f.in_report ? 1 : 0);
 function reportTick(f, afterToggle) {
-  const b = el('button', { className: 'reptick', type: 'button' });
+  const tick = el('button', { className: 'reptick', type: 'button' });
+  const ign = el('button', { className: 'repign', type: 'button' });
   const paint = () => {
-    const on = !!f.in_report;
-    b.className = 'reptick' + (on ? ' on' : '');
-    b.title = on ? 'Written into the report — click to unmark' : 'Mark as added to the report';
-    b.replaceChildren(icon('check', 11), el('span', {}, on ? 'In report' : 'Mark done'));
+    const st = reportState(f);
+    tick.className = 'reptick' + (st === 1 ? ' on' : '');
+    tick.title = st === 1 ? 'Written into the report — click to unmark' : 'Mark as added to the report';
+    tick.replaceChildren(icon('check', 11), el('span', {}, st === 1 ? 'In report' : 'Mark done'));
+    ign.className = 'repign' + (st === 2 ? ' on' : '');
+    ign.title = st === 2 ? 'Ignored — left out of the report on purpose. Click to undo' : 'Ignore — leave it out of the report';
+    ign.replaceChildren(icon('na', 11), el('span', {}, st === 2 ? 'Ignored' : 'Ignore'));
   };
   paint();
-  b.onclick = async (e) => {
+  const set = async (e, want) => {
     e.stopPropagation();
-    const next = f.in_report ? 0 : 1;
+    const next = reportState(f) === want ? 0 : want;
     try { await api('/findings/' + f.id, { method: 'PATCH', body: { in_report: next } }); f.in_report = next; paint(); afterToggle && afterToggle(); }
     catch (err) { alert('Could not update: ' + err.message); }
   };
-  return b;
+  tick.onclick = (e) => set(e, 1);
+  ign.onclick = (e) => set(e, 2);
+  return el('span', { className: 'repctl' }, tick, ign);
 }
 
 // One finding, as shown in the evidence log and the retest view (severity, kind or fix-status,
@@ -2411,8 +2436,11 @@ function reportTick(f, afterToggle) {
 // project-wide findings list passes its own re-render so it stays put instead of jumping to a target).
 // `opts.selectable` turns the card into a checkbox row (used by the dock's "move findings" mode):
 // clicking it toggles selection (via opts.onToggle) instead of opening the detail popup.
+// `opts.canWork === false` (not on this engagement) hides the edit / delete / image / report controls —
+// the server refuses those changes — but the card still opens its read-only detail.
 function findingCard(f, id, after, opts = {}) {
   after = after || (() => renderTarget(id));
+  const canWork = opts.canWork !== false;
   const stop = (e) => e.stopPropagation(); // interactive bits shouldn't open the detail popup
   const tools = el('div', { className: 'f-tools', onclick: stop },
     el('button', { className: 'ibtn', title: 'Add image', onclick: () => uploadToFinding(f.id, id, after) }, icon('image', 11)),
@@ -2424,13 +2452,15 @@ function findingCard(f, id, after, opts = {}) {
     thumb.onclick = (e) => { e.stopPropagation(); openLightbox(im, f.attachments); };
     const extra = opts.readonly ? [] : [
       el('button', { className: 'shotdl', title: 'Download image', onclick: (e) => { e.stopPropagation(); downloadAttachment(im); } }, icon('down', 10)),
-      el('button', { className: 'shotx', title: 'Remove image', onclick: async (e) => { e.stopPropagation(); await api('/attachments/' + im.id, { method: 'DELETE' }); after(); } }, '✕')];
+      canWork ? el('button', { className: 'shotx', title: 'Remove image', onclick: async (e) => { e.stopPropagation(); await api('/attachments/' + im.id, { method: 'DELETE' }); after(); } }, '✕') : null].filter(Boolean);
     shots.append(el('span', { className: 'f-shot' }, thumb, ...extra));
   }
   const links = (f.links || []).length ? el('div', { className: 'f-links' }, el('span', { className: 'muted' }, 'chains → '),
     ...f.links.flatMap((l, i) => [i ? el('span', { className: 'muted' }, ', ') : null, el('span', { className: 'chainlink', title: l.target }, l.title)].filter(Boolean))) : null;
   const mineToFix = f.needs_improvement && CURRENT_USER && CURRENT_USER === f.author; // glows for the finder
-  const card = el('div', { className: 'finding sev-' + (f.severity || 'info') + (f.in_report ? ' in-report' : '')
+  const retest = isRetestItem(f);
+  const card = el('div', { className: 'finding sev-' + (retest ? 'retest' : (f.severity || 'info'))
+      + (reportState(f) === 1 ? ' in-report' : '') + (reportState(f) === 2 ? ' is-ignored' : '')
       + (f.needs_improvement ? ' needs-improve' : '') + (mineToFix ? ' mine-improve' : '')
       + (f.duplicate ? ' is-dup' : '')
       + (opts.readonly ? ' ro' : '')
@@ -2441,7 +2471,8 @@ function findingCard(f, id, after, opts = {}) {
       f.duplicate ? el('span', { className: 'f-dup', title: 'Duplicate — not counted toward findings or the ranking' }, 'dup') : null,
       // For a vulnerability a grader (admin/editor) can set/change its severity right here — the chip
       // is the button, so it works in a standalone install too, with no admin page needed.
-      (f.kind === 'vuln' && isEditor() && !opts.readonly)
+      retest ? el('span', { className: 'f-sev sev-retest', title: 'Retest item — re-checks an earlier finding; not graded or counted' }, 'retest')
+      : (f.kind === 'vuln' && isEditor() && !opts.readonly)
         ? el('button', { className: 'f-sev grade' + (f.severity ? ' sev-' + f.severity : ' none'), title: 'Set severity / CVSS',
             onclick: (e) => { e.stopPropagation(); gradeDialog(f, after); } }, f.severity || 'set severity')
         : (f.severity ? el('span', { className: 'f-sev sev-' + f.severity }, f.severity) : null),
@@ -2449,8 +2480,8 @@ function findingCard(f, id, after, opts = {}) {
       // there's no "VULN" tag — only a retest fix-status label when present.
       f.fix_status ? el('span', { className: 'f-fix ' + f.fix_status }, fixLabel(f.fix_status)) : null,
       f.needs_improvement ? el('span', { className: 'f-improve' }, 'needs improvement') : null,
-      (f.kind === 'vuln' && !opts.readonly) ? reportTick(f, after) : null,   // "written into the report" tick — not in the read-only reference view
-      opts.readonly ? null : tools),
+      (f.kind === 'vuln' && !opts.readonly && canWork) ? reportTick(f, after) : null,   // "written into the report" tick — not in the read-only reference view
+      (opts.readonly || !canWork) ? null : tools),
     el('div', { className: 'f-title' }, f.title),
     (f.author || f.created_at) ? el('div', { className: 'f-by', title: 'Recorded ' + (f.created_at || '') },
       f.author ? avatarSm(f.author) : null,
@@ -2462,34 +2493,36 @@ function findingCard(f, id, after, opts = {}) {
     (f.attachments || []).length ? shots : null);
   card.onclick = opts.selectable
     ? (e) => { if (!e.target.closest('.f-tools')) opts.onToggle && opts.onToggle(); }
-    : (opts.readonly ? null : () => findingDetail(f, id, after));
+    : (opts.readonly ? null : () => findingDetail(f, id, after, canWork));
   return card;
 }
 // Full, readable view of one finding (opened by clicking its card). Read-only, with an Edit CTA.
 // `after` re-renders whatever list opened the card (a target's dock or the engagement-wide findings
 // page) so editing/grading/report-ticking a finding never navigates you away from it.
-function findingDetail(f, id, after) {
+function findingDetail(f, id, after, canWork = true) {
   after = after || (() => renderTarget(id));
   const locs = parseLocations(f.body);
+  const retest = isRetestItem(f);
   modal({
     kicker: f.fix_status ? 'Retest · ' + fixLabel(f.fix_status) : (f.kind === 'credential' ? 'Credential' : f.kind === 'note' ? 'Note' : 'Vulnerability'),
-    title: f.title, cta: 'Edit', wide: true,
+    title: f.title, cta: canWork ? 'Edit' : 'Close', readOnly: !canWork, wide: true,
     build: (b) => {
       b.append(el('div', { className: 'fd-badges' },
-        f.severity ? el('span', { className: 'fd-sev sev-' + f.severity }, f.severity.toUpperCase()) : null,
+        retest ? el('span', { className: 'fd-sev sev-retest' }, 'RETEST')
+          : f.severity ? el('span', { className: 'fd-sev sev-' + f.severity }, f.severity.toUpperCase()) : null,
         f.duplicate ? el('span', { className: 'f-dup', title: 'Duplicate — not counted toward findings or the ranking' }, 'duplicate') : null,
-        f.cvss ? el('span', { className: 'fd-cvss', title: f.cvss }, 'CVSS ' + (MagiCVSS.score(f.cvss)?.toFixed(1) ?? '—')) : null,
+        (f.cvss && !retest) ? el('span', { className: 'fd-cvss', title: f.cvss }, 'CVSS ' + (MagiCVSS.score(f.cvss)?.toFixed(1) ?? '—')) : null,
         f.author ? el('span', { className: 'fd-by' }, avatarSm(f.author), 'by ' + f.author) : null,
         f.created_at ? el('span', { className: 'fd-by', title: f.created_at }, fmtWhen(f.created_at)) : null,
         // An admin can (re)grade a vuln from here — even one already graded, which the grading queue
         // no longer lists. Reuses the grade dialog (severity + CVSS).
-        (isEditor() && f.kind === 'vuln') ? el('button', { className: 'btn line sm', onclick: () => gradeDialog(f, after) }, icon('edit', 12), (f.severity || f.cvss) ? 'Change severity' : 'Set severity') : null,
-        f.kind === 'vuln' ? el('span', { className: 'fd-report' }, reportTick(f, after)) : null));
+        (isEditor() && f.kind === 'vuln' && !retest) ? el('button', { className: 'btn line sm', onclick: () => gradeDialog(f, after) }, icon('edit', 12), (f.severity || f.cvss) ? 'Change severity' : 'Set severity') : null,
+        (f.kind === 'vuln' && canWork) ? el('span', { className: 'fd-report' }, reportTick(f, after)) : null));
       if (f.needs_improvement) b.append(el('div', { className: 'improve-note' },
         el('span', { className: 'kicker' }, 'Needs improvement'),
         f.review_note ? el('div', {}, f.review_note) : null,
-        el('button', { className: 'btn line sm', style: 'margin-top:8px', onclick: () => editFinding(f, id, after) }, icon('edit', 12), 'Improve this finding')));
-      if (f.cvss) { b.append(el('label', {}, 'CVSS vector')); b.append(el('code', { className: 'fd-vector' }, f.cvss)); }
+        canWork ? el('button', { className: 'btn line sm', style: 'margin-top:8px', onclick: () => editFinding(f, id, after) }, icon('edit', 12), 'Improve this finding') : null));
+      if (f.cvss && !retest) { b.append(el('label', {}, 'CVSS vector')); b.append(el('code', { className: 'fd-vector' }, f.cvss)); }
       if (locs.length) { b.append(el('label', {}, locs.length > 1 ? 'Locations' : 'Location')); b.append(el('div', { className: 'fd-locs' }, ...locs.map(l => el('code', {}, l)))); }
       const bodyText = f.kind === 'vuln' ? stripLocationPrefix(f.body) : f.body;
       if (bodyText) { b.append(el('label', {}, f.kind === 'credential' ? 'Credentials' : 'Details')); b.append(el('pre', { className: 'fd-body' }, bodyText)); }
@@ -2572,13 +2605,12 @@ async function findingModal(assetId, finding = null, isRetest = false, after, st
   if (isRetest) {
     modal({
       kicker: 'Retest', title: editing ? 'Edit retest item' : 'Add retest item', cta: 'Save',
-      note: 'Re-checking a finding from the previous engagement — record its ID, current severity, whether it was fixed, and evidence.',
+      note: 'Re-checking a finding from the previous engagement — record its ID, whether it was fixed, and evidence. A retest item is not a new finding: it is never graded or counted.',
       build: (b) => {
         field(b, 'Original finding ID *', 'title', { value: finding?.title || '', ph: 'e.g. ACME-2024-014 — SQLi in /search' });
         const c1 = el('div'), c2 = el('div');
-        // Severity is a grader's (admin/editor) call; a worker just records the fix status.
-        if (isEditor()) field(c1, 'Severity', 'severity', { value: finding?.severity || 'medium', options: SEVERITIES.filter(s => s.value) });
-        else if (finding?.severity) c1.append(el('label', {}, 'Severity'), el('div', { className: 'readonly-sev' }, el('span', { className: 'fd-sev sev-' + finding.severity }, finding.severity.toUpperCase())));
+        // A retest item has no severity of its own — it is RETEST, nothing else.
+        c1.append(el('label', {}, 'Severity'), el('div', { className: 'readonly-sev' }, el('span', { className: 'fd-sev sev-retest' }, 'RETEST')));
         field(c2, 'Fix status', 'fix_status', { value: finding?.fix_status || 'not_fixed', options: FIX_STATUS });
         b.append(el('div', { className: 'field-row' }, c1, c2));
         field(b, 'Explanation *', 'body', { value: finding?.body || '', textarea: true, ph: 'what you re-tested and the result' });
@@ -2594,7 +2626,7 @@ async function findingModal(assetId, finding = null, isRetest = false, after, st
         if (!body) miss.push('an explanation');
         if (miss.length) throw new Error('Please add ' + miss.join(', ') + '.');
         await saveFinding(editing, finding, assetId, {
-          title, kind: 'vuln', severity: raw.severity || null,
+          title, kind: 'vuln',
           body, fix_status: raw.fix_status || 'not_fixed', refs: [...selectedRefs],
         }, images);
         after();
@@ -2694,7 +2726,7 @@ async function findingModal(assetId, finding = null, isRetest = false, after, st
   });
 }
 const addFinding = (assetId, isRetest = false, after, startKind) => findingModal(assetId, null, isRetest, after, startKind);
-const editFinding = (finding, assetId, after) => findingModal(assetId, finding, finding?.fix_status != null || finding?.kind === 'retest', after);
+const editFinding = (finding, assetId, after) => findingModal(assetId, finding, !!finding && isRetestItem(finding), after);
 
 // Upload one or more images to a finding via the raw endpoint (no base64 bloat).
 function uploadToFinding(findingId, assetId, after) {
@@ -2804,7 +2836,7 @@ async function findingsCheckPopup(projectId) {
   document.body.append(root);
   document.addEventListener('keydown', onKey, true);
   search.focus();
-  try { all = (await api('/projects/' + projectId + '/findings')).filter(f => f.kind === 'vuln'); } catch (e) { toast(e.message); }
+  try { all = (await api('/projects/' + projectId + '/findings')).filter(f => f.kind === 'vuln' && !isRetestItem(f)); } catch (e) { toast(e.message); }
   paint();
 }
 
@@ -4266,7 +4298,7 @@ function revokeDevice(ctx, id, name) {
 function removeDevice(ctx, id, name) {
   modal({
     kicker: 'Admin', title: `Remove ${name}?`, cta: 'Remove', danger: true,
-    note: 'Deletes this device (and its account, if it has no other devices) from the server. Already revoked, so no active access is affected. Their synced work stays on the server; this only tidies the list.',
+    note: 'Deletes this device from the server. Operator accounts are not touched. Already revoked, so no active access is affected. Their synced work stays on the server; this only tidies the list.',
     onSubmit: async () => { await api(`${ctx.base}/devices/${encodeURIComponent(id)}?hard=1`, { method: 'DELETE' }); toast('Removed'); renderAdmin(); },
   });
 }

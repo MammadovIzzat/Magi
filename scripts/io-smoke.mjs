@@ -27,7 +27,8 @@ const aid = rid(db.prepare(`INSERT INTO assets (project_id,folder_id,type,label)
 const fA = rid(db.prepare(`INSERT INTO findings (asset_id,title,kind) VALUES (?,?,?)`).run(aid, 'Creds', 'credential'));
 const uidA = db.prepare(`SELECT uid FROM findings WHERE id=?`).get(fA).uid;
 db.prepare(`INSERT INTO findings (asset_id,title,kind,severity,refs,author) VALUES (?,?,?,?,?,?)`).run(aid, 'RCE', 'vuln', 'critical', JSON.stringify([uidA]), 'mormor');
-db.prepare(`INSERT INTO findings (asset_id,title,kind,severity,duplicate) VALUES (?,?,?,?,?)`).run(aid, 'DupRCE', 'vuln', 'high', 1);
+db.prepare(`INSERT INTO findings (asset_id,title,kind,severity,duplicate,in_report) VALUES (?,?,?,?,?,?)`).run(aid, 'DupRCE', 'vuln', 'high', 1, 2);
+db.prepare(`INSERT INTO findings (asset_id,title,kind,severity,in_report) VALUES (?,?,?,?,?)`).run(aid, 'IgnoredXSS', 'vuln', 'low', 2);
 // a retest target with a fix status
 const rf = rid(db.prepare(`INSERT INTO folders (project_id,grp,label) VALUES (?,?,?)`).run(pid, 'retest', 'RT'));
 const ra = rid(db.prepare(`INSERT INTO assets (project_id,folder_id,type,label) VALUES (?,?,?,?)`).run(pid, rf, 'retest', 'Remediation'));
@@ -45,20 +46,26 @@ const impProj = db.prepare(`SELECT priority,assignee,overview FROM projects WHER
 check('import preserves engagement priority / assignee / overview',
   impProj.priority === 4 && impProj.assignee === 'ana,bob' && /engagement details here/.test(impProj.overview || ''));
 check('import preserves the retest fix status', imp.find(f => f.title === 'ACME-1')?.fix_status === 'half_fixed');
-const impDup = db.prepare(`SELECT f.duplicate FROM findings f JOIN assets a ON a.id=f.asset_id WHERE a.project_id=? AND f.title='DupRCE'`).get(res.projectId);
+const impDup = db.prepare(`SELECT f.duplicate, f.in_report FROM findings f JOIN assets a ON a.id=f.asset_id WHERE a.project_id=? AND f.title='DupRCE'`).get(res.projectId);
 check('import preserves the duplicate flag', impDup?.duplicate === 1);
+check('import preserves the ignored report status', impDup?.in_report === 2);
 check('import preserves the report tick', imp.find(f => f.title === 'ACME-1')?.in_report === 1);
 check('import keeps the attack-chain link', rce && JSON.parse(rce.refs || '[]').length === 1);
 check('the chain link is remapped to the imported finding’s new uid', rce && JSON.parse(rce.refs)[0] === newCredsUid);
 check('the old uid did not leak into the import', rce && !JSON.parse(rce.refs).includes(uidA));
 
 // HTML findings report: vulnerabilities only — notes/creds are never listed or counted, and
-// there's no "with images" tile. (pid has: 1 credential + 2 vulns.)
+// there's no "with images" tile. (pid has: 1 credential, 1 vuln, 1 duplicate, 1 ignored vuln, and
+// 1 retest item.) Ignored findings are left out entirely; the retest item is listed in its own
+// "Retest results" section as RETEST + fix status, and never counted as a finding.
 const { projectReportHTML } = await import('../report-html.js');
 const html = projectReportHTML(pid);
 check('report lists the vulnerabilities', html.includes('RCE') && html.includes('ACME-1'));
 check('report omits notes/credentials', !html.includes('>Creds<') && !/Creds<\/h3>/.test(html));
-check('report counts only vulns as findings', /<div class="n">2<\/div><div class="k">findings<\/div>/.test(html));
+check('report counts only new vulns as findings (not retest items)', /<div class="n">1<\/div><div class="k">findings<\/div>/.test(html));
+check('report leaves ignored findings out', !html.includes('IgnoredXSS'));
+check('report lists retest items in their own section, as RETEST + fix status',
+  /Retest results<\/h2>[\s\S]*chip sev">retest<\/span><span class="chip fix fix-half_fixed">partially fixed[\s\S]*ACME-1/.test(html));
 check('report has no "with images" tile', !html.includes('with images'));
 check('report credits who recorded the finding', html.includes('recorded by mormor'));
 

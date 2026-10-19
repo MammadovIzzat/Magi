@@ -68,9 +68,10 @@ function req(method, path, { token, device, cookie, body } = {}) {
   });
 }
 // Raw (non-JSON) upload — screenshots go up as the raw file body with the mime in the header.
-function rawReq(path, buf, { token, mime = 'image/png', filename = 'shot.png' } = {}) {
+function rawReq(path, buf, { token, device, mime = 'image/png', filename = 'shot.png' } = {}) {
   const headers = { 'content-type': mime, 'content-length': buf.length, 'x-filename': encodeURIComponent(filename) };
   if (token) headers.authorization = `Bearer ${token}`;
+  if (device) headers['x-magi-device'] = device;
   return new Promise((resolve, reject) => {
     const r = https.request({ host: '127.0.0.1', port: PORT, method: 'POST', path, agent, headers }, res => {
       let b = ''; res.on('data', d => b += d);
@@ -210,6 +211,13 @@ const cItemEdit = await req('PATCH', `/api/items/${anItem.id}`, { token: carolTo
 check('a worker NOT on the engagement cannot edit its checklist', cItemEdit.status === 403);
 const cFind = await req('POST', `/api/targets/${webT.id}/findings`, { token: carolTok, device: dev1, body: { title: 'x', kind: 'note' } });
 check('a worker NOT on the engagement cannot record on its targets', cFind.status === 403);
+// …nor change what the team recorded there, nor assign themselves to get in.
+check('a worker NOT on the engagement cannot edit its findings', (await req('PATCH', `/api/findings/${wf.json.id}`, { token: carolTok, device: dev1, body: { title: 'nope' } })).status === 403);
+check('a worker NOT on the engagement cannot delete its findings', (await req('DELETE', `/api/findings/${wf.json.id}`, { token: carolTok, device: dev1 })).status === 403);
+check('a worker NOT on the engagement cannot add a screenshot to its findings',
+  (await rawReq(`/api/findings/${wf.json.id}/attachments`, Buffer.from('89504e470d0a1a0a', 'hex'), { token: carolTok, device: dev1 })).status === 403);
+check('a worker cannot assign themselves to an engagement', (await req('PATCH', `/api/projects/${made.json.id}/assignee`, { token: carolTok, device: dev1, body: { assignee: 'carol' } })).status === 403
+  && !((await req('GET', `/api/projects/${made.json.id}`, { token: adminTok })).json.assignee || '').includes('carol'));
 
 const fA = await req('POST', `/api/targets/${webT.id}/findings`, { token: adminTok, body: { title: 'Creds', kind: 'credential', body: 'a:b' } });
 check('a finding can be created on a target', fA.status === 201 && !!fA.json?.id);
@@ -305,6 +313,17 @@ const anaAfter = (await req('GET', '/api/admin/ranking', { token: adminTok })).j
 check('deleting the project removes its finding from the live ranking', anaAfter === anaMid - 1);
 const rf = await req('POST', `/api/targets/${rT.json.id}/findings`, { token: adminTok, body: { title: 'ACME-1', kind: 'vuln', fix_status: 'half_fixed' } });
 check('a retest finding stores its fix status', rf.status === 201 && rf.json?.fix_status === 'half_fixed');
+// A retest item is not a new finding: its severity is RETEST (stored as none) and it is never counted.
+const statsBeforeRetest = (await req('GET', `/api/projects/${made.json.id}`, { token: adminTok })).json.findingStats;
+const rCrit = await req('POST', `/api/targets/${rT.json.id}/findings`, { token: adminTok, body: { title: 'ACME-2', kind: 'vuln', severity: 'critical', fix_status: 'fixed' } });
+check('a retest item takes no severity, even from an admin', rCrit.status === 201 && rCrit.json?.severity == null);
+const rGrade = await req('PATCH', `/api/findings/${rCrit.json.id}`, { token: adminTok, body: { severity: 'high', cvss: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H' } });
+check('a retest item cannot be graded later either', rGrade.status === 200 && rGrade.json?.severity == null && rGrade.json?.cvss == null);
+const statsAfterRetest = (await req('GET', `/api/projects/${made.json.id}`, { token: adminTok })).json.findingStats;
+check('retest items never count as engagement findings', statsAfterRetest.vulns === statsBeforeRetest.vulns
+  && statsAfterRetest.bySeverity.critical === statsBeforeRetest.bySeverity.critical);
+check('retest items never count in the engagements list',
+  (await req('GET', '/api/projects', { token: adminTok })).json.find(p => p.id === made.json.id)?.finding_count === statsAfterRetest.vulns);
 
 // ---- re-classifying an entry flips its ranking credit both ways ----
 const anaRankNow = () => req('GET', '/api/admin/ranking', { token: adminTok }).then(r => (r.json?.ranking || []).find(x => x.author === 'ana')?.findings || 0);
@@ -388,6 +407,14 @@ const tickKept = await req('PATCH', `/api/findings/${badFix.json.id}`, { token: 
 check('the report tick survives an unrelated edit', tickKept.json?.in_report === 1 && tickKept.json?.title === 'renamed');
 const tickOff = await req('PATCH', `/api/findings/${badFix.json.id}`, { token: adminTok, body: { in_report: 0 } });
 check('the report tick can be cleared', tickOff.json?.in_report === 0);
+const tickIgn = await req('PATCH', `/api/findings/${badFix.json.id}`, { token: adminTok, body: { in_report: 2 } });
+check('a finding can be marked ignored (left out of the report)', tickIgn.status === 200 && tickIgn.json?.in_report === 2);
+const tickIgnKept = await req('PATCH', `/api/findings/${badFix.json.id}`, { token: adminTok, body: { title: 'renamed again' } });
+check('the ignored mark survives an unrelated edit', tickIgnKept.json?.in_report === 2);
+const mdIgnored = (await req('GET', `/api/projects/${made.json.id}/export`, { token: adminTok })).raw;
+check('the Markdown report leaves an ignored finding out', typeof mdIgnored === 'string' && !mdIgnored.includes('renamed again') && mdIgnored.includes('ACME-1'));
+check('the Markdown report shows a retest item as retest + fix status, not a severity', /\*\*ACME-1\*\* \(retest, partially fixed\)/.test(mdIgnored));
+await req('PATCH', `/api/findings/${badFix.json.id}`, { token: adminTok, body: { in_report: 0 } });
 
 // At-rest encryption is keyed by the server's own secret file — the app-level rekey is refused
 // on a team server (only a standalone/desktop workspace can encrypt itself through the app).
@@ -531,6 +558,39 @@ const afterCas = (await req('GET', '/api/admin/audit?limit=30', { token: adminTo
 check('a cascade target delete logs the target, not each child task',
   afterCas.some(r => /^Deleted target “cascade-del\.test”/.test(r.action || ''))
   && !afterCas.some(r => /^Deleted task/.test(r.action || '') && (r.action || '').includes(casItem.title)));
+// a worker's sync push is held to the same rules as the API: no engagement-level changes, nothing
+// outside the engagements they're assigned to, no grading — refused rows are dropped and counted
+const pushAs = (body) => req('POST', '/api/sync/push', { token: workerToken, device: dev1, body: { rows: [], tombstones: [], ...body } });
+const madeUid = (await req('GET', `/api/projects/${made.json.id}`, { token: adminTok })).json.uid;
+const wNewProj = await pushAs({ rows: [{ table: 'projects', uid: 'synctest-proj-0001', hlc: '999999999999999-000020-deadbeefdeadbeef',
+  fields: { name: 'Pushed by a worker', status: 'active', created_at: '2026-01-01 00:00:00' }, parents: {} }] });
+check('a worker cannot create an engagement through sync', wNewProj.status === 200 && wNewProj.json.refused === 1
+  && !(await req('GET', '/api/projects', { token: adminTok })).json.some(p => p.name === 'Pushed by a worker'));
+await pushAs({ rows: [{ table: 'projects', uid: madeUid, hlc: '999999999999999-000021-deadbeefdeadbeef',
+  fields: { name: 'Acme Q3', client: 'Acme', status: 'active', created_at: '2026-01-01 00:00:00' }, parents: {} }] });
+check('a worker cannot reopen an engagement through sync', (await req('GET', `/api/projects/${made.json.id}`, { token: adminTok })).json.status === 'finished');
+await pushAs({ tombstones: [{ tbl: 'projects', uid: madeUid, hlc: '999999999999999-000022-deadbeefdeadbeef' }] });
+check('a worker cannot delete an engagement through sync', (await req('GET', `/api/projects/${made.json.id}`, { token: adminTok })).status === 200);
+const offProj = (await req('POST', '/api/projects', { token: adminTok, body: { name: 'Not on it' } })).json;
+const offT = (await req('POST', `/api/projects/${offProj.id}/targets`, { token: adminTok, body: { type: 'web', label: 'https://off.test' } })).json;
+const offFull = (await req('GET', `/api/targets/${offT.id}`, { token: adminTok })).json;
+const offItem = offFull.items.find(i => i.kind === 'check');
+const wOff = await pushAs({ rows: [
+  { table: 'items', uid: offItem.uid, hlc: '999999999999999-000023-deadbeefdeadbeef', parents: { asset_id: offFull.uid, parent_id: null },
+    fields: { group_key: offItem.group_key, group_title: offItem.group_title, title: offItem.title, payloads: '[]', kind: 'check', options: '[]', status: 'done', sort: offItem.sort, is_custom: 0, created_at: offItem.created_at } },
+  { table: 'findings', uid: 'synctest-finding-off1', hlc: '999999999999999-000024-deadbeefdeadbeef', parents: { asset_id: offFull.uid },
+    fields: { title: 'Off-engagement finding', kind: 'vuln', author: 'ana', in_report: 0, needs_improvement: 0, duplicate: 0, created_at: '2026-01-01 00:00:00' } },
+], tombstones: [{ tbl: 'assets', uid: offFull.uid, hlc: '999999999999999-000025-deadbeefdeadbeef' }] });
+const offAfter = await req('GET', `/api/targets/${offT.id}`, { token: adminTok });
+check('a worker cannot work an engagement they are not on through sync', wOff.status === 200 && wOff.json.refused === 3
+  && offAfter.status === 200 && offAfter.json.items.find(i => i.id === offItem.id)?.status === 'todo'
+  && !offAfter.json.findings.some(f => f.title === 'Off-engagement finding'));
+const sqli = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.findings.find(f => f.id === wVuln.json.id);
+const wGrade = await pushAs({ rows: [{ table: 'findings', uid: sqli.uid, hlc: '999999999999999-000026-deadbeefdeadbeef', parents: { asset_id: webUid },
+  fields: { title: sqli.title, kind: 'vuln', severity: 'info', cvss: null, duplicate: 1, needs_improvement: 1, review_note: 'self-graded', in_report: 0, author: 'ana', created_at: sqli.created_at } }] });
+const sqliAfter = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.findings.find(f => f.id === wVuln.json.id);
+check('a worker cannot grade, mark duplicate or send back a finding through sync', wGrade.status === 200 && wGrade.json.applied === 1
+  && sqliAfter.severity === 'critical' && (sqliAfter.cvss || '').includes('AV:N') && sqliAfter.duplicate === 0 && sqliAfter.needs_improvement === 0);
 // clearing the activity log (admin only) wipes it, but the clear itself is recorded (never no-trace)
 check('a worker cannot clear the activity log', (await req('DELETE', '/api/admin/audit', { token: workerToken, device: dev1 })).status === 403);
 const clr = await req('DELETE', '/api/admin/audit', { token: adminTok });
@@ -677,6 +737,7 @@ const queue1 = await req('GET', '/api/ungraded', { token: adminTok });
 check('the grading queue lists an ungraded vulnerability', queue1.status === 200 && queue1.json.some(f => f.id === ung.json.id && f.author === 'ana' && !!f.project));
 check('grading rows carry an attachments array (screenshots show in the grade dialog)', Array.isArray(queue1.json.find(f => f.id === ung.json.id)?.attachments));
 check('notes/creds never appear in the grading queue', !queue1.json.some(f => f.kind && f.kind !== 'vuln'));
+check('retest items never appear in the grading queue (they re-check an old finding)', !queue1.json.some(f => f.id === rf.json.id || f.target_type === 'retest'));
 // "Needs improvement": a reviewer sends it back to the finder with a note
 const wBack = await req('PATCH', `/api/findings/${ung.json.id}`, { token: workerToken, device: dev1, body: { needs_improvement: 1, review_note: 'sneaky' } });
 check('a worker cannot flag needs-improvement', !wBack.json?.needs_improvement);

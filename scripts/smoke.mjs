@@ -335,6 +335,23 @@ checks.push(['marking a finding done keeps you on the findings page', await ev(`
     const toggled = !!now && now.classList.contains("on") !== wasOn;
     return stillFindings && scrollTracked && toggled;
   } catch (e) { return false; }`)]);
+// A vuln can be set aside as IGNORED (left out of the report) — the toggle flips the card's state in
+// place — and the findings page offers the report-status sorts.
+checks.push(['ignore toggle + report-status sorts on the findings page', await ev(`
+  try {
+    const p = (await (await fetch("/api/projects")).json())[0];
+    location.hash = "#/findings/" + p.id; await new Promise(r => setTimeout(r, 1000));
+    const ign = document.querySelector(".pf-item .repign");
+    if (!ign) return false;
+    ign.click(); await new Promise(r => setTimeout(r, 500));
+    const on = !!document.querySelector(".pf-item .finding.is-ignored .repign.on");
+    document.querySelector(".pf-item .finding.is-ignored .repign")?.click(); await new Promise(r => setTimeout(r, 500));
+    const off = !document.querySelector(".pf-item .finding.is-ignored");
+    document.querySelector(".pf-filter .evsort .sel-trigger")?.click(); await new Promise(r => setTimeout(r, 200));
+    const opts = [...document.querySelectorAll(".sel-menu .sel-opt")].map(o => o.textContent);
+    document.querySelector(".pf-filter .evsort .sel-trigger")?.click();
+    return on && off && opts.includes("Reported first") && opts.includes("Not reported first");
+  } catch (e) { return false; }`)]);
 // Drag a TARGET onto another in the rail to nest it. Drag events key off module state set on
 // dragstart, so a synthetic dragstart→drop exercises the same path as a real drag.
 checks.push(['drag a target onto another in the rail nests it', await ev(`
@@ -543,7 +560,7 @@ checks.push(['engagement priority meter, overview + assignees', await ev(`
     if (!targetsTile) return false;
     targetsTile.click(); await new Promise(r => setTimeout(r, 700));
     const onTargets = location.hash.includes("/targets") && !!document.querySelector(".srule");
-    // engagement assignee endpoint persists a change (display-only, any user may set it)
+    // engagement assignee endpoint persists a change (the standalone owner is an admin)
     await fetch("/api/projects/" + hi.id + "/assignee", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ assignee: "admin,ana" }) });
     const asg = (await (await fetch("/api/projects/" + hi.id)).json()).assignee || "";
     return savedPrio && meters && sorted && ovPrio && ovAssign && onTargets && asg.includes("ana");

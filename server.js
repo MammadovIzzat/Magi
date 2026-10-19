@@ -823,13 +823,14 @@ app.get('/api/admin/users/:id/tasks', requireAdmin, (req, res) => {
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group')) AS total,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group') AND i.status IN ('done','na','yes','no')) AS handled,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.status='flag') AS flags,
-      (SELECT COUNT(*) FROM findings f WHERE f.asset_id=a.id AND f.kind='vuln' AND f.duplicate=0) AS findings
+      (SELECT COUNT(*) FROM findings f WHERE f.asset_id=a.id AND f.kind='vuln' AND f.duplicate=0 AND a.type<>'retest') AS findings
       FROM assets a JOIN projects p ON p.id=a.project_id
       WHERE a.project_id IN (${pids.map(() => '?').join(',')}) ORDER BY p.name, a.label`).all(...pids)
     .map(t => ({ id: t.id, type: t.type, label: t.label, project: t.project, project_id: t.project_id,
       total: t.total, handled: t.handled, flags: t.flags, findings: t.findings,
       done: t.total > 0 && t.handled >= t.total })) : [];
-  const authored = q(`SELECT COUNT(*) c FROM findings WHERE author=? AND kind='vuln' AND duplicate=0`).get(uname).c;
+  const authored = q(`SELECT COUNT(*) c FROM findings f JOIN assets a ON a.id=f.asset_id
+    WHERE f.author=? AND f.kind='vuln' AND f.duplicate=0 AND a.type<>'retest'`).get(uname).c;
   res.json({ user: u, projects, targets, authored });
 });
 // Admin creates an operator account (username + initial password + role). Accounts exist
@@ -952,7 +953,7 @@ const SEV_WEIGHT = { critical: 10, high: 6, medium: 3, low: 1, info: 0 };
 app.get('/api/admin/ranking', requireAdmin, (req, res) => {
   const rows = q(`SELECT f.author, a.type AS type, a.project_id AS project_id, f.severity, f.created_at
     FROM findings f JOIN assets a ON a.id=f.asset_id
-    WHERE f.kind='vuln' AND f.duplicate=0`).all();
+    WHERE f.kind='vuln' AND f.duplicate=0 AND a.type<>'retest'`).all();
   const roles = {};
   for (const u of q(`SELECT username, role FROM users`).all()) roles[u.username] = u.role;
   const fromMs = Number(req.query.from), toMs = Number(req.query.to);
@@ -1011,37 +1012,79 @@ if (SERVER_MODE) {
     const wm = (b.wm && typeof b.wm === 'object' && !Array.isArray(b.wm)) ? b.wm : {};
     res.json(collectChanges(db, '', { exceptNode: validNode(b.node), sinceMap: wm }));
   });
+  // A worker's push is held to the same rules as the API routes: no engagement-level changes (no
+  // projects rows or tombstones), changes only inside engagements they are assigned to, and no grading
+  // (severity / CVSS / duplicate / needs-improvement keep the server's values). Anything outside that
+  // is dropped and counted as `refused` — not deferred, so the client doesn't resend it forever.
+  // Editors and admins push unrestricted, as they may make these changes through the API too.
+  const PROJECT_OF = { // the engagement an EXISTING row belongs to, by its uid
+    folders: `SELECT project_id p FROM folders WHERE uid=?`,
+    assets: `SELECT project_id p FROM assets WHERE uid=?`,
+    items: `SELECT a.project_id p FROM items x JOIN assets a ON a.id=x.asset_id WHERE x.uid=?`,
+    findings: `SELECT a.project_id p FROM findings x JOIN assets a ON a.id=x.asset_id WHERE x.uid=?`,
+    notebook_images: `SELECT a.project_id p FROM notebook_images x JOIN assets a ON a.id=x.asset_id WHERE x.uid=?`,
+    attachments: `SELECT a.project_id p FROM attachments x JOIN findings f ON f.id=x.finding_id JOIN assets a ON a.id=f.asset_id WHERE x.uid=?`,
+  };
+  const UP = { folders: ['project_id', 'projects'], assets: ['project_id', 'projects'], items: ['asset_id', 'assets'],
+    findings: ['asset_id', 'assets'], notebook_images: ['asset_id', 'assets'], attachments: ['finding_id', 'findings'] };
+  const GRADE_DEFAULTS = { severity: null, cvss: null, duplicate: 0, needs_improvement: 0, review_note: null };
+  function filterWorkerPush(actor, rows, tombstones) {
+    const batch = new Map(rows.filter(r => r && UP[r.table]).map(r => [r.table + ':' + r.uid, r]));
+    const ok = new Map();
+    const mayWork = (pid) => {
+      if (pid == null) return false;
+      if (!ok.has(pid)) ok.set(pid, projectAssigneesOf(pid).includes(actor.username));
+      return ok.get(pid);
+    };
+    const existingProject = (table, uid) => q(PROJECT_OF[table]).get(uid)?.p ?? null;
+    // The engagement an incoming row lands in, walking its parent uids up through the server's rows
+    // or, for a parent created in this same push, through the batch.
+    const destProject = (table, row, depth = 0) => {
+      const [fk, pt] = UP[table];
+      const puid = row.parents?.[fk];
+      if (puid == null || depth > 4) return null;
+      if (pt === 'projects') return q(`SELECT id FROM projects WHERE uid=?`).get(puid)?.id ?? null;
+      const onServer = q(PROJECT_OF[pt]).get(puid);
+      if (onServer) return onServer.p;
+      const parent = batch.get(pt + ':' + puid);
+      return parent ? destProject(pt, parent, depth + 1) : null;
+    };
+    let refused = 0;
+    const keptRows = [];
+    for (const r of rows) {
+      if (!r || !UP[r.table]) { refused++; continue; }
+      const exists = q(`SELECT 1 FROM ${r.table} WHERE uid=?`).get(r.uid);
+      if ((exists && !mayWork(existingProject(r.table, r.uid))) || !mayWork(destProject(r.table, r))) { refused++; continue; }
+      if (r.table === 'findings') {
+        const cur = q(`SELECT severity, cvss, duplicate, needs_improvement, review_note FROM findings WHERE uid=?`).get(r.uid) || GRADE_DEFAULTS;
+        const fields = { ...(r.fields || {}) };
+        for (const k of Object.keys(GRADE_DEFAULTS)) fields[k] = cur[k] ?? GRADE_DEFAULTS[k];
+        keptRows.push({ ...r, fields });
+      } else keptRows.push(r);
+    }
+    const keptTombs = [];
+    for (const t of tombstones) {
+      if (!t || !UP[t.tbl]) { refused++; continue; }
+      const inBatch = batch.get(t.tbl + ':' + t.uid);
+      const pid = q(`SELECT 1 FROM ${t.tbl} WHERE uid=?`).get(t.uid) ? existingProject(t.tbl, t.uid)
+        : inBatch ? destProject(t.tbl, inBatch) : undefined;
+      if (pid !== undefined && !mayWork(pid)) { refused++; continue; } // undefined: deletes nothing that exists
+      keptTombs.push(t);
+    }
+    return { rows: keptRows, tombstones: keptTombs, refused };
+  }
   app.post('/api/sync/push', (req, res) => {
     let { rows, tombstones } = req.body || {};
+    rows = Array.isArray(rows) ? rows : []; tombstones = Array.isArray(tombstones) ? tombstones : [];
     try {
-      // Admins and editors manage an engagement's lifecycle. For a worker, neutralize an incoming
-      // project 'status' change (keep the server's current value) before merging — so a worker
-      // cannot finish/reopen an engagement even by crafting a raw sync push.
       const actor = currentUser(req);
-      if (actor && actor.role === 'worker' && Array.isArray(rows)) {
-        rows = rows.map(r => {
-          if (r?.table === 'projects' && r.fields && 'status' in r.fields) {
-            const cur = q(`SELECT status FROM projects WHERE uid=?`).get(r.uid);
-            const serverStatus = cur ? cur.status : 'active'; // a brand-new project starts active
-            return (r.fields.status ?? 'active') === (serverStatus ?? 'active')
-              ? r : { ...r, fields: { ...r.fields, status: serverStatus } };
-          }
-          // A worker cannot GRADE a finding through a crafted push either — keep the server's
-          // current severity / CVSS (only an admin or editor sets those).
-          if (r?.table === 'findings' && r.fields && ('severity' in r.fields || 'cvss' in r.fields)) {
-            const cur = q(`SELECT severity, cvss FROM findings WHERE uid=?`).get(r.uid) || {};
-            const fields = { ...r.fields };
-            if ('severity' in fields) fields.severity = cur.severity ?? null;
-            if ('cvss' in fields) fields.cvss = cur.cvss ?? null;
-            return { ...r, fields };
-          }
-          return r;
-        });
-      }
-      const r = applyChanges(db, { rows: rows || [], tombstones: tombstones || [] });
+      let refused = 0;
+      if (actor && actor.role === 'worker') ({ rows, tombstones, refused } = filterWorkerPush(actor, rows, tombstones));
+      const r = applyChanges(db, { rows, tombstones });
       auditSyncPush(req, actor, r);   // log each synced-in change in the server trail (who/what/where, stamped at receipt)
+      if (refused) writeAudit(req, actor, `Refused ${refused} synced change${refused === 1 ? '' : 's'} outside their engagements`);
       const { log, removed, ...counts } = r; // keep these server-side; the client only needs the counts/deferred
-      res.json({ ok: true, ...counts, server_hlc: maxHlc(db) });
+      res.json({ ok: true, ...counts, refused, server_hlc: maxHlc(db) });
     } catch (e) { res.status(400).json({ error: e.message }); }
   });
 
@@ -1333,6 +1376,10 @@ app.patch('/api/templates/:type', requireManage, (req, res) => {
 });
 app.delete('/api/templates/:type', requireManage, (req, res) => {
   const t = q(`SELECT label FROM tpl_types WHERE type=?`).get(req.params.type);
+  // its follow-up checklists and catalogs go too (explicit: older DBs may lack the FK), so a type
+  // re-created under the same key starts clean instead of inheriting orphaned groups
+  q(`DELETE FROM tpl_group_items WHERE group_id IN (SELECT id FROM tpl_groups WHERE type=?)`).run(req.params.type);
+  q(`DELETE FROM tpl_groups WHERE type=?`).run(req.params.type);
   q(`DELETE FROM tpl_items WHERE type=?`).run(req.params.type);
   q(`DELETE FROM tpl_types WHERE type=?`).run(req.params.type);
   res.locals.auditAction = `Deleted asset type ${auditName(t?.label || req.params.type)}`;
@@ -1379,7 +1426,7 @@ app.delete('/api/tpl-items/:id', requireManage, (req, res) => {
 app.get('/api/projects', (req, res) => {
   res.json(q(`SELECT p.*,
       (SELECT COUNT(*) FROM assets a WHERE a.project_id=p.id) AS asset_count,
-      (SELECT COUNT(*) FROM findings f JOIN assets a ON a.id=f.asset_id WHERE a.project_id=p.id AND f.kind='vuln' AND f.duplicate=0) AS finding_count,
+      (SELECT COUNT(*) FROM findings f JOIN assets a ON a.id=f.asset_id WHERE a.project_id=p.id AND f.kind='vuln' AND f.duplicate=0 AND a.type<>'retest') AS finding_count,
       (SELECT COUNT(*) FROM items i JOIN assets a ON a.id=i.asset_id
          WHERE a.project_id=p.id AND i.kind NOT IN ('select','group')) AS total,
       (SELECT COUNT(*) FROM items i JOIN assets a ON a.id=i.asset_id
@@ -1403,7 +1450,7 @@ app.get('/api/stats.xlsx', (req, res) => {
         SUM(CASE WHEN severity='critical' THEN 1 ELSE 0 END) crit,
         SUM(CASE WHEN severity='high' THEN 1 ELSE 0 END) high,
         COUNT(*) total
-      FROM findings f JOIN assets a ON a.id=f.asset_id WHERE a.project_id=? AND f.kind='vuln' AND f.duplicate=0`).get(p.id);
+      FROM findings f JOIN assets a ON a.id=f.asset_id WHERE a.project_id=? AND f.kind='vuln' AND f.duplicate=0 AND a.type<>'retest'`).get(p.id);
     rows.push([p.name, p.start_date || '', p.end_date || '', p.targets, s.total || 0, s.crit || 0, s.high || 0]);
     tot.targets += p.targets; tot.findings += s.total || 0; tot.crit += s.crit || 0; tot.high += s.high || 0;
   }
@@ -1462,9 +1509,9 @@ app.patch('/api/projects/:id', requireEdit, (req, res) => {
   res.json(q(`SELECT * FROM projects WHERE id=?`).get(p.id));
 });
 
-// Assign operators to an engagement — display only, like a target's assignees, so any authenticated
-// user may set it (it grants no access). Stored as one normalised comma-joined list.
-app.patch('/api/projects/:id/assignee', (req, res) => {
+// Assign operators to an engagement. Assignment GRANTS work rights (canWorkProject), so only editors
+// and admins may set it. Stored as one normalised comma-joined list.
+app.patch('/api/projects/:id/assignee', requireEdit, (req, res) => {
   const p = q(`SELECT id, name FROM projects WHERE id=?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'not found' });
   const assignee = cleanAssignee(req.body?.assignee);
@@ -1524,30 +1571,33 @@ app.get('/api/projects/:id', (req, res) => {
       (SELECT COUNT(*) FROM items i JOIN assets a ON a.id=i.asset_id WHERE a.folder_id=f.id AND i.kind NOT IN ('select','group')
          AND i.status IN ('done','na','yes','no')) AS handled,
       (SELECT COUNT(*) FROM items i JOIN assets a ON a.id=i.asset_id WHERE a.folder_id=f.id AND i.status='flag') AS flags,
-      (SELECT COUNT(*) FROM findings fi JOIN assets a ON a.id=fi.asset_id WHERE a.folder_id=f.id AND fi.kind='vuln' AND fi.duplicate=0) AS findings
+      (SELECT COUNT(*) FROM findings fi JOIN assets a ON a.id=fi.asset_id WHERE a.folder_id=f.id AND fi.kind='vuln' AND fi.duplicate=0 AND a.type<>'retest') AS findings
       FROM folders f WHERE f.project_id=? ORDER BY f.created_at, f.id`).all(req.params.id);
   for (const f of assets) {
     f.items = q(`SELECT a.id, a.uid, a.type, a.label, a.assignee, a.metadata,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group')) AS total,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group') AND i.status IN ('done','na','yes','no')) AS handled,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.status='flag') AS flags,
-      (SELECT COUNT(*) FROM findings fi WHERE fi.asset_id=a.id AND fi.kind='vuln' AND fi.duplicate=0) AS findings
+      (SELECT COUNT(*) FROM findings fi WHERE fi.asset_id=a.id AND fi.kind='vuln' AND fi.duplicate=0 AND a.type<>'retest') AS findings
       FROM assets a WHERE a.folder_id=? ORDER BY a.created_at, a.id`).all(f.id).map(assetSummary);
   }
   // Engagement-wide finding aggregates for the stat tiles: total vulnerabilities, how many are
   // written into the report (in_report), the severity mix, and note/credential counts. One query.
+  // Retest items (vulns on a retest target) re-check an earlier finding — they are never counted as
+  // findings, here or in any other roll-up (lists, ranking, workload, stats export).
   const fs = q(`SELECT
-      SUM(CASE WHEN kind='vuln' AND duplicate=0 THEN 1 ELSE 0 END) AS vulns,
-      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND in_report=1 THEN 1 ELSE 0 END) AS written,
-      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND severity='critical' THEN 1 ELSE 0 END) AS critical,
-      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND severity='high' THEN 1 ELSE 0 END) AS high,
-      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND severity='medium' THEN 1 ELSE 0 END) AS medium,
-      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND severity='low' THEN 1 ELSE 0 END) AS low,
-      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND (severity='info' OR severity IS NULL OR severity='') THEN 1 ELSE 0 END) AS info,
+      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND a.type<>'retest' THEN 1 ELSE 0 END) AS vulns,
+      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND a.type<>'retest' AND in_report=1 THEN 1 ELSE 0 END) AS written,
+      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND a.type<>'retest' AND in_report=2 THEN 1 ELSE 0 END) AS ignored,
+      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND a.type<>'retest' AND severity='critical' THEN 1 ELSE 0 END) AS critical,
+      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND a.type<>'retest' AND severity='high' THEN 1 ELSE 0 END) AS high,
+      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND a.type<>'retest' AND severity='medium' THEN 1 ELSE 0 END) AS medium,
+      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND a.type<>'retest' AND severity='low' THEN 1 ELSE 0 END) AS low,
+      SUM(CASE WHEN kind='vuln' AND duplicate=0 AND a.type<>'retest' AND (severity='info' OR severity IS NULL OR severity='') THEN 1 ELSE 0 END) AS info,
       SUM(CASE WHEN kind='note' THEN 1 ELSE 0 END) AS notes,
       SUM(CASE WHEN kind='credential' THEN 1 ELSE 0 END) AS creds
     FROM findings f JOIN assets a ON a.id=f.asset_id WHERE a.project_id=?`).get(req.params.id);
-  const findingStats = { vulns: fs.vulns || 0, written: fs.written || 0, notes: fs.notes || 0, creds: fs.creds || 0,
+  const findingStats = { vulns: fs.vulns || 0, written: fs.written || 0, ignored: fs.ignored || 0, notes: fs.notes || 0, creds: fs.creds || 0,
     bySeverity: { critical: fs.critical || 0, high: fs.high || 0, medium: fs.medium || 0, low: fs.low || 0, info: fs.info || 0 } };
   res.json({ ...p, assets, findingStats });
 });
@@ -1585,6 +1635,9 @@ const GRP_KEYS = new Set(['internal', 'external', 'mobile', 'wireless', 'otiot',
 const GROUP_LABEL = { internal: 'Internal', external: 'External', mobile: 'Mobile', wireless: 'Wireless', otiot: 'OT / IoT', additional: 'Additional', retest: 'Retest' };
 const FIX_STATES = new Set(['fixed', 'not_fixed', 'half_fixed']);
 const cleanFix = (v) => (FIX_STATES.has(v) ? v : null);
+// A finding's report status (findings.in_report): 0 not reported · 1 written into the report ·
+// 2 ignored (deliberately left out). Anything else truthy reads as reported, as it always did.
+const cleanReport = (v) => (Number(v) === 2 ? 2 : (v ? 1 : 0));
 const cleanRefs = (v) => (Array.isArray(v) ? JSON.stringify(v.filter(x => typeof x === 'string').slice(0, 50)) : null);
 // Parse a finding's `refs` defensively — a hostile sync peer or a hand-edited import could
 // store non-JSON or non-string elements; never let that 500 the whole target view.
@@ -1619,7 +1672,7 @@ app.get('/api/assets/:id', (req, res) => {
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.kind NOT IN ('select','group')
          AND i.status IN ('done','na','yes','no')) AS handled,
       (SELECT COUNT(*) FROM items i WHERE i.asset_id=a.id AND i.status='flag') AS flags,
-      (SELECT COUNT(*) FROM findings fi WHERE fi.asset_id=a.id AND fi.kind='vuln' AND fi.duplicate=0) AS findings
+      (SELECT COUNT(*) FROM findings fi WHERE fi.asset_id=a.id AND fi.kind='vuln' AND fi.duplicate=0 AND a.type<>'retest') AS findings
       FROM assets a WHERE a.folder_id=? ORDER BY a.created_at, a.id`).all(f.id);
   const project = q(`SELECT id, name FROM projects WHERE id=?`).get(f.project_id);
   res.json({ ...f, project, targets: targets.map(assetSummary) });
@@ -1942,7 +1995,7 @@ function gradeFields(body, mayGrade, cur = {}) {
 // (The ranking is computed live from the findings table — no durable credit ledger anymore.)
 
 app.post('/api/targets/:id/findings', async (req, res) => {
-  const a = q(`SELECT id, assignee FROM assets WHERE id=?`).get(req.params.id);
+  const a = q(`SELECT id, type, assignee FROM assets WHERE id=?`).get(req.params.id);
   if (!a) return res.status(404).json({ error: 'asset not found' });
   const { title, kind, body, refs, fix_status, flagged_to } = req.body || {};
   if (!title) return res.status(400).json({ error: 'title required' });
@@ -1954,12 +2007,13 @@ app.post('/api/targets/:id/findings', async (req, res) => {
   if (!(await canWorkTarget(req, req.params.id))) {
     return res.status(403).json({ error: 'you must be assigned to this engagement to record findings here' });
   }
-  const { severity, cvss: vector } = gradeFields(req.body || {}, await canEdit(req)); // workers can't grade
+  // workers can't grade; a retest item is never graded — its severity is RETEST, stored as none
+  const { severity, cvss: vector } = gradeFields(req.body || {}, (await canEdit(req)) && a.type !== 'retest');
   const info = q(`INSERT INTO findings (asset_id, title, kind, severity, body, refs, fix_status, author, cvss, flagged_to) VALUES (?,?,?,?,?,?,?,?,?,?)`)
     .run(req.params.id, title, kind || 'note', severity, body || null, cleanRefs(refs), cleanFix(fix_status), author, vector, flagged_to ? String(flagged_to).slice(0, 120) : null);
   const row = q(`SELECT * FROM findings WHERE id=?`).get(info.lastInsertRowid);
   const proj = projectNameOfAsset(req.params.id);
-  const what = kind === 'vuln' ? 'finding' : kind === 'cred' ? 'credential' : 'note';
+  const what = kind === 'vuln' ? 'finding' : kind === 'credential' ? 'credential' : 'note';
   res.locals.auditAction = `Recorded ${what} ${auditName(title)}${proj ? ' in ' + auditName(proj) : ''}`;
   res.status(201).json(row);
 });
@@ -1986,13 +2040,14 @@ app.get('/api/projects/:id/findings', (req, res) => {
   res.json(rows);
 });
 // Ungraded vulnerabilities across every engagement (no severity and no CVSS yet) — the admin/editor
-// grading queue. Notes and credentials are never findings, so they never appear here.
+// grading queue. Notes and credentials are never findings, so they never appear here; neither do
+// retest items (stored as vulns on a retest target) — they re-check an earlier finding, not a new one.
 app.get('/api/ungraded', async (req, res) => {
   if (!(await canEdit(req))) return res.status(403).json({ error: 'graders only' });
   const rows = q(`SELECT f.id, f.uid, f.title, f.kind, f.author, f.body, f.needs_improvement, f.review_note, f.created_at,
       a.id AS target_id, a.label AS target, a.type AS target_type, p.id AS project_id, p.name AS project
     FROM findings f JOIN assets a ON a.id=f.asset_id JOIN projects p ON p.id=a.project_id
-    WHERE f.kind='vuln' AND (f.severity IS NULL OR f.severity='') AND (f.cvss IS NULL OR f.cvss='')
+    WHERE f.kind='vuln' AND a.type<>'retest' AND (f.severity IS NULL OR f.severity='') AND (f.cvss IS NULL OR f.cvss='')
     ORDER BY f.created_at`).all();
   const _att = attachmentsFor(rows.map(r => r.id));
   for (const r of rows) r.attachments = _att.get(r.id) || [];
@@ -2002,10 +2057,13 @@ app.get('/api/ungraded', async (req, res) => {
 app.patch('/api/findings/:id', async (req, res) => {
   const cur = q(`SELECT * FROM findings WHERE id=?`).get(req.params.id);
   if (!cur) return res.status(404).json({ error: 'not found' });
+  if (!(await canWorkTarget(req, cur.asset_id))) return res.status(403).json({ error: 'you must be assigned to this engagement to change its findings' });
   const b = req.body || {};
   if ('title' in b && !b.title) return res.status(400).json({ error: 'title cannot be empty' });
   const editor = await canEdit(req);
-  const { severity, cvss: vector } = gradeFields(b, editor, cur); // a worker's grade is dropped
+  // a worker's grade is dropped, and so is any grade on a retest item (its severity is RETEST)
+  const retest = q(`SELECT type FROM assets WHERE id=?`).get(cur.asset_id)?.type === 'retest';
+  const { severity, cvss: vector } = gradeFields(b, editor && !retest, cur);
   // "Needs improvement": a reviewer (editor/admin) sends a finding back to its author with a note.
   // Only an editor can set it; grading it (giving a severity/CVSS) resolves and clears the flag.
   let ni = cur.needs_improvement, note = cur.review_note;
@@ -2024,7 +2082,7 @@ app.patch('/api/findings/:id', async (req, res) => {
     b.body === undefined ? cur.body : (b.body || null),
     'refs' in b ? cleanRefs(b.refs) : cur.refs,
     'fix_status' in b ? cleanFix(b.fix_status) : cur.fix_status,
-    'in_report' in b ? (b.in_report ? 1 : 0) : cur.in_report, vector, ni, note, flaggedTo, dup, cur.id);
+    'in_report' in b ? cleanReport(b.in_report) : cur.in_report, vector, ni, note, flaggedTo, dup, cur.id);
   // Grading and editing share this route; label the audit entry by what actually happened so the
   // activity log can say "Graded a finding" distinctly from a plain edit.
   const graded = editor && (('severity' in b) || ('cvss' in b) || ('duplicate' in b) || ('needs_improvement' in b));
@@ -2033,8 +2091,9 @@ app.patch('/api/findings/:id', async (req, res) => {
   res.json(q(`SELECT * FROM findings WHERE id=?`).get(cur.id));
 });
 
-app.delete('/api/findings/:id', (req, res) => {
+app.delete('/api/findings/:id', async (req, res) => {
   const f = q(`SELECT title, asset_id FROM findings WHERE id=?`).get(req.params.id);
+  if (f && !(await canWorkTarget(req, f.asset_id))) return res.status(403).json({ error: 'you must be assigned to this engagement to delete its findings' });
   q(`DELETE FROM findings WHERE id=?`).run(req.params.id);
   if (f) { const proj = projectNameOfAsset(f.asset_id); res.locals.auditAction = `Deleted finding ${auditName(f.title)}${proj ? ' in ' + auditName(proj) : ''}`; }
   res.json({ ok: true });
@@ -2081,7 +2140,7 @@ function imageDisposition(mime, filename) {
 // keeps stored names uniform and ASCII-safe and never leaks the operator's original filenames.
 const MIME_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/avif': 'avif', 'image/bmp': 'bmp', 'image/x-icon': 'ico', 'image/svg+xml': 'svg' };
 const randomImageName = (mime) => `image-${randomBytes(6).toString('hex')}.${MIME_EXT[String(mime || '').toLowerCase()] || 'img'}`;
-app.post('/api/findings/:id/attachments', (req, res) => rawUpload(req, res, (err) => {
+app.post('/api/findings/:id/attachments', (req, res) => rawUpload(req, res, async (err) => {
   // A body over the parser's limit makes express.raw throw BEFORE the handler — turn that into
   // the same friendly 413 (otherwise it surfaces as an opaque 500 and the image just vanishes).
   if (err) {
@@ -2090,6 +2149,7 @@ app.post('/api/findings/:id/attachments', (req, res) => rawUpload(req, res, (err
   }
   const finding = q(`SELECT id, title, asset_id FROM findings WHERE id=?`).get(req.params.id);
   if (!finding) return res.status(404).json({ error: 'finding not found' });
+  if (!(await canWorkTarget(req, finding.asset_id))) return res.status(403).json({ error: 'adding screenshots is for this engagement’s team and leads' });
   const mime = (req.headers['content-type'] || '').split(';')[0].trim();
   if (!mime.startsWith('image/')) return res.status(400).json({ error: 'only image files are accepted' });
   const buf = req.body;
@@ -2109,8 +2169,9 @@ app.get('/api/attachments/:id', (req, res) => {
   res.setHeader('Content-Disposition', imageDisposition(a.mime, a.filename));
   res.end(Buffer.from(a.data));
 });
-app.delete('/api/attachments/:id', (req, res) => {
+app.delete('/api/attachments/:id', async (req, res) => {
   const at = q(`SELECT f.title, f.asset_id FROM attachments a LEFT JOIN findings f ON f.id=a.finding_id WHERE a.id=?`).get(req.params.id);
+  if (at && !(await canWorkTarget(req, at.asset_id))) return res.status(403).json({ error: 'removing screenshots is for this engagement’s team and leads' });
   q(`DELETE FROM attachments WHERE id=?`).run(req.params.id);
   if (at) res.locals.auditAction = `Removed a screenshot from finding ${auditName(at.title)}${targetWhere(at.asset_id)}`;
   res.json({ ok: true });
@@ -2168,7 +2229,8 @@ app.get('/api/projects/:id/export', (req, res) => {
     ...assetSummary(a),
     items: q(`SELECT * FROM items WHERE asset_id=? ORDER BY sort`).all(a.id)
       .map(i => ({ ...i, payloads: JSON.parse(i.payloads || '[]') })),
-    findings: q(`SELECT * FROM findings WHERE asset_id=?`).all(a.id)
+    // ignored findings (in_report=2) were left out of the report on purpose
+    findings: q(`SELECT * FROM findings WHERE asset_id=? AND in_report<>2`).all(a.id)
       .sort((x, y) => (SEV_RANK[x.severity] ?? 5) - (SEV_RANK[y.severity] ?? 5) || (x.created_at < y.created_at ? -1 : 1)),
   }));
   if (req.query.format === 'json') return res.json({ project: p, assets: data });
@@ -2183,8 +2245,13 @@ app.get('/api/projects/:id/export', (req, res) => {
     md += `\n## ${a.type.toUpperCase()} — ${a.label}\n`;
     if (a.findings.length) {
       md += `\n### Findings\n`;
+      const FIX_TEXT = { fixed: 'fixed', half_fixed: 'partially fixed', not_fixed: 'not fixed' };
       for (const f of a.findings) {
-        md += `- **${f.title}** (${f.kind}${f.severity ? ', ' + f.severity : ''}${f.duplicate ? ', duplicate' : ''})\n`;
+        // a retest item has no severity of its own — it reads "retest" plus its fix status
+        const tag = a.type === 'retest'
+          ? `retest${FIX_TEXT[f.fix_status] ? ', ' + FIX_TEXT[f.fix_status] : ''}`
+          : `${f.kind}${f.severity ? ', ' + f.severity : ''}${f.duplicate ? ', duplicate' : ''}`;
+        md += `- **${f.title}** (${tag})\n`;
         if (f.body) md += '```\n' + f.body + '\n```\n';
       }
     }

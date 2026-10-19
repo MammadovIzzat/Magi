@@ -80,9 +80,10 @@ const serverDb = new DatabaseSync(join(serverDir, 'magi.db')); // read-only-ish 
 const sName = (uid) => serverDb.prepare('SELECT name FROM projects WHERE uid=?').get(uid)?.name;
 
 // connect a device (a pending request), admin-accept it, create the operator account, then sign the
-// operator in — and drive sync deterministically for the test. The operator is a WORKER (section 1b
-// checks a worker can't finish an engagement through a crafted sync push).
-async function connectApprove(username, display_name) {
+// operator in — and drive sync deterministically for the test. The first operator is an EDITOR: this
+// test creates, edits and deletes whole engagements from the client, which the server refuses from a
+// worker (those refusals are covered in server-smoke).
+async function connectApprove(username, display_name, role = 'worker') {
   const r = await link.connect({ server_url: `https://127.0.0.1:${PORT}`, code: await mkCode(), device_name: display_name });
   if (!r.ok) return { ok: false, error: r.error };
   const pending = (await req('GET', '/api/admin/requests', { token: adminTok })).json;
@@ -90,13 +91,13 @@ async function connectApprove(username, display_name) {
   if (rid) await req('POST', `/api/admin/requests/${rid}/approve`, { token: adminTok });
   await link.pollApproval();
   link.stopApprovalPoll();
-  await req('POST', '/api/admin/users', { token: adminTok, body: { username, password: username + '-secret-8', role: 'worker' } });
+  await req('POST', '/api/admin/users', { token: adminTok, body: { username, password: username + '-secret-8', role } });
   const lg = await link.login({ username, password: username + '-secret-8' });
   link.stopSyncLoop();
   return { ok: lg.ok && link.status().linked === true };
 }
 
-const c1 = await connectApprove('ana', 'Ana R.');
+const c1 = await connectApprove('ana', 'Ana R.', 'editor');
 check('client links to server (after approval)', c1.ok === true);
 
 // ---- 1) client -> server ----
@@ -112,14 +113,11 @@ check('server received the whole target tree', sName(projUid) === 'Client Made'
   && serverDb.prepare('SELECT COUNT(*) c FROM items WHERE uid IN (SELECT uid FROM items)').get().c >= 1
   && serverDb.prepare("SELECT COUNT(*) c FROM findings WHERE title='Open redirect'").get().c === 1);
 
-// ---- 1b) engagement dates replicate, but a WORKER cannot finish via sync ----
-// This client is enrolled as a worker; even a crafted push that sets status='finished' must be
-// neutralized server-side (only a team admin finishes an engagement), while detail/date edits sync.
-db.prepare(`UPDATE projects SET start_date='2026-08-01', end_date='2026-08-15', status='finished' WHERE id=?`).run(pid);
+// ---- 1b) engagement detail edits replicate ----
+db.prepare(`UPDATE projects SET start_date='2026-08-01', end_date='2026-08-15' WHERE id=?`).run(pid);
 await syncNow();
-const sProj = serverDb.prepare('SELECT status,start_date,end_date FROM projects WHERE uid=?').get(projUid);
+const sProj = serverDb.prepare('SELECT start_date,end_date FROM projects WHERE uid=?').get(projUid);
 check('engagement dates replicate to the server', sProj && sProj.start_date === '2026-08-01' && sProj.end_date === '2026-08-15');
-check('a worker cannot finish an engagement through sync', sProj && sProj.status !== 'finished');
 
 // ---- 2) server -> client ----
 const sp = await req('POST', '/api/projects', { token: adminTok, body: { name: 'Server Made' } });

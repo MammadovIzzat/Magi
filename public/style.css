@@ -666,6 +666,10 @@ body.rail-collapsed .railtoggle svg { transform: rotate(180deg); }
 .finding.sev-medium { border-left-color: var(--gold); }
 .finding.sev-low { border-left-color: var(--sev-low); }
 .finding.sev-info, .finding.sev-none { border-left-color: var(--sev-info); }
+/* a retest item: its "severity" is RETEST — a violet edge + chip, never a graded band */
+.finding.sev-retest { border-left-color: var(--violet); }
+.finding.sev-retest .f-sev, .fd-sev.sev-retest { color: var(--violet); }
+.fd-sev.sev-retest { border-color: var(--violet); }
 .f-top { display: flex; align-items: center; gap: 8px; }
 .f-sev, .f-kind { font-family: var(--mono); font-size: 9px; letter-spacing: .16em; text-transform: uppercase; }
 .f-sev { color: var(--sev-info); }
@@ -719,18 +723,24 @@ button.f-sev.grade.none:hover { color: var(--gold); border-color: var(--gold); }
 .f-tools { display: flex; gap: 1px; opacity: 0; transition: opacity .1s; }
 .finding:hover .f-tools { opacity: 1; }
 .f-tools .ibtn { width: 22px; height: 22px; }
-/* "in report" tick — always visible so it's clear at a glance which findings are written up */
-.reptick {
-  margin-left: auto; display: inline-flex; align-items: center; gap: 5px; flex: none;
+/* report status — "in report" tick + "ignore" toggle, always visible so it's clear at a glance
+   which findings are written up, which are still to do, and which were left out on purpose */
+.repctl { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.reptick, .repign {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
   font-family: var(--mono); font-size: 9px; letter-spacing: .12em; text-transform: uppercase;
   padding: 3px 8px; border-radius: 999px; cursor: pointer;
   background: none; border: 1px solid var(--line-3); color: var(--muted-3); transition: all .12s;
 }
-.reptick svg { width: 11px; height: 11px; }
-.reptick:hover { border-color: var(--line-4); color: var(--text-2); }
+.reptick svg, .repign svg { width: 11px; height: 11px; }
+.reptick:hover, .repign:hover { border-color: var(--line-4); color: var(--text-2); }
 .reptick.on { border-color: var(--ok); color: var(--ok); background: transparent; }
+.repign.on { border-color: var(--muted-2); color: var(--text-2); background: var(--line-3); }
 /* a written-up finding is dimmed a touch and gets a green edge, so the log reads at a glance */
 .finding.in-report { border-left-color: var(--ok); }
+/* an ignored finding (left out of the report on purpose) fades back with a muted edge */
+.finding.is-ignored { opacity: .6; border-left-color: var(--muted-3); }
+.finding.is-ignored .f-title { text-decoration: line-through; text-decoration-color: var(--muted-3); }
 /* a finding a reviewer sent back to improve — a steady glow, brighter for its own author.
    (Static, not a looping animation: a continuously-animated box-shadow forces a repaint every
    frame, which was a needless drain when such a finding was on screen.) */
@@ -758,7 +768,7 @@ button.f-sev.grade.none:hover { color: var(--gold); border-color: var(--gold); }
 .improve-note .kicker { color: var(--gold); }
 .improve-note > div { margin-top: 4px; font-size: 13px; color: var(--fg); white-space: pre-wrap; }
 .finding.in-report .f-title { opacity: .72; }
-.fd-badges .reptick { margin-left: 0; }
+.fd-badges .repctl { margin-left: 0; }
 .f-title { font-size: 14px; font-weight: 500; color: var(--fg); margin-top: 7px; line-height: 1.45; }
 .finding pre {
   margin: 9px 0 0; background: var(--void); border: 1px solid #14182450; padding: 8px 9px;
@@ -903,7 +913,7 @@ textarea { min-height: 84px; resize: vertical; font-family: var(--mono); font-si
 .sel.open .sel-trigger, .sel-trigger:focus { border-color: var(--blue); outline: none; }
 .sel-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sel-menu {
-  position: fixed; z-index: 100; max-height: 260px; overflow-y: auto;
+  position: fixed; z-index: 100; max-height: 260px; overflow-y: auto; overflow-x: hidden;
   background: var(--panel); border: 1px solid var(--line-hi);
   box-shadow: 0 10px 30px rgba(0, 0, 0, .5); animation: magiFade .1s ease both;
 }
@@ -912,6 +922,9 @@ textarea { min-height: 84px; resize: vertical; font-family: var(--mono); font-si
 .sel-opt.on { background: var(--gold-wash); color: var(--gold); }
 /* the evidence-log sort dropdown is compact and sits inline next to the search box */
 .sel.evsort { width: auto; min-width: 116px; flex: none; }
+/* the engagement findings page sort has long labels ("Not reported first") — a fixed width that fits
+   them all, so picking one never resizes the dropdown or squeezes the search box beside it */
+.pf-filter .sel.evsort { width: 184px; }
 /* Custom chevron (appearance:none drops the native one) + themed option list. Chromium/Firefox
    honour option colours, so the dropdown popup matches the app instead of a translucent default. */
 select {

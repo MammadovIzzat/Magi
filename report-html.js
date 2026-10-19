@@ -18,29 +18,41 @@ export function projectReportHTML(projectId) {
   // Every vulnerability across the engagement in ONE list, most-severe first (critical → info, then
   // oldest first). Each finding carries its target, shown on the card — a findings report reads
   // worst-first, not grouped by whichever host it happened to be recorded on.
-  const all = [];
+  // Ignored findings (in_report=2) were left out of the report on purpose. Retest items (on a retest
+  // target) re-check an earlier finding — they are NOT new findings: never counted in the tiles, and
+  // listed in their own "Retest results" section with a RETEST chip + fix status instead of a severity.
+  const all = [], retests = [];
   let total = 0;
   const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0, none: 0 };
   for (const a of assets) {
-    const findings = db.prepare(`SELECT * FROM findings WHERE asset_id=? AND kind='vuln' AND duplicate=0 ORDER BY id`).all(a.id);
+    const findings = db.prepare(`SELECT * FROM findings WHERE asset_id=? AND kind='vuln' AND duplicate=0 AND in_report<>2 ORDER BY id`).all(a.id);
     for (const f of findings) {
+      const row = { ...f, asset: a, images: db.prepare(`SELECT id, filename, mime, data FROM attachments WHERE finding_id=? ORDER BY id`).all(f.id) };
+      if (a.type === 'retest') { retests.push(row); continue; }
       total++;
       counts[f.severity && counts[f.severity] !== undefined ? f.severity : 'none']++;
-      all.push({ ...f, asset: a, images: db.prepare(`SELECT id, filename, mime, data FROM attachments WHERE finding_id=? ORDER BY id`).all(f.id) });
+      all.push(row);
     }
   }
   all.sort((x, y) => (SEV_ORDER[x.severity] ?? 5) - (SEV_ORDER[y.severity] ?? 5) || (x.created_at < y.created_at ? -1 : 1));
+  // retest results: still open first (not fixed → partially fixed → fixed), then oldest first
+  const FIX_ORDER = { not_fixed: 0, half_fixed: 1, fixed: 2 };
+  const FIX_TEXT = { fixed: 'fixed', half_fixed: 'partially fixed', not_fixed: 'not fixed' };
+  retests.sort((x, y) => (FIX_ORDER[x.fix_status] ?? 3) - (FIX_ORDER[y.fix_status] ?? 3) || (x.created_at < y.created_at ? -1 : 1));
 
   const now = new Date();
-  const findingCard = (f) => {
+  const findingCard = (f, retest = false) => {
     const sev = f.severity || '';
     const imgs = f.images.map(im => {
       const b64 = Buffer.from(im.data).toString('base64');
       return `<figure class="shot"><img src="data:${esc(im.mime)};base64,${b64}" alt=""></figure>`;
     }).join('');
-    return `<article class="finding sev-${esc(sev || 'none')}">
+    const chips = retest
+      ? `<span class="chip sev">retest</span>${FIX_TEXT[f.fix_status] ? `<span class="chip fix fix-${esc(f.fix_status)}">${FIX_TEXT[f.fix_status]}</span>` : ''}`
+      : `<span class="chip sev">${esc(sev || 'no severity')}</span>`;
+    return `<article class="finding ${retest ? 'retest' : 'sev-' + esc(sev || 'none')}">
       <div class="fhead">
-        <span class="chip sev">${esc(sev || 'no severity')}</span>
+        ${chips}
         <h3>${esc(f.title)}</h3>
         ${f.author ? `<span class="by">recorded by ${esc(f.author)}</span>` : ''}
       </div>
@@ -87,6 +99,13 @@ export function projectReportHTML(projectId) {
   .sev-medium .chip.sev{background:${SEV_COLOR.medium};color:#1a1408}
   .sev-low .chip.sev{background:${SEV_COLOR.low}}
   .sev-info .chip.sev,.sev-none .chip.sev{background:${SEV_COLOR.info}}
+  .finding.retest{border-left-color:var(--gold)}
+  .retest .chip.sev{background:var(--gold);color:#1a1408}
+  .chip.fix{color:var(--fg)}
+  .chip.fix-fixed{border-color:#3fae6a;color:#3fae6a}
+  .chip.fix-half_fixed{border-color:${SEV_COLOR.medium};color:${SEV_COLOR.medium}}
+  .chip.fix-not_fixed{border-color:${SEV_COLOR.high};color:${SEV_COLOR.high}}
+  .retest-sum{color:var(--muted);font-size:14px;margin:4px 0 0}
   pre{background:#06070b;border:1px solid var(--line);border-radius:3px;padding:12px;overflow:auto;font-family:var(--mono);font-size:12.5px;line-height:1.6;color:#a8c8ff;white-space:pre-wrap;word-break:break-word;margin:12px 0 0}
   .ftarget{font-family:var(--mono);font-size:11px;letter-spacing:.04em;color:var(--gold);margin-top:6px}
   .shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin-top:14px}
@@ -107,7 +126,10 @@ export function projectReportHTML(projectId) {
     <div class="meta">${[p.client && 'Client: ' + esc(p.client), p.scope && 'Scope: ' + esc(p.scope)].filter(Boolean).join(' &nbsp;·&nbsp; ') || '&nbsp;'}</div>
   </header>
   <div class="tiles"><div class="tile"><div class="n">${total}</div><div class="k">findings</div></div>${sevTiles}</div>
-  ${all.length ? all.map(findingCard).join('') : `<p class="empty">No findings recorded yet.</p>`}
+  ${all.length ? all.map(f => findingCard(f)).join('') : `<p class="empty">No findings recorded yet.</p>`}
+  ${retests.length ? `<h2 class="asset">Retest results</h2>
+  <p class="retest-sum">${retests.length} earlier finding${retests.length === 1 ? '' : 's'} re-checked · ${['fixed', 'half_fixed', 'not_fixed'].map(k => `${retests.filter(r => r.fix_status === k).length} ${FIX_TEXT[k]}`).join(' · ')}</p>
+  ${retests.map(f => findingCard(f, true)).join('')}` : ''}
   <footer>Generated by Magi · ${now.toISOString().replace('T', ' ').slice(0, 16)} UTC · for authorized security testing only</footer>
 </div>
 <div class="lb" id="lb"><span class="lbx">✕</span><img id="lbimg" alt=""></div>

@@ -1059,6 +1059,8 @@ if (SERVER_MODE) {
         const cur = q(`SELECT severity, cvss, duplicate, needs_improvement, review_note FROM findings WHERE uid=?`).get(r.uid) || GRADE_DEFAULTS;
         const fields = { ...(r.fields || {}) };
         for (const k of Object.keys(GRADE_DEFAULTS)) fields[k] = cur[k] ?? GRADE_DEFAULTS[k];
+        // …except the one move a finder may make: answering a send-back (1 → 2, improved — back for review)
+        if (cur.needs_improvement === 1 && Number(r.fields?.needs_improvement) === 2) fields.needs_improvement = 2;
         keptRows.push({ ...r, fields });
       } else keptRows.push(r);
     }
@@ -2039,16 +2041,19 @@ app.get('/api/projects/:id/findings', (req, res) => {
   for (const r of rows) r.attachments = _att.get(r.id) || [];
   res.json(rows);
 });
-// Ungraded vulnerabilities across every engagement (no severity and no CVSS yet) — the admin/editor
-// grading queue. Notes and credentials are never findings, so they never appear here; neither do
-// retest items (stored as vulns on a retest target) — they re-check an earlier finding, not a new one.
+// The admin/editor grading queue: ungraded vulnerabilities across every engagement (no severity and no
+// CVSS yet), plus any vulnerability its finder IMPROVED after a send-back (needs_improvement=2) — graded
+// or not, it comes back here for review, improved ones first. Notes and credentials are never findings,
+// so they never appear here; neither do retest items (stored as vulns on a retest target) — they
+// re-check an earlier finding, not a new one.
 app.get('/api/ungraded', async (req, res) => {
   if (!(await canEdit(req))) return res.status(403).json({ error: 'graders only' });
-  const rows = q(`SELECT f.id, f.uid, f.title, f.kind, f.author, f.body, f.needs_improvement, f.review_note, f.created_at,
+  const rows = q(`SELECT f.id, f.uid, f.title, f.kind, f.author, f.body, f.severity, f.cvss, f.duplicate, f.needs_improvement, f.review_note, f.created_at,
       a.id AS target_id, a.label AS target, a.type AS target_type, p.id AS project_id, p.name AS project
     FROM findings f JOIN assets a ON a.id=f.asset_id JOIN projects p ON p.id=a.project_id
-    WHERE f.kind='vuln' AND a.type<>'retest' AND (f.severity IS NULL OR f.severity='') AND (f.cvss IS NULL OR f.cvss='')
-    ORDER BY f.created_at`).all();
+    WHERE f.kind='vuln' AND a.type<>'retest'
+      AND (f.needs_improvement=2 OR ((f.severity IS NULL OR f.severity='') AND (f.cvss IS NULL OR f.cvss='')))
+    ORDER BY f.needs_improvement=2 DESC, f.created_at`).all();
   const _att = attachmentsFor(rows.map(r => r.id));
   for (const r of rows) r.attachments = _att.get(r.id) || [];
   res.json(rows);
@@ -2064,14 +2069,20 @@ app.patch('/api/findings/:id', async (req, res) => {
   // a worker's grade is dropped, and so is any grade on a retest item (its severity is RETEST)
   const retest = q(`SELECT type FROM assets WHERE id=?`).get(cur.asset_id)?.type === 'retest';
   const { severity, cvss: vector } = gradeFields(b, editor && !retest, cur);
-  // "Needs improvement": a reviewer (editor/admin) sends a finding back to its author with a note.
-  // Only an editor can set it; grading it (giving a severity/CVSS) resolves and clears the flag.
+  // "Needs improvement" (findings.needs_improvement): 0 none · 1 sent back to the finder · 2 improved,
+  // back with the reviewers. A reviewer (editor/admin) sends a finding back with a note (1); the finder
+  // answering it — saving a change to its title / details / links — returns it as improved (2), which
+  // puts it back in the grading queue with the note kept for context. Grading it (a severity/CVSS)
+  // resolves and clears the flag; only an editor can set or clear it directly.
   let ni = cur.needs_improvement, note = cur.review_note;
   if (editor && 'needs_improvement' in b) {
     ni = b.needs_improvement ? 1 : 0;
     note = ni ? (b.review_note ? String(b.review_note).slice(0, 1000) : null) : null;
   }
   if (editor && (('severity' in b) || ('cvss' in b)) && (severity || vector)) { ni = 0; note = null; } // graded → resolved
+  const resubmitted = cur.needs_improvement === 1 && ni === 1 && !('needs_improvement' in b)
+    && ['title', 'body', 'refs'].some(k => k in b);
+  if (resubmitted) ni = 2;
   // Flagging a note to a teammate (or clearing it) is collaboration, open to any operator.
   const flaggedTo = 'flagged_to' in b ? (b.flagged_to ? String(b.flagged_to).slice(0, 120) : null) : cur.flagged_to;
   // Marking a vuln a DUPLICATE is a grading-level call (an editor/admin), like severity: it keeps its
@@ -2087,7 +2098,9 @@ app.patch('/api/findings/:id', async (req, res) => {
   // activity log can say "Graded a finding" distinctly from a plain edit.
   const graded = editor && (('severity' in b) || ('cvss' in b) || ('duplicate' in b) || ('needs_improvement' in b));
   const fTitle = b.title ?? cur.title, fProj = projectNameOfAsset(cur.asset_id);
-  res.locals.auditAction = `${graded ? 'Graded' : 'Edited'} finding ${auditName(fTitle)}${fProj ? ' in ' + auditName(fProj) : ''}`;
+  res.locals.auditAction = resubmitted
+    ? `Improved finding ${auditName(fTitle)} and sent it back for review${fProj ? ' in ' + auditName(fProj) : ''}`
+    : `${graded ? 'Graded' : 'Edited'} finding ${auditName(fTitle)}${fProj ? ' in ' + auditName(fProj) : ''}`;
   res.json(q(`SELECT * FROM findings WHERE id=?`).get(cur.id));
 });
 

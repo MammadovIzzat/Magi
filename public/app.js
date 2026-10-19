@@ -193,7 +193,8 @@ let CURRENT_USER = null;
 let ME = null;                // { username, role, display_name } from /api/me
 let LINK = { linked: false }; // team-server link status, refreshed from /api/link
 let ADMIN_PENDING = 0;        // number of pending join requests (for the Admin badge)
-let ADMIN_UNGRADED = 0;       // vulnerabilities awaiting a severity (Grading tab badge)
+let ADMIN_UNGRADED = 0;       // vulnerabilities awaiting a severity or review (Grading tab badge)
+let ADMIN_IMPROVED = null;    // how many improved-after-send-back findings the last poll saw (null = not polled yet)
 let BACKUP_DUE = false;       // a scheduled backup is due — also lights the Admin badge
 let HOME_TAB = 'active';      // engagements home: 'active' | 'finished' tab
 let EVID = { kind: 'all', q: '', sort: 'new' }; // evidence-log filter/sort (kind, search, order)
@@ -411,7 +412,14 @@ async function refreshLink() {
   const ctx = adminCtx();
   if (ctx) {
     try { ADMIN_PENDING = (await api(ctx.base + '/requests')).length; } catch { ADMIN_PENDING = 0; }
-    try { ADMIN_UNGRADED = (await api('/ungraded')).length; } catch { ADMIN_UNGRADED = 0; }
+    try {
+      const queue = await api('/ungraded');
+      ADMIN_UNGRADED = queue.length;
+      // A finder answered a send-back: tell the admin once when a newly improved finding lands.
+      const improved = queue.filter(f => improveState(f) === 2).length;
+      if (ADMIN_IMPROVED != null && improved > ADMIN_IMPROVED) toast('A finding was improved and sent back for review — open Admin → Grading');
+      ADMIN_IMPROVED = improved;
+    } catch { ADMIN_UNGRADED = 0; }
     // Scheduled-backup reminder: a backup is never taken unattended (we don't store the
     // password), so when one comes due we light the Admin badge and toast admins once.
     try {
@@ -2391,6 +2399,9 @@ function openCvssEditor(currentVector, onApply) {
 }
 const FIX_STATUS = [{ value: 'not_fixed', label: 'Not fixed' }, { value: 'half_fixed', label: 'Partially fixed' }, { value: 'fixed', label: 'Fixed' }];
 const fixLabel = (v) => (FIX_STATUS.find(x => x.value === v)?.label || v);
+// A finding's send-back state (needs_improvement): 0 none · 1 sent back to the finder to improve ·
+// 2 improved by the finder and back with the leads for review (it returns to the grading queue).
+const improveState = (f) => { const n = Number(f.needs_improvement) || 0; return n === 2 ? 2 : n ? 1 : 0; };
 // A retest item re-checks a finding from an earlier engagement: it is not a new finding, is never
 // graded or counted, and its "severity" reads RETEST. Known by its target type (or, on the target's own
 // page, by the fix status every retest item carries).
@@ -2457,11 +2468,12 @@ function findingCard(f, id, after, opts = {}) {
   }
   const links = (f.links || []).length ? el('div', { className: 'f-links' }, el('span', { className: 'muted' }, 'chains → '),
     ...f.links.flatMap((l, i) => [i ? el('span', { className: 'muted' }, ', ') : null, el('span', { className: 'chainlink', title: l.target }, l.title)].filter(Boolean))) : null;
-  const mineToFix = f.needs_improvement && CURRENT_USER && CURRENT_USER === f.author; // glows for the finder
+  const sentBack = improveState(f) === 1, improved = improveState(f) === 2;
+  const mineToFix = sentBack && CURRENT_USER && CURRENT_USER === f.author; // glows for the finder
   const retest = isRetestItem(f);
   const card = el('div', { className: 'finding sev-' + (retest ? 'retest' : (f.severity || 'info'))
       + (reportState(f) === 1 ? ' in-report' : '') + (reportState(f) === 2 ? ' is-ignored' : '')
-      + (f.needs_improvement ? ' needs-improve' : '') + (mineToFix ? ' mine-improve' : '')
+      + (sentBack ? ' needs-improve' : '') + (improved ? ' improved' : '') + (mineToFix ? ' mine-improve' : '')
       + (f.duplicate ? ' is-dup' : '')
       + (opts.readonly ? ' ro' : '')
       + (opts.selectable ? ' pickable' : '') + (opts.selected ? ' picked' : ''),
@@ -2479,7 +2491,8 @@ function findingCard(f, id, after, opts = {}) {
       // The kind is always a vulnerability here (notes/creds live in the notebook & creds popup), so
       // there's no "VULN" tag — only a retest fix-status label when present.
       f.fix_status ? el('span', { className: 'f-fix ' + f.fix_status }, fixLabel(f.fix_status)) : null,
-      f.needs_improvement ? el('span', { className: 'f-improve' }, 'needs improvement') : null,
+      sentBack ? el('span', { className: 'f-improve' }, 'needs improvement') : null,
+      improved ? el('span', { className: 'f-improve done', title: 'The finder improved it — back with the leads for review' }, 'improved · review') : null,
       (f.kind === 'vuln' && !opts.readonly && canWork) ? reportTick(f, after) : null,   // "written into the report" tick — not in the read-only reference view
       (opts.readonly || !canWork) ? null : tools),
     el('div', { className: 'f-title' }, f.title),
@@ -2487,7 +2500,7 @@ function findingCard(f, id, after, opts = {}) {
       f.author ? avatarSm(f.author) : null,
       f.author ? 'recorded by ' + f.author : 'recorded',
       f.created_at ? el('span', { className: 'f-when' }, ' · ' + fmtWhen(f.created_at)) : null) : null,
-    f.needs_improvement && f.review_note ? el('div', { className: 'f-improve-note' }, icon('edit', 11), f.review_note) : null,
+    (sentBack || improved) && f.review_note ? el('div', { className: 'f-improve-note' + (improved ? ' done' : '') }, icon('edit', 11), f.review_note) : null,
     f.body ? el('pre', {}, f.body) : null,
     links,
     (f.attachments || []).length ? shots : null);
@@ -2518,10 +2531,14 @@ function findingDetail(f, id, after, canWork = true) {
         // no longer lists. Reuses the grade dialog (severity + CVSS).
         (isEditor() && f.kind === 'vuln' && !retest) ? el('button', { className: 'btn line sm', onclick: () => gradeDialog(f, after) }, icon('edit', 12), (f.severity || f.cvss) ? 'Change severity' : 'Set severity') : null,
         (f.kind === 'vuln' && canWork) ? el('span', { className: 'fd-report' }, reportTick(f, after)) : null));
-      if (f.needs_improvement) b.append(el('div', { className: 'improve-note' },
+      if (improveState(f) === 1) b.append(el('div', { className: 'improve-note' },
         el('span', { className: 'kicker' }, 'Needs improvement'),
         f.review_note ? el('div', {}, f.review_note) : null,
-        canWork ? el('button', { className: 'btn line sm', style: 'margin-top:8px', onclick: () => editFinding(f, id, after) }, icon('edit', 12), 'Improve this finding') : null));
+        canWork ? el('button', { className: 'btn line sm', style: 'margin-top:8px', onclick: () => editFinding(f, id, after) }, icon('edit', 12), 'Improve this finding') : null,
+        canWork ? el('div', { className: 'muted small', style: 'margin-top:6px' }, 'Saving your changes sends it back to the leads for review.') : null));
+      if (improveState(f) === 2) b.append(el('div', { className: 'improve-note done' },
+        el('span', { className: 'kicker' }, 'Improved — back with the leads for review'),
+        f.review_note ? el('div', {}, 'Asked: ' + f.review_note) : null));
       if (f.cvss && !retest) { b.append(el('label', {}, 'CVSS vector')); b.append(el('code', { className: 'fd-vector' }, f.cvss)); }
       if (locs.length) { b.append(el('label', {}, locs.length > 1 ? 'Locations' : 'Location')); b.append(el('div', { className: 'fd-locs' }, ...locs.map(l => el('code', {}, l)))); }
       const bodyText = f.kind === 'vuln' ? stripLocationPrefix(f.body) : f.body;
@@ -2721,6 +2738,7 @@ async function findingModal(assetId, finding = null, isRetest = false, after, st
       }
       payload.body = body;
       await saveFinding(editing, finding, assetId, payload, images);
+      if (editing && improveState(finding) === 1) toast('Improved — sent back to the leads for review');
       after();
     },
   });
@@ -4115,20 +4133,24 @@ async function adminRanking(ctx, A) {
   return [head, controls, board];
 }
 
-// Grading queue: vulnerabilities recorded without a severity yet. Served locally (from the synced
-// mirror on a client, or the server's own DB), NOT via the /admin proxy — so it lists across the
-// whole team's synced data. Grading PATCHes the finding, which syncs like any edit; credit stays
-// with the recorder.
+// Grading queue: vulnerabilities recorded without a severity yet, plus any its finder improved after a
+// send-back (listed first, marked "improved"). Served locally (from the synced mirror on a client, or
+// the server's own DB), NOT via the /admin proxy — so it lists across the whole team's synced data.
+// Grading PATCHes the finding, which syncs like any edit; credit stays with the recorder.
 async function adminGrading(ctx, A) {
   const rows = await api('/ungraded');
   ADMIN_UNGRADED = rows.length;
   const engs = new Set(rows.map(f => f.project_id)).size;
-  const head = pageHead('Grading', 'Ungraded vulnerabilities',
-    rows.length ? `${rows.length} finding${rows.length === 1 ? '' : 's'} waiting for a severity across ${engs} engagement${engs === 1 ? '' : 's'}` : 'Every vulnerability has a severity — nothing to grade.',
+  const improvedN = rows.filter(f => improveState(f) === 2).length;
+  const head = pageHead('Grading', 'Grading queue',
+    rows.length ? `${rows.length} finding${rows.length === 1 ? '' : 's'} to grade across ${engs} engagement${engs === 1 ? '' : 's'}`
+      + (improvedN ? ` · ${improvedN} improved after a send-back` : '') : 'Every vulnerability has a severity — nothing to grade.',
     rows.length ? aBtn('Grade all…', () => gradeDialog(rows[0], () => renderAdmin('grading')), 'gold') : null);
   const cols = 'minmax(0,2fr) minmax(0,1.1fr) minmax(0,.6fr) 132px';
+  const stateTag = (f) => improveState(f) === 2 ? el('span', { className: 'f-improve done', title: 'The finder improved it after your send-back — review it' }, 'improved')
+    : improveState(f) === 1 ? el('span', { className: 'f-improve', title: 'Sent back — waiting on the finder' }, 'sent back') : null;
   const trows = rows.map(f => [
-    el('span', { className: 'acell-name' }, codeBadge(f.target_type), el('strong', {}, f.title)),
+    el('span', { className: 'acell-name' }, codeBadge(f.target_type), el('strong', {}, f.title), stateTag(f)),
     el('span', { className: 'amono muted ellip' }, `${f.project} · ${f.target}`),
     el('span', {}, f.author || '—'),
     el('span', { className: 'arow-actions' },
@@ -4155,8 +4177,8 @@ function gradeDialog(f, onDone) {
         for (const im of f.attachments) { const img = attachmentImg(im.id, { title: im.filename, loading: 'lazy' }); img.onclick = () => openLightbox(im, f.attachments); g.append(img); }
         b.append(g);
       }
-      if (f.needs_improvement && f.review_note) b.append(el('div', { className: 'improve-note' },
-        el('span', { className: 'kicker' }, 'Sent back'), el('div', {}, f.review_note)));
+      if (improveState(f) && f.review_note) b.append(el('div', { className: 'improve-note' + (improveState(f) === 2 ? ' done' : '') },
+        el('span', { className: 'kicker' }, improveState(f) === 2 ? 'Improved by the finder — you asked' : 'Sent back'), el('div', {}, f.review_note)));
       const sevSel = field(b, 'Severity', 'severity', { value: f.severity || 'medium', options: SEVERITIES.filter(s => s.value) });
       b.append(cvssSection(sevSel, f.cvss || null));
       // Mark as a duplicate (keeps its severity, doesn't count). A "Check findings" button opens the

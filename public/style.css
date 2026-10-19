@@ -747,6 +747,11 @@ button.f-sev.grade.none:hover { color: var(--gold); border-color: var(--gold); }
 .finding.needs-improve { border-left-color: var(--gold); box-shadow: 0 0 0 1px var(--gold-wash); }
 .finding.mine-improve { box-shadow: 0 0 0 1px var(--gold), 0 0 16px -4px var(--gold); }
 .f-improve { font-family: var(--mono); font-size: 9px; letter-spacing: .14em; text-transform: uppercase; color: var(--gold-ink); background: var(--gold); padding: 1px 6px; }
+/* improved by the finder after a send-back — back with the leads for review (blue ring + pill, not the
+   gold ask; the severity edge stays) */
+.finding.improved { box-shadow: 0 0 0 1px var(--sev-low); }
+.f-improve.done { color: #fff; background: var(--sev-low); }
+.acell-name .f-improve { flex: none; margin-left: 6px; }
 /* duplicate finding: a purple badge + a purple line (keeps its severity, doesn't count) */
 .f-dup { font-family: var(--mono); font-size: 8.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--purple); background: var(--purple-bg); border: 1px solid var(--purple); border-radius: 3px; padding: 2px 5px; flex: none; }
 .finding.is-dup { opacity: .82; border-left-color: var(--purple); }
@@ -766,6 +771,9 @@ button.f-sev.grade.none:hover { color: var(--gold); border-color: var(--gold); }
   background: var(--gold-wash); border: 1px solid var(--gold); font-size: 12px; color: var(--gold-text); }
 .improve-note { margin: 10px 0; padding: 10px 12px; background: var(--gold-wash); border: 1px solid var(--gold); }
 .improve-note .kicker { color: var(--gold); }
+.improve-note.done { border-color: var(--sev-low); background: none; }
+.improve-note.done .kicker { color: var(--sev-low); }
+.f-improve-note.done { border-color: var(--sev-low); background: none; color: var(--text-2); }
 .improve-note > div { margin-top: 4px; font-size: 13px; color: var(--fg); white-space: pre-wrap; }
 .finding.in-report .f-title { opacity: .72; }
 .fd-badges .repctl { margin-left: 0; }

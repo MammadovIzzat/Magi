@@ -744,11 +744,43 @@ check('a worker cannot flag needs-improvement', !wBack.json?.needs_improvement);
 const back = await req('PATCH', `/api/findings/${ung.json.id}`, { token: adminTok, body: { needs_improvement: 1, review_note: 'add the request/response and confirm impact' } });
 check('an editor can send a finding back to improve, with a note', back.json?.needs_improvement === 1 && /confirm impact/.test(back.json?.review_note || ''));
 check('a sent-back vuln is still in the grading queue (not yet graded)', (await req('GET', '/api/ungraded', { token: adminTok })).json.some(f => f.id === ung.json.id && f.needs_improvement === 1));
+// The finder answers it: a report tick alone is not an answer, but saving a change to the finding is —
+// it comes back to the leads as "improved" (2), first in the queue, with the reviewer's note kept.
+const wTickOnly = await req('PATCH', `/api/findings/${ung.json.id}`, { token: workerToken, device: dev1, body: { in_report: 1 } });
+check('a report tick alone does not send it back for review', wTickOnly.json?.needs_improvement === 1);
+await req('PATCH', `/api/findings/${ung.json.id}`, { token: workerToken, device: dev1, body: { in_report: 0 } });
+const wImprove = await req('PATCH', `/api/findings/${ung.json.id}`, { token: workerToken, device: dev1, body: { title: 'Ungraded SSRF', body: 'Location: https://x.test/fetch\n\nadded the request/response; internal metadata reachable' } });
+check('the finder saving an improvement sends it back for review', wImprove.status === 200 && wImprove.json?.needs_improvement === 2 && /confirm impact/.test(wImprove.json?.review_note || ''));
+const queueImproved = (await req('GET', '/api/ungraded', { token: adminTok })).json;
+check('an improved finding is back in the grading queue, listed first', queueImproved[0]?.id === ung.json.id && queueImproved[0]?.needs_improvement === 2);
+check('the improvement is logged as a resubmission', ((await req('GET', '/api/admin/audit?limit=5', { token: adminTok })).json.items || [])
+  .some(r => /^Improved finding “Ungraded SSRF” and sent it back for review/.test(r.action || '') && r.username === 'ana'));
 await req('PATCH', `/api/findings/${ung.json.id}`, { token: adminTok, body: { severity: 'high' } });
 const gradedTgt = await req('GET', `/api/targets/${webT.id}`, { token: adminTok });
 check('grading it clears needs-improvement', !(gradedTgt.json.findings.find(f => f.id === ung.json.id)?.needs_improvement));
 const queue2 = await req('GET', '/api/ungraded', { token: adminTok });
 check('grading removes it from the queue', !queue2.json.some(f => f.id === ung.json.id));
+// An ALREADY-GRADED finding sent back: it waits on the finder (not in the queue), and when the finder
+// improves it — here from a desktop client, through sync — it returns to the queue with its grade.
+await req('PATCH', `/api/findings/${ung.json.id}`, { token: adminTok, body: { needs_improvement: 1, review_note: 'add a screenshot of the response' } });
+check('a graded finding sent back waits on the finder (not in the queue)', !(await req('GET', '/api/ungraded', { token: adminTok })).json.some(f => f.id === ung.json.id));
+const ungRow = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.findings.find(f => f.id === ung.json.id);
+const ungFields = (over) => ({ title: ungRow.title, kind: 'vuln', severity: ungRow.severity, body: ungRow.body, refs: null, fix_status: null,
+  in_report: ungRow.in_report, author: ungRow.author, cvss: ungRow.cvss, needs_improvement: ungRow.needs_improvement, review_note: ungRow.review_note,
+  flagged_to: null, duplicate: ungRow.duplicate, created_at: ungRow.created_at, ...over });
+await pushAs({ rows: [{ table: 'findings', uid: ungRow.uid, hlc: '999999999999999-000030-deadbeefdeadbeef', parents: { asset_id: webUid },
+  fields: ungFields({ needs_improvement: 0, review_note: null }) }] });
+check('a worker cannot clear a send-back through sync', (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.findings.find(f => f.id === ung.json.id)?.needs_improvement === 1);
+await pushAs({ rows: [{ table: 'findings', uid: ungRow.uid, hlc: '999999999999999-000031-deadbeefdeadbeef', parents: { asset_id: webUid },
+  fields: ungFields({ body: ungRow.body + '\n\nscreenshot attached', needs_improvement: 2, review_note: 'rewritten by the worker', severity: 'info' }) }] });
+const viaSync = (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.findings.find(f => f.id === ung.json.id);
+check('a finder can send an improvement back through sync (only 1 → 2; note and grade untouched)',
+  viaSync?.needs_improvement === 2 && viaSync?.review_note === 'add a screenshot of the response' && viaSync?.severity === 'high' && /screenshot attached/.test(viaSync?.body || ''));
+const backQueue = (await req('GET', '/api/ungraded', { token: adminTok })).json.find(f => f.id === ung.json.id);
+check('an improved graded finding returns to the queue with its current grade', backQueue?.needs_improvement === 2 && backQueue?.severity === 'high');
+await req('PATCH', `/api/findings/${ung.json.id}`, { token: adminTok, body: { severity: 'high' } });
+check('re-grading it resolves the review and clears the queue', !(await req('GET', '/api/ungraded', { token: adminTok })).json.some(f => f.id === ung.json.id)
+  && (await req('GET', `/api/targets/${webT.id}`, { token: adminTok })).json.findings.find(f => f.id === ung.json.id)?.needs_improvement === 0);
 const ungWorker = await req('GET', '/api/ungraded', { token: workerToken, device: dev1 });
 check('a worker cannot read the grading queue', ungWorker.status === 403);
 

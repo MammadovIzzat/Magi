@@ -225,7 +225,7 @@ CREATE TABLE IF NOT EXISTS findings (
   in_report   INTEGER NOT NULL DEFAULT 0, -- report status: 0 not reported · 1 written into the report · 2 ignored (left out on purpose)
   author      TEXT,                      -- username of whoever recorded it (for the team ranking); syncs with the row
   cvss        TEXT,                      -- optional CVSS v3.1 base vector; severity is derived from it when set
-  needs_improvement INTEGER NOT NULL DEFAULT 0, -- a reviewer sent it back to its author to improve
+  needs_improvement INTEGER NOT NULL DEFAULT 0, -- 0 none · 1 a reviewer sent it back to its author · 2 improved, back for review
   review_note TEXT,                      -- the reviewer's note on what to improve
   flagged_to  TEXT,                      -- a note flagged to a teammate for co-work ("check this"); glows for them
   duplicate   INTEGER NOT NULL DEFAULT 0, -- a duplicate vuln: keeps its severity but is NOT counted toward findings/ranking
